@@ -113,9 +113,10 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ### What to read first
 
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md) — understand the data model (15 min)
-2. [`docs/data-dictionary.md`](docs/data-dictionary.md) — understand every table and column
-3. [`docs/categories/STATUS.md`](docs/categories/STATUS.md) — see what's done and what needs work
-4. [`docs/llm-extraction-rules.md`](docs/llm-extraction-rules.md) — mandatory before running any Phase 5 extraction
+2. [`docs/product-lifecycle.md`](docs/product-lifecycle.md) — how one product flows from raw listing → brand → taxonomy → universe, incl. the match-or-create decision
+3. [`docs/data-dictionary.md`](docs/data-dictionary.md) — understand every table and column
+4. [`docs/categories/STATUS.md`](docs/categories/STATUS.md) — see what's done and what needs work
+5. [`docs/llm-extraction-rules.md`](docs/llm-extraction-rules.md) — mandatory before running any Phase 5 extraction
 
 ---
 

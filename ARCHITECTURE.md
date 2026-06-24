@@ -261,6 +261,10 @@ Never query universe at model grain — it's already aggregated.
 
 Phase 5 enriches the universe with granular product-level taxonomy using Claude's multimodal capabilities (reads product images + text).
 
+> For the full per-product narrative — input signals in trust order, the
+> match-or-create decision tree, UNRESOLVED handling, brand correction, and a
+> worked end-to-end example — see [`docs/product-lifecycle.md`](docs/product-lifecycle.md).
+
 ### Two-Pass Strategy
 
 **Pass 1 — Official Stores (OFFICIAL):**
