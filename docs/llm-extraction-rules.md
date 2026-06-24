@@ -4,13 +4,29 @@
 > These are UNIVERSAL rules that apply to every category (TH and SG) unless a
 > category-specific override is noted.
 >
-> Last updated: Jun 23 2026 (after QA review of moisturizer_for_face, body_wash, toothpaste, drinking_water + NULL coverage pass)
+> Last updated: Jun 24 2026 (added explicit size + pack_count extraction priority chains to §1/§2)
 
 ---
 
 ## 1. Pack Count & Multiplier
 
-**The hardest part to get right. Image is always the tiebreaker.**
+**The hardest part to get right.**
+
+**Extraction priority (consult signals in this order):**
+1. **`sku_name` text** — promo phrases (`ซื้อ 2 แถม 1`, `1+1`, `6+1`) and explicit
+   multipliers (`x2`, `แพ็คคู่`, `ยกลัง N`) are stated here most often. Start here.
+2. **Product image** — count the physical units in the pack shot. **The image is the
+   tiebreaker: when text and image disagree on the count, the image wins.**
+3. **`product_specification`** (`raw_niq_history`) — fallback when text and image are
+   silent or ambiguous on quantity.
+4. **`product_description`** (`raw_niq_history`) — last resort; marketing copy, lowest trust.
+
+Default `pack_count = 1` only after all four signals are exhausted and none indicates a
+multipack. Never leave `pack_count` NULL.
+
+> This mirrors the size priority in §2. The one difference: for *size*, text wins over
+> image; for *pack_count*, image wins over text (you can miscount from a title, but the
+> pack shot shows exactly how many units ship).
 
 | Pattern in text / image | pack_count | Notes |
 |--------------------------|-----------|-------|
@@ -48,6 +64,19 @@ The bracket position distinguishes it from the false-positive patterns above —
 ---
 
 ## 2. Size
+
+**Extraction priority (consult signals in this order):**
+1. **`sku_name` text** — the seller almost always states size in the title
+   (`200ml`, `400g`, `1L`). **Text wins:** never override a size clearly stated in the
+   title with a guess from the image.
+2. **Product image** — read the size off the pack when the title is silent or ambiguous,
+   and to resolve a size *range* in the title (see below).
+3. **`product_specification`** (`raw_niq_history`) — structured weight/volume fields;
+   fallback when title and image don't yield a size. Often empty for personal care.
+4. **`product_description`** (`raw_niq_history`) — last resort; marketing copy, lowest trust.
+
+Return `UNRESOLVED` (leave size NULL only via a genuine `is_multi_size=TRUE` entry) only
+after all four signals are exhausted.
 
 - **size must not be NULL** for any product where size is visible in the image or product name.
 - **"All variant" / "All size"** entries are not acceptable as canonical names. Use:
@@ -298,3 +327,4 @@ HAVING COUNTIF(source='LLM') > 0 AND COUNTIF(source='HUMAN') > 0;
 | Jun 23 2026 | th_drinking_water | **NULL coverage pass OOS classification**: (1) Ichitan plain alkaline (น้ำด่างX.X with no ผสมวิตามิน) = IN SCOPE. (2) Any Ichitan product mentioning ผสมวิตามิน (Vitamin B/D/Ginkgo) = OOS. (3) Yanhee Drinking Water (plain) = IN SCOPE; Yanhee Vitamin B/C Water = OOS. (4) B'lue (vitamin-fortified functional water) = OOS. (5) Vitaday (vitamin water) = OOS. (6) Pocari Sweat (ion drink) = OOS. (7) กรวยน้ำดื่ม (paper drinking cups) = OOS (wrong product category). (8) Coffee brewing mineral concentrate = OOS. (9) Multi-size ambiguous listings (e.g. "[5/15 packs]" where the pack_count is the option selector) = SKIP. |
 | Jun 23 2026 | th_drinking_water | **Welle freebie totals**: "(N ขวดฟรี M ขวด)" pattern = pack_count N+M (same product free bottles, not GWP). e.g. "(60 ขวดฟรี 15 ขวด)" = x75, "(108 ขวดฟรี 27 ขวด)" = x135. Do NOT use base_pack multiplier; use the explicit total stated in parentheses. |
 | Jun 23 2026 | th_drinking_water | **Cross-brand Namthip/Coca-Cola**: products mapped to BRD-GLOBAL-00145 (Coca-Cola) in product_brand_map may be น้ำทิพย์ (Namthip) water products. Create taxonomy entries under BRD-SG-00926 (Namthip) and map these products to the Namthip taxonomy — the product_taxonomy_map does not require brand_id agreement between taxonomy and product_brand_map. Universe brand column comes from product_brand_map regardless. |
+| Jun 24 2026 | universal | **Explicit extraction priority chains added to §1 and §2.** Size: `sku_name` text → image → `product_specification` → `product_description`; **text wins** over image (never override a stated size). Pack_count: `sku_name` text → image → spec → description; **image wins** over text (image is the tiebreaker — title can miscount, pack shot shows actual units). Previously the chain lived only in ARCHITECTURE.md/data-dictionary.md and was absent from the operative rulebook; the pack_count fallback order was undocumented. |
