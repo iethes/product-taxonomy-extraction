@@ -1,4 +1,4 @@
-# Marketshare Universe — Shopee TH & SG Brand/Product Taxonomy Pipeline
+# Product Taxonomy Extraction — Shopee TH & SG Brand/Product Harmonization Pipeline
 
 **Owner:** Magpie Analytics  
 **Built by:** Magpie Analytics × Claude Code (Anthropic)  
