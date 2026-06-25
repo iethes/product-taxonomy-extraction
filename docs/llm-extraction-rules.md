@@ -237,6 +237,12 @@ Every LLM extraction call should extract `brand_from_image` from the product ima
 
 ## 10. QA Checks (run after every category)
 
+> **The full review process — the 6 quality dimensions (canonical completeness, product
+> line, variant, size, pack-count, in-scope NULL coverage), the in-scope definition, the
+> hard gates, and the iteration scorecard — lives in
+> [docs/quality-standards.md](quality-standards.md).** Read it before reviewing any run.
+> The quick gate queries below are a subset for convenience.
+
 These checks should pass before doing any universe refresh:
 
 ```sql

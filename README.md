@@ -65,7 +65,7 @@ See [`docs/categories/STATUS.md`](docs/categories/STATUS.md) for per-category GM
 │   ├── data-dictionary.md           ← All table schemas with column descriptions
 │   ├── llm-extraction-rules.md      ← Universal rules for LLM taxonomy extraction
 │   ├── runbook.md                   ← Step-by-step operational guide per stage
-│   ├── quality-standards.md         ← QA gates, coverage targets, what "good" looks like
+│   ├── quality-standards.md         ← QA review process: 6 quality dimensions, scope, gates, scorecard
 │   ├── decisions/                   ← Architecture Decision Records (ADR-001 to ADR-005)
 │   ├── plans/                       ← Phase planning docs
 │   └── categories/
@@ -117,6 +117,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 3. [`docs/data-dictionary.md`](docs/data-dictionary.md) — understand every table and column
 4. [`docs/categories/STATUS.md`](docs/categories/STATUS.md) — see what's done and what needs work
 5. [`docs/llm-extraction-rules.md`](docs/llm-extraction-rules.md) — mandatory before running any Phase 5 extraction
+6. [`docs/quality-standards.md`](docs/quality-standards.md) — the QA review process: 6 quality dimensions, in-scope definition, hard gates, scorecard — mandatory before reviewing/shipping any run
 
 ---
 
