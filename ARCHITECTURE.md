@@ -49,18 +49,21 @@
 
 ```
 sincere-hearth-273704
-├── master_clean_niq/          ← Source (read-only)
+├── master_clean_niq/          ← NIQ source: Shopee SG+TH (read-only)
 │   └── shopee_{country}_{category}   (43 tables)
 │
-├── raw_niq_history/           ← Source with full product spec/description
+├── raw_niq_history/           ← NIQ source with full product spec/description
 │   └── shopee_{country}_{category}   (product_specification, product_description columns)
 │
-├── magpie_reference/          ← Reference layer (pipeline writes here)
-│   ├── brand_dict
-│   ├── product_brand_map
+├── intrepid_pipeline_clean_product_level/   ← Intrepid source: multi-platform × 6 countries (read-only)
+│   └── {platform}_{country}_{category}      (50 tables: Shopee/Lazada/TikTok × ID/MY/PH/SG/TH/VN)
+│
+├── magpie_reference/          ← Reference layer — shared across NIQ and Intrepid
+│   ├── brand_dict             ← ~19,700 canonical brands (global across all pipelines)
+│   ├── product_brand_map      ← Composite key: (product_id, platform, country)
 │   ├── niq_category_mapping
-│   ├── product_taxonomy
-│   └── product_taxonomy_map
+│   ├── product_taxonomy       ← SKU-000001–SKU-068015 as of Jun 2026
+│   └── product_taxonomy_map   ← Composite key: (product_id, platform, country)
 │
 └── magpie/                    ← Output layer
     ├── marketshare_universe
@@ -253,7 +256,7 @@ Aggregation to get product-level: SUM(gmv_monthly) GROUP BY product_id, master_t
 Never query universe at model grain — it's already aggregated.
 ```
 
-**Critical: product_id is NOT globally unique.** `shopee_sg_shampoo` and `shopee_th_shampoo` can both have `product_id = '12345678'`. Always filter by `master_table` or `country`.
+**Critical: product_id is NOT globally unique.** A product_id can repeat across platforms and countries. Always use `(product_id, platform, country)` as the composite key. `master_table` is metadata only — it is NOT part of the composite key.
 
 ---
 
@@ -318,3 +321,6 @@ See [`docs/decisions/`](docs/decisions/) for full ADRs. Summary:
 | 14 | Official store allowlist = explicit per-brand query | LIKE '%official%' catches multi-brand retailers (Watsons etc.) |
 | 15 | GWP GMV = 0 in threshold calculations | GWP inflates brand rank; only count products buyer actually pays for |
 | 16 | Pre-assign SKU blocks before parallel agent runs | Race condition: two parallel sessions querying MAX() at the same time collide |
+| 17 | Composite key is `(product_id, platform, country)` across all pipelines | Same product in NIQ suncare and Intrepid sunscreen is one physical product — one brand, one taxonomy. See [ADR-006](docs/decisions/ADR-006-schema-key-normalization.md) |
+| 18 | `source='HUMAN'` = automated keyword routing, NOT actual human review | Legacy label from Phase 5 seed scripts. Priority order: LLM > BRAND_FIELD > HUMAN > PRODUCT_NAME_SCAN > FALLBACK |
+| 19 | TikTok brand_name is always NULL — skip BRAND_FIELD step | TikTok doesn't expose brand in product schema. PRODUCT_NAME_SCAN is the first available signal. |
