@@ -56,7 +56,7 @@ sincere-hearth-273704
 │   └── shopee_{country}_{category}   (product_specification, product_description columns)
 │
 ├── intrepid_pipeline_clean_product_level/   ← Intrepid source: multi-platform × 6 countries (read-only)
-│   └── {platform}_{country}_{category}      (50 tables: Shopee/Lazada/TikTok × ID/MY/PH/SG/TH/VN)
+│   └── {platform}_{country}_{category}      (72 tables: 24 Shopee + 24 Lazada + 24 TikTok × 6 countries)
 │
 ├── magpie_reference/          ← Reference layer — shared across NIQ and Intrepid
 │   ├── brand_dict             ← ~19,700 canonical brands (global across all pipelines)
