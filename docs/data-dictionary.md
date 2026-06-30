@@ -57,19 +57,25 @@
 
 ## Reference Layer — `magpie_reference.product_brand_map`
 
-> Granularity: one row = one unique `(product_id, master_table)` combination
+> Granularity: one row = one physical product per platform-country → `(product_id, platform, country)`
+> Covers: NIQ (Shopee SG/TH) and Intrepid (Shopee/Lazada/TikTok × 6 countries)
 > Built by: `pipeline/03_product_mapping/build_product_brand_map.py`
-> Clustered by: `master_table, product_id`
+> Clustered by: `platform, country, product_id`
+> See [`docs/brand-extraction.md`](brand-extraction.md) for full cascade and platform differences.
 
 | Column | Type | Values | Description |
 |--------|------|--------|-------------|
-| `product_id` | STRING | | Shopee product ID |
-| `master_table` | STRING | `shopee_sg_*`, `shopee_th_*` | Source table. Composite PK with `product_id` |
+| `product_id` | STRING | | Platform product ID. Composite PK with `platform` + `country`. |
+| `platform` | STRING | `Shopee`, `Lazada`, `TikTok Shop` | **PK component.** Platform where product exists. |
+| `country` | STRING | `SG`, `TH`, `ID`, `MY`, `PH`, `VN` | **PK component.** Country market. |
+| `master_table` | STRING | e.g. `shopee_th_suncare` | Metadata — first source table this product was seen in. Not a PK component. |
 | `brand_id` | STRING | `BRD-*` | FK → `brand_dict.brand_id` |
-| `brand_raw` | STRING | | Original `brand` column value from source — **never modified**, preserved for audit |
-| `matched_token` | STRING | | For `PRODUCT_NAME_SCAN`: the brand token found in `sku_name` |
+| `brand_raw` | STRING | | Original `brand_name` value from source — **never modified**, preserved for audit |
+| `matched_token` | STRING | | For `PRODUCT_NAME_SCAN`: the brand token found in `product_name`/`sku_name` |
 | `confidence` | STRING | See below | Reliability of this brand assignment |
 | `source` | STRING | See below | Which method assigned the brand |
+| `brand_from_image` | STRING | | Brand as read from product image by LLM (Phase 5). NULL if not yet LLM-processed. |
+| `brand_mismatch` | BOOL | | TRUE if `brand_from_image` ≠ `brand_id` canonical name. Only flagged for PRODUCT_NAME_SCAN + FALLBACK sources. |
 | `variant_label` | STRING | NULL (Phase 5) | e.g. `Intensive Care`, `Sensitive` |
 | `size_label` | STRING | NULL (Phase 5) | e.g. `200ml`, `1kg` |
 | `pack_type` | STRING | NULL (Phase 5) | e.g. `Tube`, `Pump`, `Sachet` |
@@ -94,7 +100,7 @@ Three methods are tried in order, stopping at first success:
 | `BRAND_FIELD` | `HIGH` | `brand` column cleaned and normalized → looked up in brand lookup map |
 | `PRODUCT_NAME_SCAN` | `HIGH` | Brand name found at **start of sku_name** (first token position) |
 | `PRODUCT_NAME_SCAN` | `MEDIUM` | Brand name found **anywhere in sku_name** (word boundary match) |
-| `HUMAN` | `HIGH` | Manually assigned or corrected |
+| `HUMAN` | `HIGH` | **Automated keyword-routing script** (legacy label — NOT actual human review. No human review has been incorporated as of Jun 2026.) |
 | `FALLBACK` | `UNRESOLVED` | `BRD-UNDEFINED` if brand unknown; `BRD-UNBRANDED` if explicitly generic |
 
 ### How BRAND_FIELD matching works
@@ -221,23 +227,27 @@ WHERE brand_confidence IN ('HIGH', 'MEDIUM')
 
 ## Reference Layer — `magpie_reference.product_taxonomy_map` ⭐ Phase 5
 
-> Granularity: one row = one product → one taxonomy entry mapping
-> Deduplicated: exactly ONE row per product_id per master_table (LLM preferred over HUMAN)
+> Granularity: one row = one physical product per platform-country → `(product_id, platform, country)`
+> **INVARIANT: exactly ONE taxonomy_id per (product_id, platform, country).** Dual-mapped = bug.
+> Covers: NIQ (Shopee SG/TH) and Intrepid (Shopee/Lazada/TikTok × 6 countries)
 > Built by: Phase 5 LLM extraction sessions
+> Clustered by: `platform, country, product_id`
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `product_id` | STRING | Shopee product ID |
-| `master_table` | STRING | Source table e.g. `shopee_th_body_wash` |
-| `taxonomy_id` | STRING FK | → `product_taxonomy.taxonomy_id` |
-| `source` | STRING | `LLM` (Phase 5) or `HUMAN` (keyword seed). LLM takes precedence. |
+| `product_id` | STRING | Platform product ID. Composite PK with `platform` + `country`. |
+| `platform` | STRING | **PK component.** `Shopee`, `Lazada`, `TikTok Shop` |
+| `country` | STRING | **PK component.** `SG`, `TH`, `ID`, `MY`, `PH`, `VN` |
+| `master_table` | STRING | Metadata — source table this product was processed in. Not a PK component. |
+| `taxonomy_id` | STRING FK | → `product_taxonomy.taxonomy_id`. The single taxonomy classification for this product. |
+| `source` | STRING | `LLM` (Phase 5) or `HUMAN` (keyword seed — automated, NOT human review). LLM takes precedence. |
 | `confidence` | FLOAT | Extraction confidence 0.55–1.0 |
-| `brand_from_image` | STRING | Brand as read from product image by LLM (for mismatch detection) |
-| `brand_mismatch` | BOOL | TRUE if brand_from_image ≠ canonical brand from product_brand_map |
-| `meta_agent` | STRING | `CLAUDE_CODE`, `CODEX`, or `HUMAN` |
+| `brand_from_image` | STRING | Brand as read from product image by LLM |
+| `brand_mismatch` | BOOL | TRUE if brand_from_image ≠ taxonomy brand |
+| `meta_agent` | STRING | `CLAUDE_CODE`, `CODEX`, or `HUMAN` — never NULL |
 | `mapped_at` | TIMESTAMP | |
 
-**Dedup rule:** When both LLM and HUMAN rows exist for the same product, the universe refresh uses LLM. HUMAN rows should be deleted once superseded (after 90-min streaming buffer).
+**Dedup rule:** LLM rows supersede HUMAN rows. HUMAN rows are deleted once superseded (after 90-min streaming buffer clears). Conflict resolution priority: LLM > HUMAN; higher confidence wins; lower taxonomy_id as tiebreaker.
 
 **Confidence ranges:**
 - 0.85–1.0: High confidence — product clearly matches taxonomy entry
@@ -264,6 +274,50 @@ Extended source with full product specifications. Use when sku_name and product 
 4. `product_description` (last resort, often marketing copy)
 
 **Note:** For toothpaste specifically, `product_specification` contains only Stock/Brand/Oral Care Benefits/Shelf Life — no size attributes. Check category-specific notes before assuming spec data exists.
+
+---
+
+
+## Source Layer — `intrepid_pipeline_clean_product_level.*`
+
+> Granularity: one row = one product per month
+> Tables: 50 tables (24 Lazada + 24 Shopee + 2 TikTok)
+> Pattern: `{platform}_{country}_{category}` e.g. `lazada_th_sunscreen`, `shopee_id_body_lotion`, `tiktok_my_sunscreen`
+> Countries: id, my, ph, sg, th, vn
+> Platforms: shopee, lazada, tiktok
+> Categories: body_lotion, facial_moisturizer, facial_wash, sunscreen
+
+Unlike NIQ (`master_clean_niq`), Intrepid source tables carry `platform` and `country` as explicit columns.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `product_id` | STRING | Platform product ID. NOT globally unique — use `(product_id, platform, country)` as composite key. |
+| `product_name` | STRING | Full product title — equivalent of `sku_name` in NIQ |
+| `brand_name` | STRING | Brand field. Fill rate: Lazada 100%, Shopee ~89%, **TikTok 0%** (always NULL) |
+| `product_image` | STRING | Direct URL to product image — used for LLM multimodal extraction |
+| `platform` | STRING | `Shopee`, `Lazada`, `TikTok Shop` |
+| `country` | STRING | `ID`, `MY`, `PH`, `SG`, `TH`, `VN` |
+| `seller_type` | STRING | `Lazada Mall`, `Lazada Regular Seller`, `Shopee Mall`, `Shopee Star Seller`, `Shopee Regular Seller`, `TikTok Shop` |
+| `estimated_gmv` | FLOAT | Estimated GMV in local currency |
+| `estimated_units_sold` | INT | Estimated units sold |
+| `local_price` | FLOAT | Listed price in local currency |
+| `currency_code` | STRING | e.g. `THB`, `IDR`, `SGD` |
+| `month` | STRING | Month string e.g. `'2026-04'` |
+| `category` | STRING | Category name |
+| `category_lv1/2/3` | STRING | Category hierarchy levels |
+
+**Official store detection by platform:**
+| Platform | Official store signal | Pass 1 strategy |
+|----------|----------------------|-----------------|
+| Shopee | `seller_type = 'Shopee Mall'` | ✅ Use as Pass 1 filter |
+| Lazada | `seller_type = 'Lazada Mall'` | ✅ Use as Pass 1 filter |
+| TikTok | All `seller_type = 'TikTok Shop'` (no tier) | ❌ Skip Pass 1 — go directly to LLM Pass 2 |
+
+**Brand extraction cascade by platform:**
+```
+Shopee/Lazada:  BRAND_FIELD → PRODUCT_NAME_SCAN → LLM → FALLBACK
+TikTok:          PRODUCT_NAME_SCAN → LLM → FALLBACK  (brand_name always NULL)
+```
 
 ---
 
