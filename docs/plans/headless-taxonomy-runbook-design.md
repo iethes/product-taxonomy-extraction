@@ -99,8 +99,8 @@ Claim pattern (embedded in the runbook):
 
 ```sql
 BEGIN
-  BEGIN TRANSACTION;
   DECLARE next_start INT64;
+  BEGIN TRANSACTION;
   SET next_start = (SELECT COALESCE(MAX(block_end), 58455) + 1 FROM `magpie_reference.sku_block_registry`);
   INSERT INTO `magpie_reference.sku_block_registry`
     (block_start, block_end, master_table, scenario, claimed_at, status)
@@ -124,17 +124,20 @@ Recommendation 1). Non-zero exit blocks the refresh step.
 - `--permission-mode bypassPermissions`
 - `--max-turns N` (cap; value documented per scenario in `docs/headless-runbook.md`)
 - Prompt receives the pre-claimed block range as a literal parameter.
-- Required output shape:
+- Required output shape (revised 2026-07-15 after the `shopee_sg_shampoo` attempt — see
+  `docs/headless-runbook.md`'s `claude -p` invocation contract for why `blocked` was added):
   ```json
   {
-    "status": "complete | partial | failed",
+    "status": "complete | partial | failed | blocked",
     "rows_created": 0,
     "rows_mapped": 0,
     "taxonomy_id_range_used": "SKU-XXXXXX-SKU-YYYYYY",
-    "findings": []
+    "findings": [],
+    "blockers": []
   }
   ```
-  The wrapper parses this before deciding whether to proceed to QA gates.
+  The wrapper parses this before deciding whether to proceed to QA gates. `blocked` with zero rows written
+  means the claimed block stays `ACTIVE` and is reusable — it is not the same as `failed`.
 
 ## Per-scenario differences
 

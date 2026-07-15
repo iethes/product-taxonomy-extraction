@@ -27,8 +27,8 @@ changelog. Claim atomically instead:
 
 ```sql
 BEGIN
-  BEGIN TRANSACTION;
   DECLARE next_start INT64;
+  BEGIN TRANSACTION;
   SET next_start = (SELECT COALESCE(MAX(block_end), 69000) + 1 FROM `sincere-hearth-273704.magpie_reference.sku_block_registry`);
   INSERT INTO `sincere-hearth-273704.magpie_reference.sku_block_registry`
     (block_start, block_end, master_table, scenario, claimed_at, status)
@@ -104,13 +104,29 @@ placeholder-leak check from `docs/taxonomy-pipeline-improvement-recommendations.
 - Required output shape:
   ```json
   {
-    "status": "complete | partial | failed",
+    "status": "complete | partial | failed | blocked",
     "rows_created": 0,
     "rows_mapped": 0,
     "taxonomy_id_range_used": "SKU-XXXXXX-SKU-YYYYYY",
-    "findings": []
+    "findings": [],
+    "blockers": []
   }
   ```
+
+**`blocked` is a distinct, legitimate outcome, not a failure** — added after the `shopee_sg_shampoo` attempt
+2026-07-15, where the agent found real blockers (undocumented existing rows, ambiguous scope, infeasible scale
+for a single session) and correctly stopped before writing anything, but had no schema slot for "stopped for a
+real reason" and returned free-text prose instead of JSON. `status='blocked'` with a populated `blockers` array
+lets the wrapper tell "asked a legitimate question" apart from "tried and failed" — see Error handling below for
+how each is handled differently (a `blocked` outcome with zero rows written means the claimed block is still
+valid and reusable for a retry; `failed`/`partial` should burn the block).
+
+**The prompt must tell the agent it performs extraction itself.** The `shopee_sg_shampoo` attempt stalled
+partly because the prompt didn't say this explicitly, and the agent pattern-matched to `CLAUDE.md`'s documented
+"`ANTHROPIC_API_KEY` not set in subprocess" pitfall — which is about the *external Python pipeline's*
+subprocess-based LLM calls, not applicable here. Every Full Rebuild / Targeted QA Fix prompt must state
+plainly: *you* read product images and text directly with your own multimodal capabilities; you do not invoke
+external scripts or need any API key beyond your own session auth.
 
 ### Universe refresh
 
@@ -203,52 +219,87 @@ scoped to affected `product_id`s only, universe refresh runs but only touches th
 
 ## Scenario: Full Rebuild
 
-Full SKU block (~1,000 slots), rebuilds a category's taxonomy from scratch — deletes old map rows, re-extracts
-via Pass 1 (official stores) + Pass 2 (reseller routing), then QA gates + universe refresh across the whole
-category.
+Full SKU block (~1,000 slots), rebuilds a category's taxonomy from scratch — supersedes old map rows (delete
+*after* the new taxonomy is built and QA'd, never before — see step 4), re-extracts via Pass 1 (official
+stores) + Pass 2 (reseller routing), then QA gates + universe refresh across the whole category.
 
-**Worked example: `shopee_sg_shampoo`** (flagged as next SG priority in `docs/categories/STATUS.md`). This
-category has never been extracted — 0 rows in `product_taxonomy_map` today. The commands below are real and
-copy-pasteable; **do not run the `claude -p` step without deciding to actually kick off SG's first-ever
-taxonomy extraction** — everything up through the claim is safe to run standalone (it only touches the new,
-empty registry table).
+**Worked example: `shopee_sg_shampoo`.** Attempt #1 (2026-07-15) claimed a real block (`SKU-069001`–
+`SKU-070000`, still `ACTIVE`, zero rows written) and correctly stopped itself before writing anything — see
+`docs/categories/sg_shampoo.md`'s QA History for what it found (2,255 undocumented existing `HUMAN` rows,
+ambiguous extraction-ownership instructions, a 187,902-row official-store pool too large to vision-read in one
+session). The category file and the prompt below are both corrected as a result. **Do not run the `claude -p`
+step without deciding to actually kick off SG's first taxonomy extraction** — it's a real, costly LLM session
+that writes to production once it starts.
 
-1. Claim the block:
-   ```sql
-   BEGIN
-     BEGIN TRANSACTION;
-     DECLARE next_start INT64;
-     SET next_start = (SELECT COALESCE(MAX(block_end), 69000) + 1 FROM `sincere-hearth-273704.magpie_reference.sku_block_registry`);
-     INSERT INTO `sincere-hearth-273704.magpie_reference.sku_block_registry`
-       (block_start, block_end, master_table, scenario, claimed_at, status)
-     VALUES (next_start, next_start + 999, 'shopee_sg_shampoo', 'full_rebuild', CURRENT_TIMESTAMP(), 'ACTIVE');
-     COMMIT TRANSACTION;
-   END;
+1. The block is already claimed — reuse it, don't claim a new one (verify first, don't just trust this doc):
+   ```bash
+   bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 --format=pretty \
+     "SELECT block_start, block_end, status FROM \`sincere-hearth-273704.magpie_reference.sku_block_registry\` WHERE master_table = 'shopee_sg_shampoo'"
    ```
-2. Invoke `claude -p` (illustrative — not run as part of this runbook's authoring):
+   Expected: `69001, 70000, ACTIVE`. If it shows `FAILED_QA`/`COMPLETE` instead, claim a fresh block per Shared
+   mechanics § Atomic SKU block claim before proceeding.
+2. Invoke `claude -p` — corrected prompt, addressing all three blockers attempt #1 found:
    ```bash
    claude -p --output-format json --permission-mode bypassPermissions --max-turns 200 "
-   Full Rebuild session for shopee_sg_shampoo. Read docs/categories/sg_shampoo.md for official-store allowlist
-   and scope rules. You have been pre-assigned SKU block SKU-<block_start>–SKU-<block_end> — use only this
-   range, never query MAX(taxonomy_id) yourself. Pass 1: build taxonomy from official-store listings. Pass 2:
-   route reseller products via text-first matching (per docs/llm-extraction-rules.md §1/§2 priority chains).
-   Write via bq query DML only, never the streaming API. Output ONLY this JSON when done:
-   {status, rows_created, rows_mapped, taxonomy_id_range_used, findings}.
+   Full Rebuild session for shopee_sg_shampoo. Read docs/categories/sg_shampoo.md in full, including the Scale
+   and 'Existing HUMAN rows' sections — both are load-bearing, not background.
+
+   You perform extraction yourself, directly, using your own multimodal reading of product images and text.
+   You do not invoke external scripts or subprocesses and do not need any API key beyond your own session
+   auth — CLAUDE.md's ANTHROPIC_API_KEY note is about a different, external pipeline that does not exist here.
+
+   You have been pre-assigned SKU block SKU-069001–SKU-070000 (already claimed in sku_block_registry, status
+   ACTIVE) — use only this range, never query MAX(taxonomy_id) yourself.
+
+   Pass 1: build taxonomy ONLY from the Official Store Allowlist merchant names listed in sg_shampoo.md — not
+   all 187,902 Shopee-Mall-badged rows, just those specific merchant names.
+
+   Pass 2: route the remaining official-store-eligible-but-unmatched and reseller products primarily via bulk
+   SQL text-matching of sku_name against the Pass 1 taxonomy you just built. Only read product images for
+   individual products where text matching is genuinely ambiguous — do not vision-read the full candidate pool.
+
+   2,255 existing source='HUMAN' rows exist in product_taxonomy_map for this category. Do NOT delete them
+   yourself. Leave them in place; the wrapper deletes them after your run, once QA gates confirm your new LLM
+   taxonomy is good (see sg_shampoo.md's disposition policy for why the ordering matters).
+
+   Write via bq query DML only, never the streaming API.
+
+   If you hit a genuine blocker (something wrong with the instructions above, missing data, anything that
+   would make proceeding unsafe) — stop, do not write anything, and output status='blocked' with the blockers
+   array populated. That is a valid, expected outcome, not a failure.
+
+   Output ONLY this JSON when done, nothing else:
+   {status: complete|partial|failed|blocked, rows_created, rows_mapped, taxonomy_id_range_used, findings, blockers}.
    "
    ```
-3. Run QA gates for `shopee_sg_shampoo` (Shared mechanics § QA-gate-as-code).
-4. If gates pass, run universe refresh for `shopee_sg_shampoo` (Shared mechanics § Universe refresh).
-5. On any failure (bad `claude -p` output, QA gate failure), mark the block `FAILED_QA` — same pattern as
-   Targeted QA Fix step 5.
-
-**Claim step status:** documented above but **not yet run** — see
-`docs/plans/headless-taxonomy-runbook-implementation-plan.md` Task 6 for the pending confirmation needed before
-inserting a real row into `sku_block_registry`, even though that insert only touches the new, empty table.
+3. **If `status='blocked'`:** stop. Do not run QA gates or refresh. Report the `blockers` array to a human —
+   this is a real question, not an error to route around. The claimed block stays `ACTIVE` (nothing was
+   written) and is safe to reuse once the blocker is resolved — do not mark it `FAILED_QA`.
+4. **If `status='complete'` or `'partial'` with `rows_created > 0`:** run QA gates for `shopee_sg_shampoo`
+   (Shared mechanics § QA-gate-as-code). The HUMAN+LLM co-existence check is *expected* to fail at this point
+   (both still coexist) — that's normal mid-sequence, not a stop condition here.
+5. If the other two gates (dual-mapped, placeholder-leak) pass, delete the stale HUMAN rows:
+   ```sql
+   DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
+   WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN';
+   ```
+6. Re-run QA gates — all 3 should now pass (co-existence check included).
+7. If gates pass, run universe refresh for `shopee_sg_shampoo` (Shared mechanics § Universe refresh).
+8. On any real failure (non-`blocked` bad output, persistent QA gate failure after step 6), mark the block
+   `FAILED_QA` — same pattern as Targeted QA Fix step 5. Don't do this for a `blocked` outcome with zero rows
+   written (step 3) — that block is still good.
 
 ## Error handling
 
-- `claude -p` exits non-zero, hits `--max-turns` without completing, or returns malformed/missing-field JSON →
-  abort **before** QA gates and refresh. Mark the claimed block `FAILED_QA`:
+- **`status='blocked'` is not a failure.** Confirmed live 2026-07-15 (`shopee_sg_shampoo` attempt #1): a
+  careful agent can find real, legitimate reasons to stop before writing anything — undocumented existing
+  state, ambiguous instructions, infeasible scope for one session. Zero rows written means the claimed block
+  is still valid and unused — **do not mark it `FAILED_QA`**, leave it `ACTIVE` and reuse it once the blocker
+  is resolved. Report the `blockers` array to a human; this is a real question needing an answer, not an error
+  to route around.
+- `claude -p` exits non-zero, hits `--max-turns` without completing, or returns genuinely malformed/missing-field
+  JSON (not a well-formed `status='blocked'` response) → abort **before** QA gates and refresh. Mark the
+  claimed block `FAILED_QA`:
   ```sql
   UPDATE `sincere-hearth-273704.magpie_reference.sku_block_registry`
   SET status = 'FAILED_QA' WHERE block_start = @claimed_block_start AND master_table = @table;
@@ -256,8 +307,9 @@ inserting a real row into `sku_block_registry`, even though that insert only tou
   Never reused, never deleted — a burned block is free, a reused one is a collision. Log the raw `claude -p`
   output for follow-up.
 - QA gates fail post-run → same abort-before-refresh behavior. New rows stay in `product_taxonomy` /
-  `product_taxonomy_map` but never reach `marketshare_universe_niq` — a bad run is inert, not silently live to
+  `product_taxonomy_map` but never reach `universe_taxonomy_overlay` — a bad run is inert, not silently live to
   analysts.
-- Refresh UPDATE itself fails (BQ error, e.g. "must match at most one source row") → the `QUALIFY ROW_NUMBER()`
-  clause in the Universe refresh SQL already guards against the multi-model-variant version of this error (see
-  `CLAUDE.md`'s farsight troubleshooting entry for the original failure mode this pattern fixes).
+- The refresh `MERGE` itself fails (BQ error, e.g. "must match at most one source row for each target row") →
+  the `QUALIFY ROW_NUMBER()` clause in the `USING` subquery already guards against the multi-model-variant
+  version of this error (the same fix `CLAUDE.md`'s farsight troubleshooting entry documents for the old
+  NULLIFY+UPDATE pattern — same root cause, applies equally to `MERGE`'s `USING` subquery).

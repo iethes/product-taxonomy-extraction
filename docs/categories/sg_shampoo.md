@@ -1,10 +1,13 @@
 # shopee_sg_shampoo — Category Context
 
-> First-ever context file for this category — SG has 0/23 categories LLM-extracted per
+> First-ever LLM extraction attempt for this category — SG has 0/23 categories LLM-extracted per
 > `docs/categories/STATUS.md`. Written as part of the headless-taxonomy-runbook worked example
 > (`docs/plans/headless-taxonomy-runbook-implementation-plan.md` Task 6). Brand/store data below is real,
-> pulled live from `magpie.marketshare_universe_niq` on 2026-07-15. No extraction has run yet — Taxonomy
-> Design Notes and QA History are empty by design.
+> pulled live from `magpie.marketshare_universe_niq` on 2026-07-15. **Correction (2026-07-15, after the first
+> live `claude -p` attempt):** this file originally claimed the category had zero existing map rows — wrong,
+> never actually checked. It has 2,255 `HUMAN` (keyword-seed) rows already. See Map Row Counts and Scale below
+> — both sections were rewritten after the first headless attempt caught this and correctly refused to proceed
+> without it being addressed explicitly.
 
 ---
 
@@ -14,16 +17,37 @@
 |-------|-------|
 | LLM Pass 1 | ❌ Not started |
 | LLM Pass 2 | ❌ Not started |
-| GMV Coverage | 0% |
-| Last run | Never |
+| Keyword-seed (HUMAN) coverage | 2,255 rows in `product_taxonomy_map`, `source='HUMAN'` — verified live 2026-07-15 |
+| GMV Coverage (LLM) | 0% |
+| Last run | Never (one aborted headless attempt 2026-07-15 — stopped itself before writing, see QA History) |
 | Current MAX taxonomy_id (as of 2026-07-15) | SKU-068015 — **re-verify live before claiming, never trust this number** |
+
+---
+
+## Scale (verified live 2026-07-15 — read before writing any extraction prompt)
+
+- **1,615,309 total rows** in `master_clean_niq.shopee_sg_shampoo`.
+- **187,902 rows** with `merchant_badge = 'Shopee Mall'` (candidate Pass 1 official-store pool, before
+  narrowing to the actual allowlist below — the allowlist covers a small fraction of this).
+- This is **too large for a single `claude -p` session to read image-by-image**. The first live attempt
+  correctly refused to improvise a brand-match/size/embedding cascade against this volume with no existing
+  pipeline code to lean on. Any extraction prompt for this category must scope Pass 1 to the *allowlist*
+  merchant names below (not all 187,902 Mall rows), and make Pass 2 primarily bulk SQL text-matching against
+  the Pass 1 taxonomy — vision reads only for products that don't resolve confidently via text. Do not ask a
+  headless session to vision-read hundreds of thousands of products; that was never the intent, but the first
+  prompt was ambiguous enough that a careful agent read it as requiring exactly that.
 
 ---
 
 ## SKU Blocks Assigned
 
-Not yet claimed. Claim atomically at run time per `docs/headless-runbook.md` § Atomic SKU block claim — do not
-pre-assign a static block here, that's exactly the race condition the registry table exists to prevent.
+| Block | Usage | Status |
+|-------|-------|--------|
+| SKU-069001–SKU-070000 | Full Rebuild attempt #1 | Claimed 2026-07-15, `status='ACTIVE'` in `sku_block_registry`. Nothing was written under it — the first attempt stopped before any insert. **Safe to reuse for attempt #2** rather than claiming a new block, since zero rows exist under this range (verify with a quick `COUNT(*) FROM product_taxonomy WHERE taxonomy_id BETWEEN 'SKU-069001' AND 'SKU-070000'` before reusing, don't just trust this note). |
+
+Claim atomically at run time per `docs/headless-runbook.md` § Atomic SKU block claim if this block is ever
+marked `FAILED_QA`/`COMPLETE` or exhausted — do not pre-assign a new static block while this one is still valid
+and unused.
 
 ---
 
@@ -127,7 +151,34 @@ rows here as Pass 1/2 reveal them, same convention as every other `docs/categori
 
 ## Taxonomy Design Notes
 
-Not yet written — no extraction has run. Fill in during Pass 1 per `docs/categories/_TEMPLATE.md`'s structure.
+Not yet written — no successful extraction has run. Fill in during Pass 1 per `docs/categories/_TEMPLATE.md`'s
+structure.
+
+---
+
+## Existing HUMAN rows — disposition policy
+
+2,255 `source='HUMAN'` rows exist in `product_taxonomy_map` for this category (automated keyword-routing from
+an earlier seed pass — per `docs/decisions/ADR-006`, `HUMAN` does **not** mean an actual person reviewed them).
+This is a **Full Rebuild**, and Full Rebuild's own definition already answers what happens to them (per
+`docs/plans/headless-taxonomy-runbook-design.md`'s Per-scenario differences table: "Delete old category rows,
+rebuild taxonomy + map from scratch") — **these rows are superseded**, matching the TH Liquid Milk Full Rebuild
+precedent.
+
+**Timing matters — delete only after, never before:**
+1. Pass 1 + Pass 2 build new LLM taxonomy first.
+2. QA gates run and pass (including the HUMAN+LLM co-existence check — it will legitimately fail while old
+   HUMAN rows and new LLM rows briefly coexist mid-session; that's expected during the session, not a reason to
+   stop).
+3. Only then delete the stale HUMAN rows:
+   ```sql
+   DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
+   WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN';
+   ```
+4. Re-run QA gates after the delete to confirm the co-existence check now passes cleanly.
+
+Deleting HUMAN rows *before* Pass 1/2 finish would leave those 2,255 products with no taxonomy at all if the
+session fails partway through — worse than what exists today. Build first, verify, delete last.
 
 ---
 
@@ -135,7 +186,7 @@ Not yet written — no extraction has run. Fill in during Pass 1 per `docs/categ
 
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
-| — | — | No sessions run yet | — |
+| 2026-07-15 | Headless attempt #1 (Full Rebuild) | Session correctly stopped before writing: found 2,255 undocumented HUMAN rows (this file wrongly said 0), ambiguous instruction about whether the agent itself performs extraction or needs `ANTHROPIC_API_KEY` for a subprocess, and 187,902-row official-store pool too large for one session to vision-read. | This file corrected (Scale + disposition sections added above); prompt to be rewritten before attempt #2 — see `docs/headless-runbook.md` Full Rebuild scenario. |
 
 ---
 
@@ -148,10 +199,10 @@ Not yet written — no extraction has run. Fill in during Pass 1 per `docs/categ
 
 ---
 
-## Map Row Counts (as of last run)
+## Map Row Counts (verified live 2026-07-15)
 
 | Source | Count | Notes |
 |--------|-------|-------|
 | LLM | 0 | Never run |
-| HUMAN | 0 | Never run |
-| NULL (unmapped) | all | Full category, per Brand Scope table above |
+| HUMAN | 2,255 | Keyword-seed routing, to be superseded per the disposition policy above — **not** zero, this file was wrong before 2026-07-15 |
+| NULL (unmapped) | remainder of 1,615,309 total rows | Most of the category — HUMAN coverage is a small fraction of total volume |

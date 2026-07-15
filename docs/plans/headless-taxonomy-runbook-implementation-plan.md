@@ -102,8 +102,8 @@ claim:
 ```sql
 -- claim_test_1.sql
 BEGIN
-  BEGIN TRANSACTION;
   DECLARE next_start INT64;
+  BEGIN TRANSACTION;
   SET next_start = (SELECT COALESCE(MAX(block_end), 69000) + 1 FROM `sincere-hearth-273704.magpie_reference.sku_block_registry`);
   INSERT INTO `sincere-hearth-273704.magpie_reference.sku_block_registry`
     (block_start, block_end, master_table, scenario, claimed_at, status)
@@ -244,8 +244,8 @@ changelog. Claim atomically instead:
 
 ```sql
 BEGIN
-  BEGIN TRANSACTION;
   DECLARE next_start INT64;
+  BEGIN TRANSACTION;
   SET next_start = (SELECT COALESCE(MAX(block_end), 69000) + 1 FROM `sincere-hearth-273704.magpie_reference.sku_block_registry`);
   INSERT INTO `sincere-hearth-273704.magpie_reference.sku_block_registry`
     (block_start, block_end, master_table, scenario, claimed_at, status)
@@ -655,8 +655,8 @@ empty registry table).
 1. Claim the block:
    ```sql
    BEGIN
-     BEGIN TRANSACTION;
      DECLARE next_start INT64;
+     BEGIN TRANSACTION;
      SET next_start = (SELECT COALESCE(MAX(block_end), 69000) + 1 FROM `sincere-hearth-273704.magpie_reference.sku_block_registry`);
      INSERT INTO `sincere-hearth-273704.magpie_reference.sku_block_registry`
        (block_start, block_end, master_table, scenario, claimed_at, status)
