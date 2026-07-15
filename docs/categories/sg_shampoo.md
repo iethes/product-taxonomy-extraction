@@ -181,6 +181,26 @@ sample sizing, K18 AirWash at 118ml, Grafen 500ml×2, Kevin Murphy standard=250m
 via image read or `option_name` cross-reference, per `docs/llm-extraction-rules.md`'s image-as-tiebreaker
 priority.
 
+**Finding (2026-07-15, manual QA): `product_line`/`sub_line`/`variant` are NULL on all 934 entries — 100%,
+not a tier-specific gap.** The "739 STANDARD — clean brand + product line + size" self-report above is
+inaccurate on this specific point: the session wrote good, human-readable `canonical_name` values (e.g.
+`"Amos Professional PURE SMART Line dandruff care Shampoo FRESH / MOIST / Deep Action / Pack 500ml"`, where
+`"PURE SMART Line dandruff care Shampoo"` is clearly the on-label product line per
+`docs/llm-extraction-rules.md` §3) but never decomposed that text back into the structured `product_line`
+column the schema provides for exactly this purpose. Verified this is run-specific, not a pipeline-wide issue:
+the rest of `product_taxonomy` (18,582 rows from shipped TH categories) sits at a normal 9.2% NULL rate for
+`product_line` (legitimate catch-alls); this run alone is 100%.
+
+Contributing factor: `sql/schema/product_taxonomy.sql` documents `product_line STRING NOT NULL`, but the live
+column is actually nullable (`INFORMATION_SCHEMA.COLUMNS.is_nullable = 'YES'`) — another instance of the
+schema-file-vs-live-table drift found repeatedly elsewhere this session. Nothing blocked this at write time.
+
+**Not yet fixed in the data** — `product_line`/`sub_line`/`variant` remain NULL for all 934 entries as of
+2026-07-15. A backfill pass (re-parsing `canonical_name` back into structured fields) is possible but not run
+yet; a full Pass 1 re-run with the corrected prompt (see `docs/headless-runbook.md`'s Full Rebuild prompt,
+revised 2026-07-15) is the more reliable fix since it re-derives the fields from source rather than
+reverse-engineering them from already-flattened text.
+
 ---
 
 ## Existing HUMAN rows — no automated deletion
@@ -289,6 +309,7 @@ LIMIT 50;
 |------|------|---------|------------|
 | 2026-07-15 | Headless attempt #1 (Full Rebuild) | Session correctly stopped before writing: found 2,255 undocumented HUMAN rows (this file wrongly said 0), ambiguous instruction about whether the agent itself performs extraction or needs `ANTHROPIC_API_KEY` for a subprocess, and 187,902-row official-store pool too large for one session to vision-read. | This file and `docs/headless-runbook.md`'s Full Rebuild prompt rewritten before attempt #2. |
 | 2026-07-15 | Headless attempt #2 (Full Rebuild) | Completed `status='partial'`, verified against live BigQuery. Pass 1 complete (925 entries, 965 products, all 23 allowlist brands). Pass 2 intentionally partial — SKU budget (1,000 slots) consumed almost entirely by Pass 1's fragmentation; only 75 slots left, 9 used for no-official-store catch-alls, 301 products bulk-text-matched, ~158 further brands (of the true ~190-brand 95% list, itself a correction to this file's original ~20-brand snapshot) left unmapped. Also caught a real bug: `headless-runbook.md`'s dual-mapped QA gate was unscoped and would have misfired (847, not 0) on legitimate mid-rebuild HUMAN+LLM coexistence. | `sg_shampoo.md` rewritten with corrected Brand Scope/Scale/Edge Cases (this revision). `headless-runbook.md`'s QA gate scoped to `source='LLM'`, `--skip-coexistence` flag added. HUMAN-row deletion + refresh still pending (see disposition policy above). |
+| 2026-07-15 | Manual QA (post attempt #2) | `product_line`/`sub_line`/`variant` NULL on 100% of the 934 new entries (rest of `product_taxonomy` sits at a normal 9.2% NULL rate — run-specific, not pipeline-wide). Root cause: extraction wrote good `canonical_name` text but never decomposed it into the structured fields; the session's own quality-tier self-report ("739 STANDARD — clean... product line") was inaccurate on this point. Contributing factor: live `product_line` column is nullable despite `sql/schema/product_taxonomy.sql` documenting `NOT NULL` — another schema-vs-live drift instance. | `docs/headless-runbook.md`'s Full Rebuild prompt now explicitly requires populating these 3 fields, with worked examples. New QA gate (`structured_fields_missing`) added to `run_qa_gates()` to catch this automatically on future runs. Data for this run's 934 entries not backfilled yet — see Taxonomy Design Notes. |
 
 ---
 

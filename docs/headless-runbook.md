@@ -96,6 +96,21 @@ run_qa_gates() {
     echo "QA GATE FAILED: ${placeholder_leak} placeholder-leak canonical names for ${table}"; return 1
   fi
 
+  # Added 2026-07-15 after shopee_sg_shampoo attempt #2 wrote 934 entries with product_line NULL on 100%
+  # of them (normal baseline elsewhere in product_taxonomy is ~9%) — the extraction wrote good canonical_name
+  # text but never decomposed it into the structured fields. Threshold is deliberately generous (50%, well
+  # above the ~9% real-world baseline for legitimate catch-all entries) to catch "field was ignored entirely"
+  # without false-positiving on genuinely messy long-tail categories.
+  local structured_fields_missing_pct
+  structured_fields_missing_pct=$(bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 --format=csv \
+    "SELECT CAST(ROUND(100 * COUNTIF(pt.product_line IS NULL) / COUNT(*)) AS INT64)
+     FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy\` pt
+     JOIN \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
+     WHERE m.master_table = '${table}' AND m.source = 'LLM'" | tail -1)
+  if [ -n "$structured_fields_missing_pct" ] && [ "$structured_fields_missing_pct" -gt 50 ]; then
+    echo "QA GATE FAILED: ${structured_fields_missing_pct}% of LLM entries for ${table} have NULL product_line — extraction likely wrote canonical_name only, never decomposed into structured fields"; return 1
+  fi
+
   echo "QA gates passed for ${table}"
   return 0
 }
@@ -276,9 +291,20 @@ that writes to production once it starts.
    SQL text-matching of sku_name against the Pass 1 taxonomy you just built. Only read product images for
    individual products where text matching is genuinely ambiguous — do not vision-read the full candidate pool.
 
-   2,255 existing source='HUMAN' rows exist in product_taxonomy_map for this category. Do NOT delete them
-   yourself. Leave them in place; the wrapper deletes them after your run, once QA gates confirm your new LLM
-   taxonomy is good (see sg_shampoo.md's disposition policy for why the ordering matters).
+   For every taxonomy entry, populate product_line, sub_line, and variant as their own structured columns —
+   do NOT leave them NULL while folding that same information into canonical_name as free text. canonical_name
+   should be a human-readable composite of the structured fields, not a replacement for populating them.
+   product_line is the on-label product line name per docs/llm-extraction-rules.md §3 (e.g. "Intensive Care
+   Deep Restore", not a generic category word). Worked example: for a product whose canonical_name would read
+   "Amos Professional PURE SMART Line dandruff care Shampoo FRESH 500ml", set product_line = "PURE SMART Line
+   dandruff care Shampoo" and variant = "FRESH", not NULL/NULL with that text only living in canonical_name.
+   This was gotten wrong in a prior run against this exact category (100% NULL on all 3 fields) — read
+   sg_shampoo.md's Taxonomy Design Notes for the full finding before starting.
+
+   2,255 existing source='HUMAN' rows exist in product_taxonomy_map for this category. Do NOT delete them —
+   this runbook does not delete pre-existing rows of any source, ever, as a matter of policy (see
+   sg_shampoo.md's "Existing HUMAN rows" section). Leave them in place indefinitely; that's the expected end
+   state, not a temporary condition pending cleanup.
 
    Write via bq query DML only, never the streaming API.
 
