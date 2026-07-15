@@ -194,18 +194,92 @@ table), **these rows are superseded** — matching the TH Liquid Milk Full Rebui
 built the new LLM taxonomy and explicitly left the 2,255 HUMAN rows untouched, per this policy's ordering:
 
 1. ~~Pass 1 + Pass 2 build new LLM taxonomy first.~~ ✅ Done 2026-07-15.
-2. **Next: run `run_qa_gates shopee_sg_shampoo --skip-coexistence`** (dual-mapped + placeholder-leak only —
-   verified 0/0 live already, but re-run as the formal gate before deleting).
-3. **Then delete the stale HUMAN rows:**
+2. Run `run_qa_gates shopee_sg_shampoo --skip-coexistence` (dual-mapped + placeholder-leak only — verified 0/0
+   live already, re-run as the formal gate).
+3. **Manual human QA — not automated, deliberately.** Review the new taxonomy directly before deciding to
+   delete anything (see "Reviewing this run's output" below for the tables and queries). Deleting existing
+   rows is much harder to reverse than creating new ones sitting inert — this is the one step in the Full
+   Rebuild flow that keeps a human checkpoint even though the rest of the scenario doesn't.
+4. Once reviewed and approved, delete the stale HUMAN rows:
    ```sql
    DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
    WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN';
    ```
-4. **Then run `run_qa_gates shopee_sg_shampoo`** (no flag) to confirm all 3 checks pass, including coexistence.
-5. **Then run universe refresh** (Shared mechanics § Universe refresh) — this is what makes the new taxonomy
-   visible in `universe_taxonomy_overlay`/analyst-facing queries.
+5. Run `run_qa_gates shopee_sg_shampoo` (no flag) to confirm all 3 checks pass, including coexistence.
+6. Run universe refresh (Shared mechanics § Universe refresh) — this is what makes the new taxonomy visible in
+   `universe_taxonomy_overlay`/analyst-facing queries.
 
-None of steps 2–5 have run yet — this file will be updated again once they do.
+None of steps 2–6 have run yet — this file will be updated again once they do.
+
+---
+
+## Reviewing this run's output (manual QA)
+
+**Tables involved:**
+
+| Table | What's in it for this run | Grain |
+|-------|---------------------------|-------|
+| `magpie_reference.product_taxonomy` | The 934 new canonical SKU entries (`SKU-069001`–`SKU-069934`) — brand, product line, size, pack, canonical name | One row per canonical SKU |
+| `magpie_reference.product_taxonomy_map` | Links each real product to a `taxonomy_id`. Filter `master_table='shopee_sg_shampoo' AND source='LLM'` for the new rows, `source='HUMAN'` for the 2,255 rows being considered for deletion | One row per `(product_id, platform, country)` |
+| `master_clean_niq.shopee_sg_shampoo` | Raw listings — `sku_name`, `merchant_name`, images, price, GMV — cross-reference to sanity-check what the LLM actually extracted against | One row per product/model variant |
+
+**Query 1 — browse the new taxonomy entries themselves:**
+```sql
+SELECT taxonomy_id, brand_id, product_line, sub_line, variant, size, pack_count,
+       canonical_name, is_bundle, is_multi_variant, is_multi_size
+FROM `sincere-hearth-273704.magpie_reference.product_taxonomy`
+WHERE taxonomy_id BETWEEN 'SKU-069001' AND 'SKU-069934'
+ORDER BY taxonomy_id;
+```
+
+**Query 2 — new taxonomy joined back to the real product it was extracted from** (the most useful one for spot
+checking — lets you see the LLM's canonical name next to the actual `sku_name` it read):
+```sql
+SELECT pt.taxonomy_id, pt.canonical_name, pt.size, pt.pack_count, m.confidence,
+       src.sku_name, src.merchant_name, src.merchant_badge, src.gmv_monthly
+FROM `sincere-hearth-273704.magpie_reference.product_taxonomy` pt
+JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m ON m.taxonomy_id = pt.taxonomy_id
+JOIN `sincere-hearth-273704.master_clean_niq.shopee_sg_shampoo` src ON src.product_id = m.product_id
+WHERE m.master_table = 'shopee_sg_shampoo' AND m.source = 'LLM'
+ORDER BY src.gmv_monthly DESC;
+```
+
+**Query 3 — the 124 catch-all entries specifically** (the flagged precision debt — `is_multi_size=TRUE`, worth
+a closer look since these collapse many real products into one generic entry):
+```sql
+SELECT taxonomy_id, canonical_name, brand_id
+FROM `sincere-hearth-273704.magpie_reference.product_taxonomy`
+WHERE taxonomy_id BETWEEN 'SKU-069001' AND 'SKU-069934' AND is_multi_size = TRUE
+ORDER BY taxonomy_id;
+```
+
+**Query 4 — side-by-side old (HUMAN) vs new (LLM) for the same product**, where both exist — the most direct
+before/after comparison for products that were routed under the keyword-seed pass and now have a real LLM
+taxonomy assignment too:
+```sql
+SELECT m_llm.product_id, src.sku_name,
+       pt_llm.canonical_name AS new_llm_canonical_name,
+       pt_human.canonical_name AS old_human_canonical_name
+FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m_llm
+JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy` pt_llm ON pt_llm.taxonomy_id = m_llm.taxonomy_id
+JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m_human
+  ON m_human.product_id = m_llm.product_id AND m_human.source = 'HUMAN' AND m_human.master_table = 'shopee_sg_shampoo'
+JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy` pt_human ON pt_human.taxonomy_id = m_human.taxonomy_id
+JOIN `sincere-hearth-273704.master_clean_niq.shopee_sg_shampoo` src ON src.product_id = m_llm.product_id
+WHERE m_llm.master_table = 'shopee_sg_shampoo' AND m_llm.source = 'LLM';
+```
+
+**Query 5 — what's still NULL among the highest-GMV products** (useful for judging whether the ~158
+unaddressed brands actually matter before deciding to claim a supplemental block):
+```sql
+SELECT src.product_id, src.sku_name, src.merchant_name, src.gmv_monthly
+FROM `sincere-hearth-273704.master_clean_niq.shopee_sg_shampoo` src
+LEFT JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m
+  ON m.product_id = src.product_id AND m.master_table = 'shopee_sg_shampoo'
+WHERE m.taxonomy_id IS NULL
+ORDER BY src.gmv_monthly DESC
+LIMIT 50;
+```
 
 ---
 

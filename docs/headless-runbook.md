@@ -296,15 +296,22 @@ that writes to production once it starts.
    --skip-coexistence` (Shared mechanics § QA-gate-as-code). Coexistence is *expected* to still be true at this
    point (HUMAN rows not deleted yet) — the flag skips that specific check rather than having it fail on
    purpose, so a real dual-mapped or placeholder-leak bug isn't masked by an expected condition.
-5. If that passes, delete the stale HUMAN rows:
+5. **STOP — manual human QA required before deleting anything.** Deleting the stale HUMAN rows is the one step
+   in this scenario that isn't automatic, by design: creating new LLM taxonomy is inert if wrong (it just sits
+   there, caught by the next QA pass), but deleting existing rows is much harder to reverse. Pull the new
+   taxonomy and review it directly (see `docs/categories/sg_shampoo.md`'s "Reviewing this run's output" section
+   for the tables and queries) before deciding to proceed. This is a deliberate exception to the "no human
+   checkpoint" design for writes generally — destructive deletes get a checkpoint even when everything else
+   doesn't.
+6. Once a human has reviewed and approved, delete the stale HUMAN rows:
    ```sql
    DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
    WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN';
    ```
-6. Run `run_qa_gates shopee_sg_shampoo` (no flag this time) — all 3 checks should now pass, including
+7. Run `run_qa_gates shopee_sg_shampoo` (no flag this time) — all 3 checks should now pass, including
    coexistence.
-7. If gates pass, run universe refresh for `shopee_sg_shampoo` (Shared mechanics § Universe refresh).
-8. On any real failure (non-`blocked` bad output, persistent QA gate failure after step 6), mark the block
+8. If gates pass, run universe refresh for `shopee_sg_shampoo` (Shared mechanics § Universe refresh).
+9. On any real failure (non-`blocked` bad output, persistent QA gate failure after step 7), mark the block
    `FAILED_QA` — same pattern as Targeted QA Fix step 5. Don't do this for a `blocked` outcome with zero rows
    written (step 3) — that block is still good.
 
