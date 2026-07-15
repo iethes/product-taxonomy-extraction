@@ -53,27 +53,36 @@ unattended run (claim → extract → QA gate → refresh, no 90-minute pause) p
 Bash function running these checks, non-zero exit blocks the refresh step:
 
 ```bash
+# Usage: run_qa_gates <table> [--skip-coexistence]
+# --skip-coexistence: use for the pre-delete pass in Full Rebuild (Scenario: Full Rebuild, step 4) —
+# HUMAN+LLM coexistence is EXPECTED and correct at that point (old rows not deleted yet), not a real
+# failure. Omit the flag for the post-delete pass (step 6) and for Targeted QA Fix, where coexistence
+# is always a genuine bug.
 run_qa_gates() {
   local table="$1"
+  local skip_coexistence="${2:-}"
+
   local dual_mapped
   dual_mapped=$(bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 --format=csv \
     "SELECT COUNT(*) FROM (
        SELECT product_id FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\`
-       WHERE master_table = '${table}' GROUP BY product_id HAVING COUNT(*) > 1
+       WHERE master_table = '${table}' AND source = 'LLM' GROUP BY product_id HAVING COUNT(*) > 1
      )" | tail -1)
   if [ "$dual_mapped" != "0" ]; then
-    echo "QA GATE FAILED: ${dual_mapped} dual-mapped products for ${table}"; return 1
+    echo "QA GATE FAILED: ${dual_mapped} dual-mapped LLM products for ${table}"; return 1
   fi
 
-  local human_llm_coexist
-  human_llm_coexist=$(bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 --format=csv \
-    "SELECT COUNT(*) FROM (
-       SELECT product_id FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\`
-       WHERE master_table = '${table}'
-       GROUP BY product_id HAVING COUNTIF(source='LLM') > 0 AND COUNTIF(source='HUMAN') > 0
-     )" | tail -1)
-  if [ "$human_llm_coexist" != "0" ]; then
-    echo "QA GATE FAILED: ${human_llm_coexist} products with HUMAN+LLM co-existence for ${table}"; return 1
+  if [ "$skip_coexistence" != "--skip-coexistence" ]; then
+    local human_llm_coexist
+    human_llm_coexist=$(bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 --format=csv \
+      "SELECT COUNT(*) FROM (
+         SELECT product_id FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\`
+         WHERE master_table = '${table}'
+         GROUP BY product_id HAVING COUNTIF(source='LLM') > 0 AND COUNTIF(source='HUMAN') > 0
+       )" | tail -1)
+    if [ "$human_llm_coexist" != "0" ]; then
+      echo "QA GATE FAILED: ${human_llm_coexist} products with HUMAN+LLM co-existence for ${table}"; return 1
+    fi
   fi
 
   local placeholder_leak
@@ -90,6 +99,14 @@ run_qa_gates() {
   return 0
 }
 ```
+
+**Found via the `shopee_sg_shampoo` attempt #2 report (2026-07-15):** the dual-mapped check was originally
+unscoped (no `source = 'LLM'` filter), so it double-counted the same legitimate HUMAN+LLM mid-rebuild
+coexistence the second gate already exists to check — 847 products, not a real bug, but the unscoped query
+couldn't tell the difference and would have blocked a wrapper that ran it naively. Scoped now. The
+`--skip-coexistence` flag is the second half of the same fix — without it, `run_qa_gates()` as a single
+all-or-nothing function couldn't express "coexistence is fine right now, check again after the delete,"
+even though the Full Rebuild scenario's own prose already assumed that two-phase behavior.
 
 (3 checks from `CLAUDE.md`'s QA Gates section, minus the NULL-size gate — that one needs manual judgment per
 row per `CLAUDE.md`'s own caveat "or document why each NULL is legitimate," not a hard pass/fail — plus the G7
@@ -275,15 +292,17 @@ that writes to production once it starts.
 3. **If `status='blocked'`:** stop. Do not run QA gates or refresh. Report the `blockers` array to a human —
    this is a real question, not an error to route around. The claimed block stays `ACTIVE` (nothing was
    written) and is safe to reuse once the blocker is resolved — do not mark it `FAILED_QA`.
-4. **If `status='complete'` or `'partial'` with `rows_created > 0`:** run QA gates for `shopee_sg_shampoo`
-   (Shared mechanics § QA-gate-as-code). The HUMAN+LLM co-existence check is *expected* to fail at this point
-   (both still coexist) — that's normal mid-sequence, not a stop condition here.
-5. If the other two gates (dual-mapped, placeholder-leak) pass, delete the stale HUMAN rows:
+4. **If `status='complete'` or `'partial'` with `rows_created > 0`:** run `run_qa_gates shopee_sg_shampoo
+   --skip-coexistence` (Shared mechanics § QA-gate-as-code). Coexistence is *expected* to still be true at this
+   point (HUMAN rows not deleted yet) — the flag skips that specific check rather than having it fail on
+   purpose, so a real dual-mapped or placeholder-leak bug isn't masked by an expected condition.
+5. If that passes, delete the stale HUMAN rows:
    ```sql
    DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
    WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN';
    ```
-6. Re-run QA gates — all 3 should now pass (co-existence check included).
+6. Run `run_qa_gates shopee_sg_shampoo` (no flag this time) — all 3 checks should now pass, including
+   coexistence.
 7. If gates pass, run universe refresh for `shopee_sg_shampoo` (Shared mechanics § Universe refresh).
 8. On any real failure (non-`blocked` bad output, persistent QA gate failure after step 6), mark the block
    `FAILED_QA` — same pattern as Targeted QA Fix step 5. Don't do this for a `blocked` outcome with zero rows
