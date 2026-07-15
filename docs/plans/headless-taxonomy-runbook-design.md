@@ -76,8 +76,9 @@ Considered:
 3. Parse the agent's required JSON output.
 4. Run QA gates (existing `CLAUDE.md` SQL + the G7 placeholder-leak check from
    `taxonomy-pipeline-improvement-recommendations.md`) as a blocking script step.
-5. If gates pass, run the universe refresh DML (NULLIFY + UPDATE, both `sincere-hearth-273704` and
-   `magpie-farsight`).
+5. If gates pass, run the universe refresh `MERGE` into `magpie_reference.universe_taxonomy_overlay`
+   (`sincere-hearth-273704` only — see Addendum for why farsight and the original NULLIFY+UPDATE-on-source-columns
+   design were both replaced).
 
 This applies the same principle `cheaper-reliable-execution-model.md` already argued for per-product extraction
 (harness does deterministic steps, LLM does judgment) to session orchestration instead.
@@ -145,9 +146,9 @@ Recommendation 1). Non-zero exit blocks the refresh step.
 |---|---|---|---|
 | SKU block claim | None (read-only) | Small (~200 slots) | Full (~1,000 slots) |
 | Prompt basis | Notion Example B, adapted for JSON-only output | Notion Example C, adapted with pre-claimed block param | Notion Example A, adapted with pre-claimed block param |
-| Writes | None — decision JSON only | Reroute/create rows for flagged products only | Delete old category rows, rebuild taxonomy + map from scratch |
-| QA gates | N/A | Scoped to affected `product_id`s | Full category scope |
-| Universe refresh | N/A | Yes (NULLIFY + UPDATE, both projects) | Yes (NULLIFY + UPDATE, both projects) |
+| Writes | None — decision JSON only | Reroute/create rows for flagged products only | Create new taxonomy + map rows for the category; **no automated deletion of pre-existing rows of any source** (revised 2026-07-15 — superseding old `HUMAN` rows, if ever, is a separate manual decision, not part of this flow) |
+| QA gates | N/A | Scoped to affected `product_id`s, coexistence checked normally | Full category scope, always run with `--skip-coexistence` (see `docs/headless-runbook.md`) since no-deletion means HUMAN/LLM overlap for shared products is an accepted standing state, not transient |
+| Universe refresh | N/A | Yes — `MERGE` into `magpie_reference.universe_taxonomy_overlay`, `sincere-hearth-273704` only (farsight dropped, see Addendum) | Same |
 
 Assessment Only reuses the existing read-only category-audit pattern from `claude-code-headless-orchestration.md`
 almost verbatim — it's already read-only and already headless-safe. Its runbook section is short: a pointer to

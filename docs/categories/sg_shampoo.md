@@ -183,31 +183,31 @@ priority.
 
 ---
 
-## Existing HUMAN rows — disposition policy
+## Existing HUMAN rows — no automated deletion
 
 2,255 `source='HUMAN'` rows exist in `product_taxonomy_map` for this category (automated keyword-routing from
 an earlier seed pass — per `docs/decisions/ADR-006`, `HUMAN` does **not** mean an actual person reviewed them).
-Per Full Rebuild's own definition (`docs/plans/headless-taxonomy-runbook-design.md`'s Per-scenario differences
-table), **these rows are superseded** — matching the TH Liquid Milk Full Rebuild precedent.
 
-**Status as of 2026-07-15: Pass 1/2 complete (partial), HUMAN rows correctly NOT yet deleted.** Attempt #2
-built the new LLM taxonomy and explicitly left the 2,255 HUMAN rows untouched, per this policy's ordering:
+**Decision (2026-07-15): this runbook does not delete them, and no longer proposes a default timeline or
+condition for doing so.** An earlier revision of this file described a build-then-delete sequence (matching
+the TH Liquid Milk Full Rebuild precedent) — removed by explicit direction. Whether/when to supersede these
+rows is a separate decision, made outside this runbook, not something Full Rebuild does automatically.
 
-1. ~~Pass 1 + Pass 2 build new LLM taxonomy first.~~ ✅ Done 2026-07-15.
-2. Run `run_qa_gates shopee_sg_shampoo --skip-coexistence` (dual-mapped + placeholder-leak only — verified 0/0
-   live already, re-run as the formal gate).
-3. **Manual human QA — not automated, deliberately.** Review the new taxonomy directly before deciding to
-   delete anything (see "Reviewing this run's output" below for the tables and queries). Deleting existing
-   rows is much harder to reverse than creating new ones sitting inert — this is the one step in the Full
-   Rebuild flow that keeps a human checkpoint even though the rest of the scenario doesn't.
-4. Once reviewed and approved, delete the stale HUMAN rows:
-   ```sql
-   DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
-   WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN';
-   ```
-5. Run `run_qa_gates shopee_sg_shampoo` (no flag) to confirm all 3 checks pass, including coexistence.
-6. Run universe refresh (Shared mechanics § Universe refresh) — this is what makes the new taxonomy visible in
-   `universe_taxonomy_overlay`/analyst-facing queries.
+**Known consequence:** 847 of these 2,255 products now also have an `LLM` row for the same `product_id` —
+`product_taxonomy_map`'s own documented invariant ("each product maps to at most one taxonomy_id... dual-mapped
+is a bug") is knowingly left violated for those 847 until someone resolves it separately. `run_qa_gates` for
+this table always runs with `--skip-coexistence` as a result (see `docs/headless-runbook.md` § QA-gate-as-code)
+— that's not a temporary state, it's the accepted posture until the deletion question is decided.
+
+**What actually happened, in order:**
+1. Pass 1 + Pass 2 built the new LLM taxonomy (934 entries, 2,421 map rows). ✅ Done 2026-07-15.
+2. `run_qa_gates shopee_sg_shampoo --skip-coexistence` — dual-mapped (scoped to LLM) and placeholder-leak both
+   verified 0/0 live.
+3. Universe refresh (Shared mechanics § Universe refresh) — makes the new taxonomy visible in
+   `universe_taxonomy_overlay`/analyst-facing queries. **Not yet run** — see Status above.
+
+Use "Reviewing this run's output" below to inspect the new taxonomy directly. Nothing about that review gates a
+delete anymore, since there isn't one — it's for general QA of what was written.
 
 None of steps 2–6 have run yet — this file will be updated again once they do.
 
