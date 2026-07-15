@@ -1,13 +1,11 @@
 # shopee_sg_shampoo — Category Context
 
-> First-ever LLM extraction attempt for this category — SG has 0/23 categories LLM-extracted per
-> `docs/categories/STATUS.md`. Written as part of the headless-taxonomy-runbook worked example
-> (`docs/plans/headless-taxonomy-runbook-implementation-plan.md` Task 6). Brand/store data below is real,
-> pulled live from `magpie.marketshare_universe_niq` on 2026-07-15. **Correction (2026-07-15, after the first
-> live `claude -p` attempt):** this file originally claimed the category had zero existing map rows — wrong,
-> never actually checked. It has 2,255 `HUMAN` (keyword-seed) rows already. See Map Row Counts and Scale below
-> — both sections were rewritten after the first headless attempt caught this and correctly refused to proceed
-> without it being addressed explicitly.
+> First LLM extraction for this category — SG was 0/23 categories LLM-extracted per `docs/categories/STATUS.md`
+> before this. Written as part of the headless-taxonomy-runbook worked example
+> (`docs/plans/headless-taxonomy-runbook-implementation-plan.md` Task 6). Two live headless attempts so far —
+> see QA History for what each found. Attempt #2 (2026-07-15) actually wrote to production: Pass 1 complete,
+> Pass 2 intentionally partial. Read the Brand Scope correction below before trusting the old "~20 brands"
+> framing — the true 95%-GMV universe is ~190 brands, not ~20.
 
 ---
 
@@ -15,27 +13,33 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ❌ Not started |
-| LLM Pass 2 | ❌ Not started |
-| Keyword-seed (HUMAN) coverage | 2,255 rows in `product_taxonomy_map`, `source='HUMAN'` — verified live 2026-07-15 |
-| GMV Coverage (LLM) | 0% |
-| Last run | Never (one aborted headless attempt 2026-07-15 — stopped itself before writing, see QA History) |
-| Current MAX taxonomy_id (as of 2026-07-15) | SKU-068015 — **re-verify live before claiming, never trust this number** |
+| LLM Pass 1 | ✅ Complete — 925 taxonomy entries, 965 official-store products mapped (all 23 allowlist brands) |
+| LLM Pass 2 | ⏳ Partial — bulk text-matching (301 products) + minimal catch-alls for the 9 named no-official-store brands (1,155 products); ~158 further brands in the true 95%-GMV list are still unmapped |
+| Keyword-seed (HUMAN) coverage | 2,255 rows in `product_taxonomy_map`, `source='HUMAN'` — **not yet deleted**, still coexists with the new LLM rows (see disposition policy below) |
+| GMV Coverage (LLM) | 33.7% of category GMV (up from 0%) |
+| Product-count coverage (LLM) | 9.8% (2,421 of 24,818 distinct products) — expected to lag GMV coverage since Pass 1 targets highest-GMV listings first |
+| Last run | 2026-07-15, attempt #2, `status='partial'`, verified against live BigQuery (not just claimed) |
+| Current MAX taxonomy_id (as of 2026-07-15, before this session) | SKU-068015 — **re-verify live before claiming any new block, never trust this number** |
 
 ---
 
-## Scale (verified live 2026-07-15 — read before writing any extraction prompt)
+## Scale (verified live 2026-07-15)
 
-- **1,615,309 total rows** in `master_clean_niq.shopee_sg_shampoo`.
-- **187,902 rows** with `merchant_badge = 'Shopee Mall'` (candidate Pass 1 official-store pool, before
-  narrowing to the actual allowlist below — the allowlist covers a small fraction of this).
-- This is **too large for a single `claude -p` session to read image-by-image**. The first live attempt
-  correctly refused to improvise a brand-match/size/embedding cascade against this volume with no existing
-  pipeline code to lean on. Any extraction prompt for this category must scope Pass 1 to the *allowlist*
-  merchant names below (not all 187,902 Mall rows), and make Pass 2 primarily bulk SQL text-matching against
-  the Pass 1 taxonomy — vision reads only for products that don't resolve confidently via text. Do not ask a
-  headless session to vision-read hundreds of thousands of products; that was never the intent, but the first
-  prompt was ambiguous enough that a careful agent read it as requiring exactly that.
+- **1,615,309 total rows** in `master_clean_niq.shopee_sg_shampoo`; **24,818 distinct products**.
+- **187,902 rows** with `merchant_badge = 'Shopee Mall'` (candidate Pass 1 pool before narrowing to the actual
+  allowlist below — Pass 1 correctly used only the allowlist, not all 187,902).
+- **The real 95%-GMV brand universe is ~190 distinct brands**, not the ~20 this file originally listed (that
+  was a top-20-by-absolute-GMV snapshot, never an actual cumulative-GMV-threshold calculation — a real gap in
+  the original research, caught by attempt #2's own live GWP-adjusted cumulative ranking). Of those ~190: 23
+  have official stores (Pass 1, done), 9 more were explicitly named as no-official-store (got minimal
+  catch-all coverage in Pass 2), and **~158 remain completely unaddressed** — several individually larger than
+  brands already covered (e.g. Goldwell, Aveda, L'Oréal Paris, Nizoral, Hair+, Fayre Beauty, Dixmondsg).
+- **SKU budget is the binding constraint for finishing Pass 2 properly, not effort.** Personal-care listings
+  fragment into many near-unique SKUs — Pass 1 alone (965 official-store products) consumed 925 of the
+  pre-assigned 1,000 slots, leaving only 75 for all of Pass 2. Extrapolating Pass 1's density, properly
+  covering the remaining ~158 brands at real product-line/size granularity needs a **supplemental block on the
+  order of 1,500–3,000 slots** — claim one via Shared mechanics § Atomic SKU block claim before a follow-up
+  session; don't try to force this into the 66 slots left in the current block (`SKU-069935`–`SKU-070000`).
 
 ---
 
@@ -43,17 +47,22 @@
 
 | Block | Usage | Status |
 |-------|-------|--------|
-| SKU-069001–SKU-070000 | Full Rebuild attempt #1 | Claimed 2026-07-15, `status='ACTIVE'` in `sku_block_registry`. Nothing was written under it — the first attempt stopped before any insert. **Safe to reuse for attempt #2** rather than claiming a new block, since zero rows exist under this range (verify with a quick `COUNT(*) FROM product_taxonomy WHERE taxonomy_id BETWEEN 'SKU-069001' AND 'SKU-070000'` before reusing, don't just trust this note). |
+| SKU-069001–SKU-069934 | Attempt #2 — Pass 1 (925 entries) + Pass 2 catch-alls (9 entries) | Written 2026-07-15. Verified live: 934 `product_taxonomy` rows, 2,421 `product_taxonomy_map` rows (`source='LLM'`). |
+| SKU-069935–SKU-070000 (66 slots, within the same claimed block) | Unused | Technically available but **not enough** for a proper Pass 2 completion pass — see Scale above. Leave unused, claim a fresh supplemental block instead of fragmenting further work across two small ranges. |
 
-Claim atomically at run time per `docs/headless-runbook.md` § Atomic SKU block claim if this block is ever
-marked `FAILED_QA`/`COMPLETE` or exhausted — do not pre-assign a new static block while this one is still valid
-and unused.
+Registry row for this block is still `status='ACTIVE'` — normal, since the block wasn't exhausted or marked
+`FAILED_QA`/`COMPLETE`. No new claim needed unless a follow-up session wants the leftover 66 slots for a small,
+targeted fix (not a full Pass 2 completion).
 
 ---
 
-## Brand Scope (top 20 by GMV, SG, latest month at time of research)
+## Brand Scope — corrected 2026-07-15
 
-Pulled live 2026-07-15 from `magpie.marketshare_universe_niq WHERE country='SG' AND category_3='Shampoo'`:
+**The original "top 15–20 by GMV" list below was never an actual 95%-threshold calculation** — it was a
+top-20-by-magnitude snapshot mislabeled as brand scope. Kept for reference (it's still useful as "highest
+individual GMV brands," which is why they were correctly prioritized for Pass 1's official-store allowlist),
+but **do not treat this as the Pass 2 scope boundary.** The real boundary is ~190 brands by cumulative GMV
+share — recompute live before any follow-up Pass 2 session, do not reuse this snapshot as-is.
 
 1. **Milbon** — SGD 95,043 GMV, 568 products
 2. **Grafen** — SGD 73,619 GMV, 48 products
@@ -71,19 +80,17 @@ Pulled live 2026-07-15 from `magpie.marketshare_universe_niq WHERE country='SG' 
 14. **Off&relax** — SGD 40,432 GMV, 104 products
 15. **Suu Balm** — SGD 37,828 GMV, 20 products
 
-Brands 16–20 (Hair+, KUNDAL, Aveda, Har, Fayre Beauty) sit close behind #15 — re-run the GMV query at claim
-time and confirm the actual 95%-threshold cutoff before finalizing scope; this file captures a snapshot, not a
-frozen boundary.
-
-`brand_id` values were not resolved in this research pass (would require joining to `magpie_reference.brand_dict`)
-— do that as the first step of Pass 1, not assumed here.
+`brand_id` values: resolved during Pass 1/2 for the 32 brands actually processed; not resolved for the
+remaining ~158 in this snapshot.
 
 ---
 
-## Official Store Allowlist (Pass 1)
+## Official Store Allowlist (Pass 1) — used as-is, confirmed correct
 
 Pulled live 2026-07-15 from `merchant_badge = 'Shopee Mall'` rows. Exact merchant names, not a
-`LIKE '%official%'` wildcard, per `docs/llm-extraction-rules.md` §4:
+`LIKE '%official%'` wildcard, per `docs/llm-extraction-rules.md` §4. **All 23 entries below were used in Pass
+1 with full coverage** (973 candidate products, 965 in-scope and mapped, 8 correctly left NULL as genuinely
+out-of-scope pure-styling listings):
 
 | Brand | Official Store Merchant Name |
 |-------|------------------------------|
@@ -114,24 +121,19 @@ Pulled live 2026-07-15 from `merchant_badge = 'Shopee Mall'` rows. Exact merchan
 | Kérastase | `Kerastase` |
 
 **Multi-brand stores excluded from the allowlist** (per `docs/llm-extraction-rules.md` §4's explicit exclusion
-list — Sasa is named there directly):
-- `Sasa Official Store` — sells Kérastase among other brands
-- `Nana Mall Official Store` — sells Kérastase among other brands
-- `Strawberrynet SG Official Store` — sells Kérastase among other brands
-- `KimageSalon Official Store` — sells Kérastase among other brands
+list — Sasa is named there directly) — confirmed handled correctly, routed to Pass 2/bulk-text-matching instead:
+- `Sasa Official Store`, `Nana Mall Official Store`, `Strawberrynet SG Official Store`, `KimageSalon Official Store`
+  — all sell Kérastase among other brands.
 
-Note: Kérastase appears under 5 different merchant names in this data (its own store plus 4 multi-brand
-retailers) — Pass 1 should use only `Kerastase` (the single-brand store); the multi-brand-store listings are
-Pass 2 (reseller) scope, not Pass 1.
+P&G Official Store sells both Pantene and Head & Shoulders — parent-company store, both brands correctly kept
+in Pass 1, disambiguated by product content per plan.
 
-P&G Official Store sells both Pantene and Head & Shoulders — a parent-company store covering multiple P&G
-brands, not a multi-brand *retailer* in the exclusion sense (`docs/llm-extraction-rules.md` §4's "parent
-company store names" pattern, same as Unilever/Dove/Sunsilk/Clear). Keep both brands routed to this store in
-Pass 1, disambiguated by product content, not merchant name alone.
-
-**Brands with no official store found in this sample** (Pass 2 only, or store exists but fell outside
-`merchant_badge = 'Shopee Mall'` — re-check before assuming no official presence): Milbon, MadeToBloom, Tsubaki,
-UNOVE, Dr.ville, sukin, Phytopecia, Off&relax, Suu Balm.
+**Brands with no official store — got Pass 2 catch-all coverage 2026-07-15:** Milbon, MadeToBloom, Tsubaki,
+UNOVE, Dr.ville, sukin, Phytopecia, Off&relax, Suu Balm. Each got exactly one `size=NULL,
+is_multi_variant=TRUE` catch-all taxonomy entry (confidence 0.6) covering all shampoo-keyword-filtered products
+for that brand — real non-NULL coverage, zero product-line/size granularity. Milbon alone has 768 distinct real
+products collapsed into its single catch-all entry — a follow-up session with a proper SKU budget should split
+these into real per-line entries.
 
 ---
 
@@ -140,19 +142,44 @@ UNOVE, Dr.ville, sukin, Phytopecia, Off&relax, Suu Balm.
 **In scope:** shampoo, 2-in-1 shampoo+conditioner (per the same pattern already established for
 `th_body_wash`/`th_fabric_softener` 2-in-1 handling in `docs/llm-extraction-rules.md`).
 
-**Out of scope (leave NULL):** standalone conditioner/hair treatment (separate NIQ category), dry shampoo —
-**not confirmed** whether SG's `category_3='Shampoo'` bucket includes dry shampoo as its own line; check the
-top-GMV sample at Pass 1 time rather than assuming either way.
+**Dry shampoo: resolved 2026-07-15, IN SCOPE.** Real dry-shampoo products exist in this NIQ bucket (K18
+AirWash, Diane UV Dry Shampoo) — no separate dry-shampoo NIQ category exists in this data, and NIQ itself
+bucketed them here. Treated as in-scope during Pass 1/2.
 
-**Edge cases:** none identified yet — this file has no prior extraction history to draw edge cases from. Add
-rows here as Pass 1/2 reveal them, same convention as every other `docs/categories/*.md` file.
+**Out of scope (leave NULL):** standalone conditioner/hair treatment (separate NIQ category).
+
+**Edge cases:**
+- **Same-brand multi-component sets** (e.g. "Shampoo + Treatment" bundles from one brand) — found 2026-07-15,
+  52 entries. These do **not** get `is_bundle=TRUE` — per `ARCHITECTURE.md`, that flag is schema-reserved for
+  *cross-brand* bundles. Same-brand sets use `is_multi_variant=TRUE` plus a descriptive `canonical_name`
+  instead. New precedent for this category; apply consistently to any future same-brand-set discoveries.
+- **Brand `&herb`** (2 low-GMV `Cosme Flagship Store` products) is not registered in `brand_dict` under any
+  casing checked — routed to `BRD-UNDEFINED` in this pass, flagged here for Stage 02 registration. Its sibling
+  private label `&Honey` *is* registered (`BRD-GLOBAL-00237`) — worth checking if `&herb` should be under the
+  same umbrella brand.
+- **NARD's single highest-GMV product** ($9.76M, 82% of NARD's Mall GMV) is an 8ml shampoo+treatment sachet
+  sampler, not a full-size bottle — confirmed via image read, not assumed from size text alone (a case where
+  the size-text-wins-over-image rule in `docs/llm-extraction-rules.md` §2 didn't have clean text to trust, so
+  image was the deciding signal by necessity, not by overriding a stated size).
 
 ---
 
 ## Taxonomy Design Notes
 
-Not yet written — no successful extraction has run. Fill in during Pass 1 per `docs/categories/_TEMPLATE.md`'s
-structure.
+**Entry quality is tiered, not uniform** (2026-07-15 Pass 1 result, 925 entries total):
+- **739 STANDARD** — clean brand + product line + size, extracted directly from text.
+- **52 SET_WITH_SIZE** — same-brand multi-component sets with a real, confirmed size (see Edge cases above).
+- **50 STANDARD_BRAND_FALLBACK** — size not stated in the specific listing's `sku_name`, but confirmed via
+  `option_name` variant lists or sibling listings from the same brand/line rather than guessed.
+- **124 MULTI_VARIANT_CATCHALL** — `size=NULL`, `is_multi_size=TRUE`, for listings offering many
+  product-type/flavor choices in one SKU. **This is the real precision debt in Pass 1** — concentrated in
+  low/zero-GMV long-tail listings, not documented per-row individually, not image-verified case by case.
+  Candidate list for a future precision pass if these prove to matter for analysis.
+
+**Image verification was used where text was genuinely ambiguous**, not by default: confirmed Kérastase 500ml
+sample sizing, K18 AirWash at 118ml, Grafen 500ml×2, Kevin Murphy standard=250ml, Dungud standard=1000ml — all
+via image read or `option_name` cross-reference, per `docs/llm-extraction-rules.md`'s image-as-tiebreaker
+priority.
 
 ---
 
@@ -160,25 +187,25 @@ structure.
 
 2,255 `source='HUMAN'` rows exist in `product_taxonomy_map` for this category (automated keyword-routing from
 an earlier seed pass — per `docs/decisions/ADR-006`, `HUMAN` does **not** mean an actual person reviewed them).
-This is a **Full Rebuild**, and Full Rebuild's own definition already answers what happens to them (per
-`docs/plans/headless-taxonomy-runbook-design.md`'s Per-scenario differences table: "Delete old category rows,
-rebuild taxonomy + map from scratch") — **these rows are superseded**, matching the TH Liquid Milk Full Rebuild
-precedent.
+Per Full Rebuild's own definition (`docs/plans/headless-taxonomy-runbook-design.md`'s Per-scenario differences
+table), **these rows are superseded** — matching the TH Liquid Milk Full Rebuild precedent.
 
-**Timing matters — delete only after, never before:**
-1. Pass 1 + Pass 2 build new LLM taxonomy first.
-2. QA gates run and pass (including the HUMAN+LLM co-existence check — it will legitimately fail while old
-   HUMAN rows and new LLM rows briefly coexist mid-session; that's expected during the session, not a reason to
-   stop).
-3. Only then delete the stale HUMAN rows:
+**Status as of 2026-07-15: Pass 1/2 complete (partial), HUMAN rows correctly NOT yet deleted.** Attempt #2
+built the new LLM taxonomy and explicitly left the 2,255 HUMAN rows untouched, per this policy's ordering:
+
+1. ~~Pass 1 + Pass 2 build new LLM taxonomy first.~~ ✅ Done 2026-07-15.
+2. **Next: run `run_qa_gates shopee_sg_shampoo --skip-coexistence`** (dual-mapped + placeholder-leak only —
+   verified 0/0 live already, but re-run as the formal gate before deleting).
+3. **Then delete the stale HUMAN rows:**
    ```sql
    DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
    WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN';
    ```
-4. Re-run QA gates after the delete to confirm the co-existence check now passes cleanly.
+4. **Then run `run_qa_gates shopee_sg_shampoo`** (no flag) to confirm all 3 checks pass, including coexistence.
+5. **Then run universe refresh** (Shared mechanics § Universe refresh) — this is what makes the new taxonomy
+   visible in `universe_taxonomy_overlay`/analyst-facing queries.
 
-Deleting HUMAN rows *before* Pass 1/2 finish would leave those 2,255 products with no taxonomy at all if the
-session fails partway through — worse than what exists today. Build first, verify, delete last.
+None of steps 2–5 have run yet — this file will be updated again once they do.
 
 ---
 
@@ -186,7 +213,8 @@ session fails partway through — worse than what exists today. Build first, ver
 
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
-| 2026-07-15 | Headless attempt #1 (Full Rebuild) | Session correctly stopped before writing: found 2,255 undocumented HUMAN rows (this file wrongly said 0), ambiguous instruction about whether the agent itself performs extraction or needs `ANTHROPIC_API_KEY` for a subprocess, and 187,902-row official-store pool too large for one session to vision-read. | This file corrected (Scale + disposition sections added above); prompt to be rewritten before attempt #2 — see `docs/headless-runbook.md` Full Rebuild scenario. |
+| 2026-07-15 | Headless attempt #1 (Full Rebuild) | Session correctly stopped before writing: found 2,255 undocumented HUMAN rows (this file wrongly said 0), ambiguous instruction about whether the agent itself performs extraction or needs `ANTHROPIC_API_KEY` for a subprocess, and 187,902-row official-store pool too large for one session to vision-read. | This file and `docs/headless-runbook.md`'s Full Rebuild prompt rewritten before attempt #2. |
+| 2026-07-15 | Headless attempt #2 (Full Rebuild) | Completed `status='partial'`, verified against live BigQuery. Pass 1 complete (925 entries, 965 products, all 23 allowlist brands). Pass 2 intentionally partial — SKU budget (1,000 slots) consumed almost entirely by Pass 1's fragmentation; only 75 slots left, 9 used for no-official-store catch-alls, 301 products bulk-text-matched, ~158 further brands (of the true ~190-brand 95% list, itself a correction to this file's original ~20-brand snapshot) left unmapped. Also caught a real bug: `headless-runbook.md`'s dual-mapped QA gate was unscoped and would have misfired (847, not 0) on legitimate mid-rebuild HUMAN+LLM coexistence. | `sg_shampoo.md` rewritten with corrected Brand Scope/Scale/Edge Cases (this revision). `headless-runbook.md`'s QA gate scoped to `source='LLM'`, `--skip-coexistence` flag added. HUMAN-row deletion + refresh still pending (see disposition policy above). |
 
 ---
 
@@ -194,15 +222,15 @@ session fails partway through — worse than what exists today. Build first, ver
 
 | Script | Purpose |
 |--------|---------|
-| `pipeline/05_product_taxonomy/llm_shopee_sg_shampoo/build_taxonomy.py` | Pass 1 extraction (external pipeline repo — not in this repo, see `docs/claude-code-headless-orchestration.md`) |
-| `pipeline/05_product_taxonomy/llm_shopee_sg_shampoo/build_p2_taxonomy.py` | Pass 2 routing (external pipeline repo) |
+| `pipeline/05_product_taxonomy/llm_shopee_sg_shampoo/build_taxonomy.py` | Pass 1 extraction (external pipeline repo — not in this repo; this category's actual Pass 1/2 was done directly by a headless `claude -p` session instead, per `docs/headless-runbook.md`, not by this script) |
+| `pipeline/05_product_taxonomy/llm_shopee_sg_shampoo/build_p2_taxonomy.py` | Pass 2 routing (same — not used; headless session did this directly) |
 
 ---
 
-## Map Row Counts (verified live 2026-07-15)
+## Map Row Counts (verified live 2026-07-15, after attempt #2)
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 0 | Never run |
-| HUMAN | 2,255 | Keyword-seed routing, to be superseded per the disposition policy above — **not** zero, this file was wrong before 2026-07-15 |
-| NULL (unmapped) | remainder of 1,615,309 total rows | Most of the category — HUMAN coverage is a small fraction of total volume |
+| LLM | 2,421 | 965 Pass 1 (official-store) + 301 Pass 2 bulk-text-matched + 1,155 Pass 2 catch-all (9 no-official-store brands) |
+| HUMAN | 2,255 | Keyword-seed routing, **not yet deleted** — pending steps 2–4 of the disposition policy above |
+| NULL (unmapped) | remainder of 24,818 distinct products | ~158 brands of the true 95%-GMV universe still unaddressed — see Scale section |
