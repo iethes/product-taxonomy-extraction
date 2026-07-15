@@ -89,6 +89,28 @@ after all four signals are exhausted.
   breakdown suffix like `(N packs of M)`. Use `x90` not `x90 (15 packs of 6)`. The total
   is what analysts need for market sizing; the pack breakdown belongs in sku_name, not canonical.
 
+**Regex pre-pass (added Jul 14 2026):** before any LLM extraction reaches a product, a deterministic
+text-only pass may have already filled `size` — see `sql/functions/parse_size.sql` and
+`sql/queries/backfill_size_regex.sql`. It never overwrites an existing value (`size IS NULL AND is_multi_size
+IS NOT TRUE AND is_bundle IS NOT TRUE` guard) and covers **TH only** today — ID data is real (5.17M rows in
+`marketshare_universe`) but has zero rows in `product_taxonomy_map`, so no taxonomy exists yet for the regex
+pass to fill (see `docs/plans/size-regex-pass-findings.md`). If a TH product's `size` is already filled when a
+Phase 5 session starts, that came from either this pass or a prior LLM run — check `product_taxonomy.updated_at`
+if the source matters for a specific investigation; there is no separate provenance column. First backfill run
+filled 562 of 2,454 eligible TH rows.
+
+Recurring schedule (BigQuery-native, not a committed script):
+
+```bash
+bq mk --transfer_config \
+  --project_id=sincere-hearth-273704 \
+  --data_source=scheduled_query \
+  --display_name="size_regex_backfill_recurring" \
+  --target_dataset=magpie_reference \
+  --schedule="every 24 hours" \
+  --params='{"query":"<contents of sql/queries/backfill_size_regex.sql as one line>","write_disposition":"WRITE_APPEND"}'
+```
+
 ---
 
 ## 3. Product Line Naming
