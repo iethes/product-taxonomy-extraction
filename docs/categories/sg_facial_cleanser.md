@@ -10,9 +10,9 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session — partial, see Scale/below) |
-| LLM Pass 2 | ⏳ In progress (this session — partial) |
-| GMV Coverage | TBD after this run |
+| LLM Pass 1 | ⏳ Partial — top-200-by-GMV official-store products (~78% of allowlist official-store GMV), 194 taxonomy entries. Remaining ~1,400 allowlisted official-store products (long tail, ~5% of allowlist GMV) not yet covered — see Remaining Work below. |
+| LLM Pass 2 | ⏳ Partial — bulk SQL text-match against the 194 Pass 1 entries, scoped to the 92 brands with Pass 1 entries only (not the full 249-brand scope). 944 products routed. |
+| GMV Coverage (new LLM this session) | 15.3% of total category GMV (2026-05-01) newly mapped by LLM (1,144 products, $1.11M SGD of $7.26M SGD total). This is in addition to whatever the pre-existing HUMAN keyword-seed already covered — not independently re-measured this session. |
 | Last run | 2026-07-16 |
 | Current MAX taxonomy_id (at session start) | SKU-058455 |
 
@@ -45,7 +45,7 @@ Taxonomy Design Notes below).
 
 | Block | Usage |
 |-------|-------|
-| _pending — claimed via atomic block claim in Step 3 of this session, filled in after `sku_block_registry` INSERT_ |
+| SKU-070001–072000 | Full Rebuild (Pass 1 + Pass 2), claimed 2026-07-16, scenario=full_rebuild |
 
 ---
 
@@ -570,3 +570,55 @@ No dedicated pipeline scripts for this category yet — this session performs ex
 | LLM | 0 | Not yet extracted |
 | HUMAN | 5,617 | Automated keyword-seed rows (see above) |
 | NULL (unmapped) | ~66,777 (72,394 distinct products in 2026-05 minus rows with any HUMAN mapping — approximate, HUMAN rows aren't necessarily 1:1 with 2026-05 products) | |
+
+---
+
+## Map Row Counts (after this session's run)
+
+| Source | source_listing | Count | Notes |
+|--------|----------------|-------|-------|
+| LLM | `pass1_official_store_text_match` | 196 | Pass 1, text-derived, confidence 0.65–0.85 |
+| LLM | `pass1_official_store_vision_verified` | 4 | Pass 1, image-confirmed, confidence 0.90 |
+| LLM | `pass2_bulk_text_match` | 944 | Pass 2, confidence 0.70, scoped to the 92 brands with Pass 1 entries only |
+| HUMAN | (unchanged) | 5,617 | Not touched this session — deletion is a separate wrapper-side step, see policy above |
+
+**taxonomy_id range used: SKU-070001–SKU-070194** (194 entries; block SKU-070001–072000 stays
+`ACTIVE` in `sku_block_registry` with ~1,806 slots unused for a follow-up session).
+
+**QA gates (run per `docs/headless-runbook.md`'s QA-gate-as-code, `--skip-coexistence` semantics
+— HUMAN+LLM coexistence is expected at this point since the narrowly-scoped HUMAN-row delete is a
+separate, deliberately manual/wrapper-side step not run this session):**
+
+| Gate | Result | Expected |
+|------|--------|----------|
+| G1 — dual-mapped LLM products | 0 | 0 |
+| G2 — HUMAN+LLM coexistence | 552 | non-zero at this stage (informational; will re-check to 0 after the wrapper's narrowly-scoped HUMAN delete) |
+| G3 — placeholder-leak canonical names | 0 | 0 |
+| G4 — structured-fields NULL % (DISTINCT entries, excl. `is_multi_size`) | 0% | ≤50% |
+
+13 of 194 taxonomy entries have `size IS NULL` — all documented in-line in this session's build
+script as either (a) a multi-item Set/Duo/Trio/Bundle listing where the bundle's *total* size
+can't be resolved to one number (pack_count is set instead), or (b) a handful of individual
+products (Skin1004 Tone Brightening Dark Spot Ampoule Pad — since resolved via image;
+Dr. Althea Vitamin C Boosting Serum, JOYRUQO cleanser, A For Apothecary Aura essence) where
+neither sku_name nor the product image (checked) states a size — deferred rather than guessed,
+confidence dropped to 0.50–0.55 accordingly.
+
+## Remaining Work (for a follow-up session)
+
+- **Pass 1 long tail**: ~1,400 more allowlisted official-store products (the remaining ~5% of
+  allowlist GMV, plus the low-GMV tail below the top-500-by-GMV cutoff that was never pulled).
+- **~157 of the 249 in-scope brands** have zero Pass 1/Pass 2 entries yet — everything from rank
+  ~93 (Whoopzie) onward by the Brand Scope table above, including some meaningful mid-tail brands
+  (Skinfood, MENTHOLATUM, Garnier already partially covered, etc.) — Pass 2 bulk-matching only ran
+  against the 92 brands that already had a Pass 1 entry to match against.
+- **Reseller pool for the 92 covered brands beyond this session's matched set**: bulk text-match
+  used a deliberately conservative unambiguous-keyword rule (dropped 40 of 178 candidate match
+  rules for being ambiguous across multiple taxonomy entries of the same brand+size) — a follow-up
+  pass could resolve those ambiguous cases with targeted vision reads instead of leaving them NULL.
+- **NULL-coverage pass**: not run this session — `docs/quality-standards.md` §3 D6 (in-scope NULLs
+  ranked by GMV) should be the first task of the next session, since it will surface exactly which
+  high-GMV gaps from the above matter most.
+- **Universe refresh**: not run this session (deliberately) — per the task instructions this session
+  writes to `product_taxonomy`/`product_taxonomy_map` only; the `universe_taxonomy_overlay` MERGE
+  and any HUMAN-row cleanup are separate, later steps.
