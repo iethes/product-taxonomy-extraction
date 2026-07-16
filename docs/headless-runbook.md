@@ -99,15 +99,26 @@ run_qa_gates() {
 
   # Added 2026-07-15 after shopee_sg_shampoo attempt #2 wrote 934 entries with product_line NULL on 100%
   # of them (normal baseline elsewhere in product_taxonomy is ~9%) — the extraction wrote good canonical_name
-  # text but never decomposed it into the structured fields. Threshold is deliberately generous (50%, well
-  # above the ~9% real-world baseline for legitimate catch-all entries) to catch "field was ignored entirely"
-  # without false-positiving on genuinely messy long-tail categories.
+  # text but never decomposed it into the structured fields.
+  #
+  # Fixed 2026-07-16: the original version joined through product_taxonomy_map and counted map ROWS, which
+  # fans out per product — a handful of legitimate is_multi_size catch-all entries (each covering hundreds of
+  # products under one intentionally-NULL product_line, e.g. one Milbon entry covering 768 products) skewed
+  # the percentage to 53% even after every real entry had been correctly backfilled (true rate: 0%). Now
+  # counts DISTINCT taxonomy entries and excludes is_multi_size catch-alls from the denominator entirely —
+  # those are supposed to be NULL, not a sign the extraction skipped the field. Threshold (50%) is deliberately
+  # generous relative to the ~9% real-world baseline, to catch "field was ignored entirely" without
+  # false-positiving on genuinely messy long-tail categories.
   local structured_fields_missing_pct
   structured_fields_missing_pct=$(bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 --format=csv \
-    "SELECT CAST(ROUND(100 * COUNTIF(pt.product_line IS NULL) / COUNT(*)) AS INT64)
-     FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy\` pt
-     JOIN \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
-     WHERE m.master_table = '${table}' AND m.source = 'LLM'" | tail -1)
+    "SELECT CAST(ROUND(100 * COUNTIF(product_line IS NULL) / COUNT(*)) AS INT64)
+     FROM (
+       SELECT DISTINCT pt.taxonomy_id, pt.product_line, pt.is_multi_size
+       FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy\` pt
+       JOIN \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
+       WHERE m.master_table = '${table}' AND m.source = 'LLM'
+     )
+     WHERE is_multi_size IS NOT TRUE" | tail -1)
   if [ -n "$structured_fields_missing_pct" ] && [ "$structured_fields_missing_pct" -gt 50 ]; then
     echo "QA GATE FAILED: ${structured_fields_missing_pct}% of LLM entries for ${table} have NULL product_line — extraction likely wrote canonical_name only, never decomposed into structured fields"; return 1
   fi
