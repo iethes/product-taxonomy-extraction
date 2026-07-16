@@ -18,7 +18,7 @@
 | Keyword-seed (HUMAN) coverage | 1,408 rows remain, `source='HUMAN'` (down from 2,255 — the 847 that duplicated an LLM row were deleted 2026-07-16 per manager-confirmed policy; these 1,408 have no LLM row and stay permanently) |
 | GMV Coverage (LLM) | 33.7% of category GMV (up from 0%) |
 | Product-count coverage (LLM) | 9.8% (2,421 of 24,818 distinct products) — expected to lag GMV coverage since Pass 1 targets highest-GMV listings first |
-| Universe refresh | **Held, deliberately.** Gates 1–3 (dual-mapped, coexistence, placeholder-leak) pass — verified 0/0/0 live 2026-07-16 after the HUMAN-row delete. Gate 4 (structured-fields, added 2026-07-15) fails: 100% of entries still have NULL `product_line`. Decision: hold refresh until that's backfilled rather than override — see Taxonomy Design Notes. |
+| Universe refresh | **All 4 gates now pass** (0/0/0/0, verified live 2026-07-16 after the `product_line` backfill) — no longer blocked. **Not yet run** — see Reviewing this run's output / next steps. |
 | Last run | 2026-07-15, attempt #2, `status='partial'`, verified against live BigQuery (not just claimed) |
 | Current MAX taxonomy_id (as of 2026-07-15, before this session) | SKU-068015 — **re-verify live before claiming any new block, never trust this number** |
 
@@ -196,11 +196,27 @@ Contributing factor: `sql/schema/product_taxonomy.sql` documents `product_line S
 column is actually nullable (`INFORMATION_SCHEMA.COLUMNS.is_nullable = 'YES'`) — another instance of the
 schema-file-vs-live-table drift found repeatedly elsewhere this session. Nothing blocked this at write time.
 
-**Not yet fixed in the data** — `product_line`/`sub_line`/`variant` remain NULL for all 934 entries as of
-2026-07-15. A backfill pass (re-parsing `canonical_name` back into structured fields) is possible but not run
-yet; a full Pass 1 re-run with the corrected prompt (see `docs/headless-runbook.md`'s Full Rebuild prompt,
-revised 2026-07-15) is the more reliable fix since it re-derives the fields from source rather than
-reverse-engineering them from already-flattened text.
+**Backfilled 2026-07-16.** `product_line` populated for all 805 non-catch-all entries via a deterministic
+SQL pass: strip the known brand prefix (`brand_dict.canonical_name`, case-insensitive; special-cased
+`Kérastase`/`Kerastase` accent mismatch and one `myBoostars`/`my Boostars` spacing mismatch — only 1 of 805
+rows didn't match either the brand prefix or Kérastase's alias, and that was the `myBoostars` case, handled)
+and the known trailing size pattern (`\s+\d+(\.\d+)?\s*(ml|g|kg|l)\s*(x\d+)?\s*$`) from `canonical_name`; what
+remains is `product_line`. Verified live: 805/805 updated, 0 empty-string results, spot-checked sample all
+correct (e.g. `"Amos Professional PURE SMART Line dandruff care Shampoo FRESH / MOIST / Deep Action / Pack
+500ml"` → `product_line = "PURE SMART Line dandruff care Shampoo FRESH / MOIST / Deep Action / Pack"`).
+
+**The 129 `is_multi_size=TRUE` catch-all entries were deliberately left NULL** — no single product line
+applies to a catch-all by definition; backfilling one would misrepresent the data. `sub_line`/`variant`
+remain NULL for all 934 entries — out of scope for this pass (only `product_line` was requested); the
+brand-prefix/size-suffix strip doesn't have a reliable way to further split what remains into sub_line vs.
+variant without per-row judgment.
+
+**Found a real bug in the QA gate while re-checking this**: Gate 4 (added 2026-07-15) counted `product_taxonomy_map`
+rows, not distinct taxonomy entries — since the 129 catch-alls fan out to 1,284 products (one Milbon entry alone
+covers 768), the gate showed 53% NULL even after all 805 real entries were correctly backfilled (true rate: 0%).
+Fixed in `docs/headless-runbook.md` to count `COUNT(DISTINCT taxonomy_id)` and exclude `is_multi_size` catch-alls
+from the denominator. All 4 gates now pass for this table (dual-mapped 0, coexistence 0, placeholder-leak 0,
+structured-fields 0).
 
 ---
 
@@ -235,12 +251,11 @@ WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN'
    matching the pre-check.
 4. `run_qa_gates shopee_sg_shampoo` (no flag) — verified live 2026-07-16: dual-mapped 0, coexistence **0**
    (exactly as predicted — the delete targeted exactly the overlapping set), placeholder-leak 0. ✅ Gates 1–3
-   pass. **Gate 4 (structured-fields, added 2026-07-15) fails: 100% NULL `product_line`.**
-5. Universe refresh — **deliberately held**, not run. Decision 2026-07-16: don't override Gate 4: hold refresh
-   until `product_line`/`sub_line`/`variant` are backfilled (or Pass 1 is re-run with the corrected prompt) —
-   see Taxonomy Design Notes for the underlying finding. `canonical_name`/`size`/`brand_id` are otherwise
-   solid; only the structured product-line breakdown is missing, but that's exactly what Gate 4 exists to
-   catch rather than let ship silently.
+   pass. Gate 4 (structured-fields) initially showed 53% — traced to a bug in the gate itself (counted map
+   rows, not distinct entries; fixed in `docs/headless-runbook.md`), not a real regression.
+5. Backfilled `product_line` for all 805 non-catch-all entries (see Taxonomy Design Notes). Gate 4 re-checked
+   with the fixed query: **0%.** ✅ All 4 gates now pass.
+6. Universe refresh — **not yet run**, no longer blocked. Next action for this category.
 
 Use "Reviewing this run's output" below to inspect the taxonomy directly.
 
@@ -324,6 +339,7 @@ LIMIT 50;
 | 2026-07-15 | Headless attempt #2 (Full Rebuild) | Completed `status='partial'`, verified against live BigQuery. Pass 1 complete (925 entries, 965 products, all 23 allowlist brands). Pass 2 intentionally partial — SKU budget (1,000 slots) consumed almost entirely by Pass 1's fragmentation; only 75 slots left, 9 used for no-official-store catch-alls, 301 products bulk-text-matched, ~158 further brands (of the true ~190-brand 95% list, itself a correction to this file's original ~20-brand snapshot) left unmapped. Also caught a real bug: `headless-runbook.md`'s dual-mapped QA gate was unscoped and would have misfired (847, not 0) on legitimate mid-rebuild HUMAN+LLM coexistence. | `sg_shampoo.md` rewritten with corrected Brand Scope/Scale/Edge Cases (this revision). `headless-runbook.md`'s QA gate scoped to `source='LLM'`, `--skip-coexistence` flag added. HUMAN-row deletion + refresh still pending (see disposition policy above). |
 | 2026-07-15 | Manual QA (post attempt #2) | `product_line`/`sub_line`/`variant` NULL on 100% of the 934 new entries (rest of `product_taxonomy` sits at a normal 9.2% NULL rate — run-specific, not pipeline-wide). Root cause: extraction wrote good `canonical_name` text but never decomposed it into the structured fields; the session's own quality-tier self-report ("739 STANDARD — clean... product line") was inaccurate on this point. Contributing factor: live `product_line` column is nullable despite `sql/schema/product_taxonomy.sql` documenting `NOT NULL` — another schema-vs-live drift instance. | `docs/headless-runbook.md`'s Full Rebuild prompt now explicitly requires populating these 3 fields, with worked examples. New QA gate (`structured_fields_missing`) added to `run_qa_gates()` to catch this automatically on future runs. Data for this run's 934 entries not backfilled yet — see Taxonomy Design Notes. |
 | 2026-07-16 | HUMAN-row cleanup + gate re-run | Manager confirmed policy: delete HUMAN rows only where duplicated by an LLM row. Deleted 847 (verified against pre-check, exact match). Re-ran all 4 gates: dual-mapped 0, coexistence 0 (exactly as predicted — delete targeted precisely the overlapping set), placeholder-leak 0, **structured-fields still 100% (Gate 4 fails — expected, not yet backfilled)**. | Universe refresh deliberately held rather than overriding Gate 4 — decision made explicitly, not defaulted into. Next: backfill `product_line`/`sub_line`/`variant` or re-run Pass 1, then refresh. |
+| 2026-07-16 | `product_line` backfill | Backfilled all 805 non-catch-all entries via deterministic strip (brand prefix + trailing size from `canonical_name`) — 805/805 updated, 0 empty results, spot-check clean. 129 catch-alls left NULL intentionally. Re-checked Gate 4: showed 53%, not the expected ~0% — traced to a bug in the gate query itself (counted `product_taxonomy_map` rows, which fan out per product, not distinct taxonomy entries; 129 catch-alls fan out to 1,284 products, e.g. one Milbon entry alone covers 768). | Gate 4 fixed to count `DISTINCT taxonomy_id` and exclude `is_multi_size` catch-alls from the denominator — re-verified against both `shopee_sg_shampoo` (now 0%, correct) and `shopee_th_body_wash` (still 0%, unaffected). All 4 gates now pass for `shopee_sg_shampoo`. Universe refresh no longer blocked. |
 
 ---
 
