@@ -206,10 +206,29 @@ correct (e.g. `"Amos Professional PURE SMART Line dandruff care Shampoo FRESH / 
 500ml"` → `product_line = "PURE SMART Line dandruff care Shampoo FRESH / MOIST / Deep Action / Pack"`).
 
 **The 129 `is_multi_size=TRUE` catch-all entries were deliberately left NULL** — no single product line
-applies to a catch-all by definition; backfilling one would misrepresent the data. `sub_line`/`variant`
-remain NULL for all 934 entries — out of scope for this pass (only `product_line` was requested); the
-brand-prefix/size-suffix strip doesn't have a reliable way to further split what remains into sub_line vs.
-variant without per-row judgment.
+applies to a catch-all by definition; backfilling one would misrepresent the data.
+
+**`variant` backfilled 2026-07-16 for 18 entries — judgment pass, not mechanical.** Unlike `product_line`,
+there's no reliable structural pattern for `variant`/`sub_line`: checked existing shipped-category rows where
+these fields are populated and found the convention itself is inconsistent (`variant` holds flavor names in
+some categories, age ranges in others, size-class codes in others — no single learnable rule). Manually read
+all 139 `product_line` values containing `/` (the only candidate subset with any chance of holding a real
+variant list) and classified them:
+- Most are **not** variants — `"Shampoo/Conditioner"`, `"Shampoo/Treatment/Hair Oil"` describe bundle
+  *contents*, not a variant *choice*, and `"EXP date: 24/10"`-style fragments are date noise, not variants.
+- 18 had a genuinely clear signal — real fragrance/formula name lists (e.g. `"Blue Jasmine / Grasse Rose /
+  Orange Flower / Night Dream Tea"`), an explicit `"Assorted"` marker, or a `"Bundle of N / {Scent}"` pattern
+  where the scent after the slash is real. These got `variant` populated and `product_line` trimmed to remove
+  the now-separated variant text.
+
+**`sub_line` left NULL for all 934 entries** — found no reliable signal anywhere in this category's data,
+mechanical or judgment-based. The reference examples from shipped categories didn't suggest a pattern that
+maps onto shampoo naming conventions specifically.
+
+The remaining 121 slash-containing entries and all 666 non-slash entries were **not** individually reviewed for
+variant — reading 787 more entries by hand is beyond reasonable scope for a backfill pass; a proper pass would
+need image context or a real extraction re-run, not further manual text reading. NULL here is honest ("not
+determined"), not "confirmed absent."
 
 **Found a real bug in the QA gate while re-checking this**: Gate 4 (added 2026-07-15) counted `product_taxonomy_map`
 rows, not distinct taxonomy entries — since the 129 catch-alls fan out to 1,284 products (one Milbon entry alone
