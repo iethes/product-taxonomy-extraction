@@ -11,9 +11,9 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | see Map Row Counts below |
-| LLM Pass 2 | see Map Row Counts below |
-| GMV Coverage (new LLM this session) | see Map Row Counts below |
+| LLM Pass 1 | ⏳ Partial — 188 taxonomy entries, 25 brands (top-25-by-allowlist-GMV, ~93% of allowlist GMV within those brands), text-first + spot vision-verification. 233 of 258 in-scope brands not yet covered — see Remaining Work. |
+| LLM Pass 2 | ⏳ Partial — bulk SQL text-match (product_line/sub_line substring + pack-count signal check) against the 188 Pass 1 entries, scoped to the same 25 brands. 1,885 products routed, 15 ambiguous matches deliberately skipped. |
+| GMV Coverage (new LLM this session) | 38.8% of total category GMV (2026-05-01) newly mapped by LLM: 2,073 products, $1,818,622 SGD of $4,689,432 SGD total. Additive to whatever pre-existing HUMAN keyword-seed already covered — not independently re-measured this session. |
 | Last run | 2026-07-16 |
 | Current MAX taxonomy_id (at session start) | SKU-072536 (STATUS.md's SKU-058455 is stale — confirmed live via `sku_block_registry` and `product_taxonomy`, per `CLAUDE.md`'s own warning not to trust the static file) |
 
@@ -48,7 +48,7 @@ pattern, and per `docs/headless-runbook.md` the real refresh target is the
 
 | Block | Usage |
 |-------|-------|
-| _(filled in Step 3 below)_ | Full Rebuild (Pass 1 + Pass 2), claimed 2026-07-16, scenario=full_rebuild |
+| SKU-074001–076000 | Full Rebuild (Pass 1 + Pass 2), claimed 2026-07-16, scenario=full_rebuild. **188 used** (SKU-074001–074188), ~1,812 slots unused for a follow-up session. |
 
 ---
 
@@ -723,7 +723,45 @@ runs lives in `magpie_reference.universe_taxonomy_overlay`. **Not run this sessi
 task scope is `product_taxonomy`/`product_taxonomy_map` writes only (Steps 0–7); universe refresh is
 explicitly out of scope for this run.
 
-**Known difficult products:** none catalogued yet — first pass.
+**Method actually executed this session:** built 188 `product_taxonomy` entries across the 25
+highest-GMV allowlisted brands (Torriden, medicube, Mediheal, Biodance, Skintific, Skin1004,
+Rejuran, Aestura, Dr. Althea, Cosrx, CENTELLIAN 24, The Ordinary, Laneige, ROUND LAB, SOME BY MI,
+Innisfree, VT COSMETICS, La Roche-Posay, Cerave, Skinfood, Paula's Choice, Alluora, Pyunkang Yul,
+Isntree, GLAD2GLOW), grouping each brand's official-store `sku_name_EN` text into distinct
+(product_line, sub_line, size, pack_count) entries. 6 of the highest-GMV entries were spot-verified
+against the actual product image (curl-to-tmp-then-Read): Torriden Dive In Facial Serum Sheet Mask
+(confirmed 27ml x10 sheets), Medicube Best Daily Toner Pad Set (confirmed 7-flavor 100-pad set,
+exact match to text-derived flavor list), Medicube Salmon DNA PDRN Capsule Cream (resolved a
+text-ambiguous size to 50g), Medicube Collagen Night Wrapping Mask (resolved to ~75ml from the fl-oz
+label), Biodance Real Deep Overnight Mask 1+1 Set (confirmed 34g x8 sheets, 5 flavors), The Ordinary
+Glycolic Acid Toner (hero shot, did not resolve the multi-size ambiguity). Everything else is
+text-derived only (confidence 0.55–0.85 per the documented band), not vision-verified.
+
+**Multi-size / multi-variant handling:** 19 of the 188 entries are seller-listings where a single
+`product_id` offers multiple selectable sizes at the model level (e.g. Medicube Hypochlorous Acid
+Face Spray 50ml/125ml) — since `product_taxonomy_map` grain is one taxonomy_id per `product_id` (not
+per model), these were built with `is_multi_size=TRUE`, `size=NULL`, canonical name ending "Multiple
+Sizes", rather than arbitrarily picking one size. 13 entries use `is_multi_variant=TRUE` for
+same-listing flavor/formula selectors (Mediheal's 7/8-flavor toner pad sets, Biodance's 5-flavor
+mask sets, etc.) — `variant` column left NULL on these since no single variant applies; `product_line`
+and `sub_line` are still populated.
+
+**Genuinely NULL size (19 of 188, documented, not guessed):** capsule-format creams and peel-off
+masks where neither `sku_name` nor the spot-checked image states a volume/weight (e.g. Medicube Deep
+Vitamin C Golden Capsule Face Moisturizer, Cerave PM Facial Moisturizing Lotion, Paula's Choice
+Skin Balancing Invisible Finish Moisture Gel, GLAD2GLOW Morning C Night A Set) — confidence dropped
+to 0.55–0.6 accordingly per `llm-extraction-rules.md` §2's "return UNRESOLVED only after all signals
+exhausted" guidance; these were deferred rather than guessed.
+
+**Pass 2 matching rule:** bulk substring match of `product_line` (+ `sub_line` if present) against
+`sku_name`/`sku_name_EN` for the same `brand_id`, restricted to the 25 Pass-1 brands. Entries with
+`pack_count > 1` additionally required an explicit pack signal in the text (`x2`, `x3`, "twin",
+"duo", "trio", "1+1", "bundle of N") to avoid silently multiplying a single-unit reseller listing
+into a bundle match. 15 candidate products matched two Pass-1 entries of equal specificity (same
+match-length tie) and were left unmapped rather than guessed, per the conservative-unambiguous-rule
+precedent in `docs/categories/sg_facial_cleanser.md`.
+
+**Known difficult products:** none catalogued yet beyond the NULL-size list above — first pass.
 
 ---
 
@@ -748,6 +786,10 @@ now has an LLM row, run after this session, never a blanket supersede).
 | 2026-07-16 | Multi-brand store audit | 53 Mall-badged stores carry 3+ in-scope brands (Watsons, Guardian, Sasa, Beautyhaus SG, Nana Mall, etc.) | Excluded from Pass 1 allowlist |
 | 2026-07-16 | Brand_dict data quality | `Care`, `All`, `Deep`, `Fast`, `IN`, `D'ARK` brand_ids are PRODUCT_NAME_SCAN artifacts on common English words, not real brands | Excluded from Pass 1 taxonomy build |
 | 2026-07-16 | Image access | No native URL-vision tool in this environment; `WebFetch` is text-only | curl-to-tmp-then-Read confirmed working; adopted as the vision-verification method for ambiguous cases |
+| 2026-07-16 | Schema check | `product_taxonomy_map.confidence` is STRING (decimal-as-text, e.g. `'0.85'`), not FLOAT as `ARCHITECTURE.md`/`data-dictionary.md` state; table also has `platform`/`country`/`source_listing` columns not documented in those files | Used actual `bq show --schema` output, not the docs, for the INSERT column list and types |
+| 2026-07-16 | Pass 1 build | 188 taxonomy entries built across 25 brands (SKU-074001–074188), 6 spot-verified by image | G1=0, G3=0, structured-fields NULL%=0 (all pass); G2=794 (expected, `--skip-coexistence`) |
+| 2026-07-16 | Pass 2 build | 1,885 products routed via bulk text-match; 15 ambiguous ties left unmapped | Confidence 0.6–0.75, `source_listing='RESELLER'` |
+| 2026-07-16 | Post-build gates | Re-ran all 4 gates after Pass 1+2 | G1=0 ✅, G2=794 (expected, not yet cleaned up) ✅, G3=0 ✅, structured-fields NULL%=0 ✅ |
 
 ---
 
@@ -770,4 +812,56 @@ No dedicated pipeline scripts for this category yet — this session performs ex
 
 ## Map Row Counts (after this session's run)
 
-_(filled in after Pass 1 / Pass 2 — see Steps 4–7)_
+| Source | source_listing | Count | Notes |
+|--------|----------------|-------|-------|
+| LLM | `OFFICIAL` | 188 | Pass 1, text-derived (6 image-spot-verified), confidence 0.55–0.9 |
+| LLM | `RESELLER` | 1,885 | Pass 2, bulk text-match, confidence 0.6–0.75 |
+| HUMAN | (unchanged) | 6,447 | Not touched this session — deletion is a separate wrapper-side step |
+
+**taxonomy_id range used: SKU-074001–SKU-074188** (188 entries; block SKU-074001–076000 stays
+`ACTIVE` in `sku_block_registry` with ~1,812 slots unused for a follow-up session).
+
+**New LLM mapping this session: 2,073 products, $1,818,622 SGD (38.8% of total category GMV,
+2026-05-01, $4,689,432 SGD total).** Additive to the pre-existing 6,447 HUMAN keyword-seed rows —
+not independently re-measured this session, so total combined coverage (HUMAN + new LLM) is unknown
+without a follow-up query.
+
+**QA gates (run per `docs/headless-runbook.md`'s QA-gate-as-code, `--skip-coexistence` semantics
+— HUMAN+LLM coexistence is expected at this point since the narrowly-scoped HUMAN-row delete is a
+separate, deliberately manual/wrapper-side step not run this session):**
+
+| Gate | Result | Expected |
+|------|--------|----------|
+| G1 — dual-mapped LLM products | 0 | 0 |
+| G2 — HUMAN+LLM coexistence | 794 | non-zero at this stage (informational; will re-check to 0 after the wrapper's narrowly-scoped HUMAN delete) |
+| G3 — placeholder-leak canonical names | 0 | 0 |
+| G4 — structured-fields NULL % (DISTINCT entries, excl. `is_multi_size`) | 0% (0 of 152 non-multi-size entries) | ≤50% |
+
+19 of 188 taxonomy entries have `size IS NULL` — all documented in-line in Taxonomy Design Notes as
+genuinely unextractable (capsule-format creams, peel-off masks, and multi-item kits with no stated
+volume/weight in either `sku_name` or the spot-checked image), confidence dropped to 0.55–0.6
+accordingly rather than guessed.
+
+## Remaining Work (for a follow-up session)
+
+- **233 of 258 in-scope brands** have zero Pass 1/Pass 2 entries yet — everything from rank 26
+  (Innisfree was covered; next uncovered is roughly rank 26 onward, e.g. Sulwhasoo, Paula's Choice
+  was covered but many rank 20-60 brands were not) — see the Brand Scope table above for the full
+  ranked list. This session deliberately went deep (many entries per brand) on the top 25 rather
+  than shallow across all 258; a follow-up should extend breadth.
+- **Official-store long tail for the 25 covered brands**: only the top ~8 products per brand by GMV
+  were decomposed into taxonomy entries; each brand's official store has more products (e.g. Cosrx
+  186, medicube 131, VT COSMETICS 206) that didn't make the top-8 cutoff and remain unmapped.
+- **Ambiguous multi-product bundles/kits deferred**: same-brand cross-line kits (e.g. Dr. Althea
+  Skin Relief & Barrier DUO, Centellian24 Brand Box, GLAD2GLOW Morning C Night A Set) were given
+  conservative low-confidence single entries rather than decomposed — a follow-up with more time
+  budget could split these into their component products if the map grain allows it.
+- **15 Pass 2 ambiguous ties**: products matching two Pass-1 entries of equal specificity were left
+  unmapped rather than guessed — a follow-up could resolve these with targeted vision reads.
+- **NULL-coverage pass**: not run this session — `docs/quality-standards.md` §3 D6 (in-scope NULLs
+  ranked by GMV) should be the first task of the next session.
+- **Brands in scope with no discoverable official store** (~67 per the Brand Scope section):
+  Pass 2 only, not attempted this session for brands outside the top 25.
+- **Universe refresh**: not run this session (deliberately) — per the task instructions this session
+  writes to `product_taxonomy`/`product_taxonomy_map` only; the `universe_taxonomy_overlay` MERGE
+  and any HUMAN-row cleanup are separate, later steps.
