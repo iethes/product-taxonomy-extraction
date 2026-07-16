@@ -54,11 +54,12 @@ Bash function running these checks, non-zero exit blocks the refresh step:
 
 ```bash
 # Usage: run_qa_gates <table> [--skip-coexistence]
-# --skip-coexistence: Full Rebuild has no automated HUMAN-row deletion step (removed by explicit decision —
-# see Scenario: Full Rebuild), so HUMAN+LLM coexistence for shared products is an accepted, indefinite state
-# for any table that's gone through this flow, not a transient mid-sequence condition. Full Rebuild always
-# runs gates with this flag. Omit the flag for Targeted QA Fix, where coexistence is always a genuine bug —
-# that scenario never creates new HUMAN-row conflicts, so it should never see any.
+# --skip-coexistence: use for Full Rebuild's pre-delete gate pass (Scenario: Full Rebuild, step 4) — HUMAN+LLM
+# coexistence is EXPECTED and correct at that point (the narrowly-scoped delete hasn't run yet), not a real
+# failure. Omit the flag for the post-delete pass (step 6) and for Targeted QA Fix, where coexistence is
+# always a genuine bug. Policy revised 2026-07-16 (manager-confirmed): HUMAN rows are deleted only where they
+# duplicate an existing LLM row for the same product — not a blanket supersede of every HUMAN row in the
+# category — so post-delete coexistence should genuinely reach 0, this isn't a permanently-skipped check.
 run_qa_gates() {
   local table="$1"
   local skip_coexistence="${2:-}"
@@ -301,10 +302,10 @@ that writes to production once it starts.
    This was gotten wrong in a prior run against this exact category (100% NULL on all 3 fields) — read
    sg_shampoo.md's Taxonomy Design Notes for the full finding before starting.
 
-   2,255 existing source='HUMAN' rows exist in product_taxonomy_map for this category. Do NOT delete them —
-   this runbook does not delete pre-existing rows of any source, ever, as a matter of policy (see
-   sg_shampoo.md's "Existing HUMAN rows" section). Leave them in place indefinitely; that's the expected end
-   state, not a temporary condition pending cleanup.
+   2,255 existing source='HUMAN' rows exist in product_taxonomy_map for this category. Do NOT delete any of
+   them yourself. The wrapper deletes HUMAN rows after your run, but only the ones that duplicate a product
+   you've also mapped with an LLM row — never a blanket delete of every HUMAN row in the category (see
+   sg_shampoo.md's "Existing HUMAN rows" section for the exact scope).
 
    Write via bq query DML only, never the streaming API.
 
@@ -320,25 +321,27 @@ that writes to production once it starts.
    this is a real question, not an error to route around. The claimed block stays `ACTIVE` (nothing was
    written) and is safe to reuse once the blocker is resolved — do not mark it `FAILED_QA`.
 4. **If `status='complete'` or `'partial'` with `rows_created > 0`:** run `run_qa_gates shopee_sg_shampoo
-   --skip-coexistence` (Shared mechanics § QA-gate-as-code).
-5. If that passes, run universe refresh for `shopee_sg_shampoo` (Shared mechanics § Universe refresh).
-6. On any real failure (non-`blocked` bad output, persistent gate failure), mark the block `FAILED_QA` — same
-   pattern as Targeted QA Fix step 5. Don't do this for a `blocked` outcome with zero rows written (step 3) —
-   that block is still good.
-
-**No automated HUMAN-row deletion in this flow, by explicit decision.** Earlier revisions of this scenario had
-a delete step (superseding old `source='HUMAN'` rows once the new LLM taxonomy passed QA) — removed entirely.
-Whether and when to supersede existing HUMAN rows is now a separate, manual decision outside this runbook,
-not something the Full Rebuild flow does automatically or proposes a default timeline for.
-
-**Consequence — `--skip-coexistence` is now permanent for this table, not a temporary mid-sequence flag.**
-`run_qa_gates` without the flag checks that no product has both a `HUMAN` and an `LLM` row — with deletion
-removed from the flow, that condition can no longer become true on its own (847 `shopee_sg_shampoo` products
-have both as of 2026-07-15, and will keep having both indefinitely). Universe refresh in step 5 above
-deliberately runs after the `--skip-coexistence` gate only, not the full 3-check gate — requiring the full gate
-here would make refresh permanently unreachable for any category with unresolved HUMAN/LLM overlap. This means
-`product_taxonomy_map`'s own documented invariant ("each product maps to at most one taxonomy_id... dual-mapped
-is a bug") is knowingly left violated for those 847 products until someone resolves it separately.
+   --skip-coexistence` (Shared mechanics § QA-gate-as-code). Coexistence is expected to still be true at this
+   point — the delete in step 5 hasn't run yet.
+5. If that passes, delete the HUMAN rows that duplicate an existing LLM row for the same product — **and only
+   those** (policy confirmed 2026-07-16: not a blanket supersede of every HUMAN row in the category):
+   ```sql
+   DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
+   WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN'
+     AND product_id IN (
+       SELECT product_id FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
+       WHERE master_table = 'shopee_sg_shampoo' AND source = 'LLM'
+     );
+   ```
+   HUMAN rows for products with **no** LLM row are left untouched — deleting those would leave that product
+   with no taxonomy at all, worse than the keyword-seed routing it has today.
+6. Run `run_qa_gates shopee_sg_shampoo` (no flag) — coexistence should now genuinely be 0, since step 5 deleted
+   exactly the overlapping set. If it isn't 0, something inserted new HUMAN/LLM overlap between steps 4 and 6 —
+   investigate before refresh, don't assume the gate is wrong.
+7. If gates pass, run universe refresh for `shopee_sg_shampoo` (Shared mechanics § Universe refresh).
+8. On any real failure (non-`blocked` bad output, persistent gate failure after step 6), mark the block
+   `FAILED_QA` — same pattern as Targeted QA Fix step 5. Don't do this for a `blocked` outcome with zero rows
+   written (step 3) — that block is still good.
 
 ## Error handling
 

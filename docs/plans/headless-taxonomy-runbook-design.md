@@ -146,8 +146,8 @@ Recommendation 1). Non-zero exit blocks the refresh step.
 |---|---|---|---|
 | SKU block claim | None (read-only) | Small (~200 slots) | Full (~1,000 slots) |
 | Prompt basis | Notion Example B, adapted for JSON-only output | Notion Example C, adapted with pre-claimed block param | Notion Example A, adapted with pre-claimed block param |
-| Writes | None — decision JSON only | Reroute/create rows for flagged products only | Create new taxonomy + map rows for the category; **no automated deletion of pre-existing rows of any source** (revised 2026-07-15 — superseding old `HUMAN` rows, if ever, is a separate manual decision, not part of this flow) |
-| QA gates | N/A | Scoped to affected `product_id`s, coexistence checked normally | Full category scope, always run with `--skip-coexistence` (see `docs/headless-runbook.md`) since no-deletion means HUMAN/LLM overlap for shared products is an accepted standing state, not transient |
+| Writes | None — decision JSON only | Reroute/create rows for flagged products only | Create new taxonomy + map rows for the category; delete `HUMAN` rows **only where they duplicate a product also mapped by an LLM row** (manager-confirmed policy, revised 2026-07-16 — not a blanket supersede; `HUMAN` rows with no LLM counterpart are left alone) |
+| QA gates | N/A | Scoped to affected `product_id`s, coexistence checked normally | Full category scope. Pre-delete pass runs with `--skip-coexistence` (expected transient overlap); post-delete pass runs the full check — coexistence should reach exactly 0 since deletion targets exactly the overlapping set (see `docs/headless-runbook.md`) |
 | Universe refresh | N/A | Yes — `MERGE` into `magpie_reference.universe_taxonomy_overlay`, `sincere-hearth-273704` only (farsight dropped, see Addendum) | Same |
 
 Assessment Only reuses the existing read-only category-audit pattern from `claude-code-headless-orchestration.md`

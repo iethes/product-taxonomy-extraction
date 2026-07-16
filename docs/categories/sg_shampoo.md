@@ -203,33 +203,38 @@ reverse-engineering them from already-flattened text.
 
 ---
 
-## Existing HUMAN rows — no automated deletion
+## Existing HUMAN rows — delete only where duplicated by LLM
 
 2,255 `source='HUMAN'` rows exist in `product_taxonomy_map` for this category (automated keyword-routing from
 an earlier seed pass — per `docs/decisions/ADR-006`, `HUMAN` does **not** mean an actual person reviewed them).
 
-**Decision (2026-07-15): this runbook does not delete them, and no longer proposes a default timeline or
-condition for doing so.** An earlier revision of this file described a build-then-delete sequence (matching
-the TH Liquid Milk Full Rebuild precedent) — removed by explicit direction. Whether/when to supersede these
-rows is a separate decision, made outside this runbook, not something Full Rebuild does automatically.
+**Policy (confirmed by manager, 2026-07-16): delete a HUMAN row only if that same product also has an LLM
+row.** Not a blanket supersede of every HUMAN row in the category (an earlier revision of this file said that,
+then a later revision removed deletion entirely — both superseded by this narrower, confirmed policy). Of the
+2,255 HUMAN rows, exactly **847 duplicate an existing LLM row** and are deletable; the remaining **1,408** have
+no LLM row yet and stay untouched — deleting those would leave that product with no taxonomy at all, worse
+than the keyword-seed routing it has today.
 
-**Known consequence:** 847 of these 2,255 products now also have an `LLM` row for the same `product_id` —
-`product_taxonomy_map`'s own documented invariant ("each product maps to at most one taxonomy_id... dual-mapped
-is a bug") is knowingly left violated for those 847 until someone resolves it separately. `run_qa_gates` for
-this table always runs with `--skip-coexistence` as a result (see `docs/headless-runbook.md` § QA-gate-as-code)
-— that's not a temporary state, it's the accepted posture until the deletion question is decided.
+**Delete query** (exact scope — verified live 2026-07-16 that this matches 847 rows before running for real):
+```sql
+DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
+WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN'
+  AND product_id IN (
+    SELECT product_id FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
+    WHERE master_table = 'shopee_sg_shampoo' AND source = 'LLM'
+  );
+```
 
-**What actually happened, in order:**
+**Sequence** (see `docs/headless-runbook.md`'s Full Rebuild scenario steps 4–8 for the authoritative version):
 1. Pass 1 + Pass 2 built the new LLM taxonomy (934 entries, 2,421 map rows). ✅ Done 2026-07-15.
 2. `run_qa_gates shopee_sg_shampoo --skip-coexistence` — dual-mapped (scoped to LLM) and placeholder-leak both
-   verified 0/0 live.
-3. Universe refresh (Shared mechanics § Universe refresh) — makes the new taxonomy visible in
-   `universe_taxonomy_overlay`/analyst-facing queries. **Not yet run** — see Status above.
+   verified 0/0 live. ✅ Done.
+3. Delete the 847 overlapping HUMAN rows (query above). **Not yet run.**
+4. `run_qa_gates shopee_sg_shampoo` (no flag) — coexistence should now be exactly 0. **Not yet run.**
+5. Universe refresh (Shared mechanics § Universe refresh) — makes the new taxonomy visible in
+   `universe_taxonomy_overlay`/analyst-facing queries. **Not yet run.**
 
-Use "Reviewing this run's output" below to inspect the new taxonomy directly. Nothing about that review gates a
-delete anymore, since there isn't one — it's for general QA of what was written.
-
-None of steps 2–6 have run yet — this file will be updated again once they do.
+Use "Reviewing this run's output" below to inspect the new taxonomy before proceeding with steps 3–5.
 
 ---
 
@@ -327,5 +332,5 @@ LIMIT 50;
 | Source | Count | Notes |
 |--------|-------|-------|
 | LLM | 2,421 | 965 Pass 1 (official-store) + 301 Pass 2 bulk-text-matched + 1,155 Pass 2 catch-all (9 no-official-store brands) |
-| HUMAN | 2,255 | Keyword-seed routing, **not yet deleted** — pending steps 2–4 of the disposition policy above |
+| HUMAN | 2,255 | Keyword-seed routing. 847 duplicate an LLM row and are pending deletion (step 3 above); 1,408 have no LLM row and will remain permanently |
 | NULL (unmapped) | remainder of 24,818 distinct products | ~158 brands of the true 95%-GMV universe still unaddressed — see Scale section |
