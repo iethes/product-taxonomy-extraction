@@ -15,9 +15,10 @@
 |-------|-------|
 | LLM Pass 1 | ✅ Complete — 925 taxonomy entries, 965 official-store products mapped (all 23 allowlist brands) |
 | LLM Pass 2 | ⏳ Partial — bulk text-matching (301 products) + minimal catch-alls for the 9 named no-official-store brands (1,155 products); ~158 further brands in the true 95%-GMV list are still unmapped |
-| Keyword-seed (HUMAN) coverage | 2,255 rows in `product_taxonomy_map`, `source='HUMAN'` — **not yet deleted**, still coexists with the new LLM rows (see disposition policy below) |
+| Keyword-seed (HUMAN) coverage | 1,408 rows remain, `source='HUMAN'` (down from 2,255 — the 847 that duplicated an LLM row were deleted 2026-07-16 per manager-confirmed policy; these 1,408 have no LLM row and stay permanently) |
 | GMV Coverage (LLM) | 33.7% of category GMV (up from 0%) |
 | Product-count coverage (LLM) | 9.8% (2,421 of 24,818 distinct products) — expected to lag GMV coverage since Pass 1 targets highest-GMV listings first |
+| Universe refresh | **Held, deliberately.** Gates 1–3 (dual-mapped, coexistence, placeholder-leak) pass — verified 0/0/0 live 2026-07-16 after the HUMAN-row delete. Gate 4 (structured-fields, added 2026-07-15) fails: 100% of entries still have NULL `product_line`. Decision: hold refresh until that's backfilled rather than override — see Taxonomy Design Notes. |
 | Last run | 2026-07-15, attempt #2, `status='partial'`, verified against live BigQuery (not just claimed) |
 | Current MAX taxonomy_id (as of 2026-07-15, before this session) | SKU-068015 — **re-verify live before claiming any new block, never trust this number** |
 
@@ -205,17 +206,18 @@ reverse-engineering them from already-flattened text.
 
 ## Existing HUMAN rows — delete only where duplicated by LLM
 
-2,255 `source='HUMAN'` rows exist in `product_taxonomy_map` for this category (automated keyword-routing from
-an earlier seed pass — per `docs/decisions/ADR-006`, `HUMAN` does **not** mean an actual person reviewed them).
+2,255 `source='HUMAN'` rows existed in `product_taxonomy_map` for this category before 2026-07-16 (automated
+keyword-routing from an earlier seed pass — per `docs/decisions/ADR-006`, `HUMAN` does **not** mean an actual
+person reviewed them).
 
 **Policy (confirmed by manager, 2026-07-16): delete a HUMAN row only if that same product also has an LLM
 row.** Not a blanket supersede of every HUMAN row in the category (an earlier revision of this file said that,
 then a later revision removed deletion entirely — both superseded by this narrower, confirmed policy). Of the
-2,255 HUMAN rows, exactly **847 duplicate an existing LLM row** and are deletable; the remaining **1,408** have
-no LLM row yet and stay untouched — deleting those would leave that product with no taxonomy at all, worse
-than the keyword-seed routing it has today.
+original 2,255 HUMAN rows, **847 duplicated an existing LLM row and have been deleted**; **1,408 remain** —
+those have no LLM row and stay untouched permanently, since deleting them would leave that product with no
+taxonomy at all, worse than the keyword-seed routing it already has.
 
-**Delete query** (exact scope — verified live 2026-07-16 that this matches 847 rows before running for real):
+**Delete query actually run 2026-07-16** (pre-verified 847 matched before running for real):
 ```sql
 DELETE FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
 WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN'
@@ -228,13 +230,19 @@ WHERE master_table = 'shopee_sg_shampoo' AND source = 'HUMAN'
 **Sequence** (see `docs/headless-runbook.md`'s Full Rebuild scenario steps 4–8 for the authoritative version):
 1. Pass 1 + Pass 2 built the new LLM taxonomy (934 entries, 2,421 map rows). ✅ Done 2026-07-15.
 2. `run_qa_gates shopee_sg_shampoo --skip-coexistence` — dual-mapped (scoped to LLM) and placeholder-leak both
-   verified 0/0 live. ✅ Done.
-3. Delete the 847 overlapping HUMAN rows (query above). **Not yet run.**
-4. `run_qa_gates shopee_sg_shampoo` (no flag) — coexistence should now be exactly 0. **Not yet run.**
-5. Universe refresh (Shared mechanics § Universe refresh) — makes the new taxonomy visible in
-   `universe_taxonomy_overlay`/analyst-facing queries. **Not yet run.**
+   verified 0/0 live. ✅ Done 2026-07-15.
+3. Deleted the 847 overlapping HUMAN rows (query above). ✅ Done 2026-07-16 — exactly 847 rows affected,
+   matching the pre-check.
+4. `run_qa_gates shopee_sg_shampoo` (no flag) — verified live 2026-07-16: dual-mapped 0, coexistence **0**
+   (exactly as predicted — the delete targeted exactly the overlapping set), placeholder-leak 0. ✅ Gates 1–3
+   pass. **Gate 4 (structured-fields, added 2026-07-15) fails: 100% NULL `product_line`.**
+5. Universe refresh — **deliberately held**, not run. Decision 2026-07-16: don't override Gate 4: hold refresh
+   until `product_line`/`sub_line`/`variant` are backfilled (or Pass 1 is re-run with the corrected prompt) —
+   see Taxonomy Design Notes for the underlying finding. `canonical_name`/`size`/`brand_id` are otherwise
+   solid; only the structured product-line breakdown is missing, but that's exactly what Gate 4 exists to
+   catch rather than let ship silently.
 
-Use "Reviewing this run's output" below to inspect the new taxonomy before proceeding with steps 3–5.
+Use "Reviewing this run's output" below to inspect the taxonomy directly.
 
 ---
 
@@ -315,6 +323,7 @@ LIMIT 50;
 | 2026-07-15 | Headless attempt #1 (Full Rebuild) | Session correctly stopped before writing: found 2,255 undocumented HUMAN rows (this file wrongly said 0), ambiguous instruction about whether the agent itself performs extraction or needs `ANTHROPIC_API_KEY` for a subprocess, and 187,902-row official-store pool too large for one session to vision-read. | This file and `docs/headless-runbook.md`'s Full Rebuild prompt rewritten before attempt #2. |
 | 2026-07-15 | Headless attempt #2 (Full Rebuild) | Completed `status='partial'`, verified against live BigQuery. Pass 1 complete (925 entries, 965 products, all 23 allowlist brands). Pass 2 intentionally partial — SKU budget (1,000 slots) consumed almost entirely by Pass 1's fragmentation; only 75 slots left, 9 used for no-official-store catch-alls, 301 products bulk-text-matched, ~158 further brands (of the true ~190-brand 95% list, itself a correction to this file's original ~20-brand snapshot) left unmapped. Also caught a real bug: `headless-runbook.md`'s dual-mapped QA gate was unscoped and would have misfired (847, not 0) on legitimate mid-rebuild HUMAN+LLM coexistence. | `sg_shampoo.md` rewritten with corrected Brand Scope/Scale/Edge Cases (this revision). `headless-runbook.md`'s QA gate scoped to `source='LLM'`, `--skip-coexistence` flag added. HUMAN-row deletion + refresh still pending (see disposition policy above). |
 | 2026-07-15 | Manual QA (post attempt #2) | `product_line`/`sub_line`/`variant` NULL on 100% of the 934 new entries (rest of `product_taxonomy` sits at a normal 9.2% NULL rate — run-specific, not pipeline-wide). Root cause: extraction wrote good `canonical_name` text but never decomposed it into the structured fields; the session's own quality-tier self-report ("739 STANDARD — clean... product line") was inaccurate on this point. Contributing factor: live `product_line` column is nullable despite `sql/schema/product_taxonomy.sql` documenting `NOT NULL` — another schema-vs-live drift instance. | `docs/headless-runbook.md`'s Full Rebuild prompt now explicitly requires populating these 3 fields, with worked examples. New QA gate (`structured_fields_missing`) added to `run_qa_gates()` to catch this automatically on future runs. Data for this run's 934 entries not backfilled yet — see Taxonomy Design Notes. |
+| 2026-07-16 | HUMAN-row cleanup + gate re-run | Manager confirmed policy: delete HUMAN rows only where duplicated by an LLM row. Deleted 847 (verified against pre-check, exact match). Re-ran all 4 gates: dual-mapped 0, coexistence 0 (exactly as predicted — delete targeted precisely the overlapping set), placeholder-leak 0, **structured-fields still 100% (Gate 4 fails — expected, not yet backfilled)**. | Universe refresh deliberately held rather than overriding Gate 4 — decision made explicitly, not defaulted into. Next: backfill `product_line`/`sub_line`/`variant` or re-run Pass 1, then refresh. |
 
 ---
 
@@ -327,10 +336,10 @@ LIMIT 50;
 
 ---
 
-## Map Row Counts (verified live 2026-07-15, after attempt #2)
+## Map Row Counts (verified live 2026-07-16, after HUMAN-row cleanup)
 
 | Source | Count | Notes |
 |--------|-------|-------|
 | LLM | 2,421 | 965 Pass 1 (official-store) + 301 Pass 2 bulk-text-matched + 1,155 Pass 2 catch-all (9 no-official-store brands) |
-| HUMAN | 2,255 | Keyword-seed routing. 847 duplicate an LLM row and are pending deletion (step 3 above); 1,408 have no LLM row and will remain permanently |
+| HUMAN | 1,408 | Keyword-seed routing. Down from 2,255 — the 847 that duplicated an LLM row were deleted 2026-07-16; these 1,408 have no LLM row and stay permanently |
 | NULL (unmapped) | remainder of 24,818 distinct products | ~158 brands of the true 95%-GMV universe still unaddressed — see Scale section |
