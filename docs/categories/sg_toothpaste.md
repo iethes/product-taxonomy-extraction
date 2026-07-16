@@ -12,11 +12,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD — recorded at end of session |
+| LLM Pass 1 | ✅ Complete — 519 taxonomy entries, 535 official-store products mapped |
+| LLM Pass 2 | ✅ Complete (with documented gaps) — 146 bulk-text-matched + 436 no-official-store-brand catch-all mapped; `Care`/`Hygiene`/`Deep` noise brands and non-matching officially-stored-brand resellers left unmapped |
+| GMV Coverage | 92.3% (June 2026), 2,589 of 9,566 distinct products — exceeds the ≥85% Pass 1+2 target in `docs/quality-standards.md` §6 |
 | Last run | 2026-07-16 |
-| Current MAX taxonomy_id (pre-session, per STATUS.md — NOT trusted, re-verified live before claim) | SKU-058455 |
+| Current MAX taxonomy_id (pre-session, per STATUS.md — NOT trusted, re-verified live before claim) | SKU-058455 (stale — live check at claim time found SKU-070194) |
 
 ---
 
@@ -24,7 +24,7 @@
 
 | Block | Usage |
 |-------|-------|
-| (filled in Step 3 of this session, atomic claim, 2000 slots) | Pass 1 OFFICIAL + Pass 2 RESELLER + structured-field work |
+| SKU-072001–SKU-074000 (2000 slots, claimed atomically 2026-07-16, `sku_block_registry` status ACTIVE) | Pass 1 OFFICIAL + Pass 2 RESELLER + structured-field work. Live `MAX(taxonomy_id)` at claim time was SKU-070194 — no collision. |
 
 ---
 
@@ -233,7 +233,64 @@ Per `docs/llm-extraction-rules.md` §5's existing `toothpaste` row:
   field before falling back to image for multi-option listings.
 
 **Known difficult products:**
-- To be filled in during Pass 1/2 as specific hard cases are found.
+- Dr.ville has two product formats under one brand: a "tube" line (confirmed 100g across multiple
+  sibling listings) and a "Mousse"/"Thermosensitive" sub-line (different format, no confirmed size
+  anywhere in the Pass 1 pool — left genuinely unresolved rather than guessed).
+- Dentiste's storefront prefixes almost every listing with "Dentist Bundle of 6 ..." — initially
+  read as ambiguous marketing language, but cross-referencing against Zenyum's identical
+  "Bundle of N - {product}" convention (where N is a confirmed real multiplier) showed this is a
+  genuine pack_count=6, not a tier/marketing label. A first extraction pass under-counted this because
+  the pack_count regex only matched bracketed `[Bundle of N]`/`(Bundle of N)` forms, missing the bare
+  (unbracketed) `Bundle of N` form used by Dentiste, Zenyum, and Enzim — fixed before insert.
+- Two Dentiste "Bundle of 6 Premium & Natural Mouthwash" listings were caught and excluded — mouthwash
+  as the main product is OOS per scope rules, and would otherwise have been silently swept up in the
+  same catch-all pattern as legitimate toothpaste listings.
+- Enzim's per-listing sku_names frequently omit the tube size (e.g. `[3Pack]`, `[2 Pack]` variants)
+  even though every sibling listing that does state a size says 100g — size backfilled by sibling-line
+  inference (`docs/llm-extraction-rules.md`'s "sibling listings from the same brand/line" precedent),
+  not guessed from nothing.
+
+---
+
+## Pass 1 — Official Store Extraction (done 2026-07-16)
+
+**Method:** primarily text-based (`sku_name`/`option_name` decomposition), not exhaustive per-product
+image reads — SG listings are far more descriptive and English-complete than TH Thai-mixed ones, so
+text alone resolved size/pack_count/product_line for the large majority of the 584-product allowlist
+pool. This mirrors the `sg_shampoo` precedent ("image verification used where text was genuinely
+ambiguous, not by default"). Confidence recorded at **0.8** (text-based, not 0.85–0.99) to reflect this
+honestly rather than overstating verification method.
+
+- **519 taxonomy entries created** (`SKU-072001`–`SKU-072519`), covering **535 of 584** allowlist
+  products (91.6%).
+- **49 products intentionally left unmapped** from the allowlist pool: 2 SATO Pharmaceutical products
+  at Aurigamart (not a scoped brand), 2 mouthwash-as-main-product OOS listings, several genuine
+  mystery/surprise/brand-box bundles whose composition can't be determined from text (Darlie, Sensodyne,
+  Pearlie White brand boxes), 1 toothbrush-only listing miscategorized into this table (SPLAT), and a
+  handful of single-product entries with no confirmed size anywhere in the sibling pool.
+- Structured fields: **509 of 509 non-catch-all entries have `product_line` and `size` populated
+  (100%)**; `variant` populated for 89 (17.5%, matches the expectation that variant is optional and
+  only genuine signal-bearing) — decomposed at insert time, not backfilled after the fact.
+- 10 of the 519 entries are legitimate kit/assortment sets (`is_multi_variant=TRUE`, `size=NULL`) —
+  Colgate/Curaprox/Darlie/Zenyum/Enzim combo packs with no single tube size.
+
+## Pass 2 — Reseller Routing (done 2026-07-16)
+
+- **146 products bulk-text-matched** to existing Pass 1 taxonomy entries via SQL substring matching
+  (`sku_name` contains the taxonomy entry's `product_line` text and `size`), scoped per-brand,
+  confidence **0.75**.
+- **17 catch-all entries created** (`SKU-072520`–`SKU-072536`, `is_multi_variant=TRUE`,
+  `is_multi_size=TRUE`, size/pack_count/product_line all NULL) for the brands confirmed to have no
+  official store: Elgydium, KORMESIC, GC, Marvis, BOTANICA CULTURE, Atomy, Red Seal, KAGAMI, SSBB,
+  Daiichi Sankyo Healthcare, Median, Nuskin, Oral7, ISME Rasyan, TOOTH NOTE, ZAITUN, Amway.
+  **436 products mapped** to these catch-alls, confidence **0.6**.
+- **Not addressed this session:** the `Care`/`Hygiene`/`Deep` brand_dict noise entries (see Edge cases
+  above — not real distinguishable brands, no taxonomy built for them) and the residual
+  officially-stored-brand resellers that didn't bulk-text-match (their listings don't contain the exact
+  Pass 1 product_line text — would need either looser fuzzy matching or individual image reads to
+  resolve, deliberately not attempted here to avoid false-positive routing into the wrong SKU).
+- Overall category GMV coverage after Pass 1+2: **92.3%** (June 2026 review month), exceeding the
+  ≥85% Pass-1+Pass-2 target in `docs/quality-standards.md` §6.
 
 ---
 
@@ -242,13 +299,16 @@ Per `docs/llm-extraction-rules.md` §5's existing `toothpaste` row:
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-16 | Step 0–2 (category research) | Task prompt used short table name `sg_toothpaste`, which doesn't exist — actual table is `shopee_sg_toothpaste` (matches the established `sg_shampoo`/`shopee_sg_shampoo` naming convention). 1,534 pre-existing HUMAN map rows found (not 0 as an untested assumption might suggest). Real 95%-GMV brand threshold is 44 brands (not a fixed top-N guess). | This file written with the full table name used throughout; existing HUMAN rows documented, left untouched; full 44-brand list and 20-entry allowlist recorded below rather than a truncated snapshot. |
+| 2026-07-16 | Pass 1 extraction | Initial pack_count regex only matched bracketed `[Bundle of N]`/`(Bundle of N)` forms — missed the bare (unbracketed) `Bundle of N` form used throughout Dentiste, Zenyum, and Enzim listings, silently defaulting ~20 entries to pack_count=1. | Caught by spot-checking a random sample before insert (not after) — regex extended to a bare `\bbundle of (\d+)\b` pattern, whole extraction pipeline re-run before any BigQuery write. |
+| 2026-07-16 | Pass 1 extraction | 2 Dentiste "Bundle of 6 Premium & Natural Mouthwash" listings would have been swept into the toothpaste catch-all pattern alongside legitimate toothpaste bundles. | Caught during size/pack_count review; excluded as OOS (mouthwash as main product) before insert. |
+| 2026-07-16 | QA gates (post Pass 1+2) | Gate 1 (dual-mapped, LLM-scoped): 0. Gate 2 (HUMAN+LLM coexistence): 456 — expected non-zero under `--skip-coexistence` semantics since no HUMAN-row deletion has run (deliberately out of scope for this session per policy). Gate 3 (placeholder-leak): 0. Gate 4 (structured-fields NULL%, DISTINCT-entry version): 0%. | All gates pass under Full-Rebuild pre-delete semantics. HUMAN-row cleanup (delete only where duplicated by an LLM row for the same product) is a separate, deliberately manual/wrapper-side step not performed in this session. |
 
 ---
 
-## Map Row Counts (as of session start, before this run's writes)
+## Map Row Counts (verified live 2026-07-16, after this session's Pass 1+2 writes)
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 0 | None yet — this is the first LLM extraction for this category |
-| HUMAN | 1,534 | Keyword-seed routing (automated, not actual human review per Decision 18). Left untouched this session. |
-| NULL (unmapped) | remainder of 12,455 distinct products | To be reduced by this session's Pass 1 + Pass 2 |
+| LLM | 1,117 | 535 Pass 1 (official-store) + 146 Pass 2 bulk-text-matched + 436 Pass 2 no-official-store-brand catch-all |
+| HUMAN | 1,534 | Keyword-seed routing (automated, not actual human review per Decision 18). Left untouched this session — deletion is a separate wrapper-side step. |
+| NULL (unmapped) | remainder of 12,455 distinct products | Out-of-95%-scope brands/long-tail (legitimately `UNRESOLVED`), plus the documented Pass 2 gaps above |
