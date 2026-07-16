@@ -6,11 +6,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ❌ Not started |
-| LLM Pass 2 | ❌ Not started |
-| GMV Coverage | 0% (baseline: 508 HUMAN keyword-seed rows only) |
+| LLM Pass 1 | ✅ Complete (264 official-store candidate products, 173 taxonomy entries, 174 map rows) |
+| LLM Pass 2 | ⏳ Partial (top-95%-of-remaining-GMV reseller pool routed: 99 new entries, 140 map rows; long tail of ~4,392 low-GMV reseller products left `UNRESOLVED` by deliberate GMV-impact triage) |
+| GMV Coverage | 83.9% (2026-05-01, combined LLM + surviving HUMAN rows) — just under the informal 85% Pass-1+2 target |
 | Last run | 2026-07-16 |
-| Current MAX taxonomy_id | SKU-074188 (query BQ directly before any insert — never trust this file) |
+| Current MAX taxonomy_id | SKU-080422 (query BQ directly before any insert — never trust this file) |
 
 **Prior attempt today:** `sku_block_registry` shows a claim `SKU-076001–080150` (4,150 slots, `full_rebuild`,
 `status=FAILED_QA`, claimed 2026-07-16 09:45:01) for this exact table. Verified: zero `product_taxonomy` rows
@@ -24,7 +24,7 @@ session claims a fresh block starting after `MAX(block_end)`.
 
 | Block | Usage |
 |-------|-------|
-| SKU-080151–082150 (2,000 slots) | Pass 1 OFFICIAL + Pass 2 RESELLER — claimed this session |
+| SKU-080151–082150 (2,000 slots, claimed) | SKU-080151–080323 used for Pass 1 (173 entries); SKU-080324–080422 used for Pass 2 (99 entries). SKU-080423–082150 unused, block remains ACTIVE for a future NULL-coverage pass. |
 
 ---
 
@@ -248,13 +248,16 @@ sku_name text first, image as tiebreaker.
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-16 | Prior attempt (this doc's predecessor session) | Claimed SKU-076001–080150, wrote 0 rows, marked FAILED_QA | Block abandoned per policy; this session claims a fresh block and starts from scratch with real scale numbers gathered first |
+| 2026-07-16 | Pass 1 (this session) | 264 candidate products from the confirmed single-brand official-store allowlist; text-based extraction (sku_name is unusually rich/explicit for this category — brand, product line, size, pack count almost always stated) with one targeted image read to resolve a genuine size-range ambiguity (Quaker 5 Multi-Grain, resolved to `is_multi_variant=TRUE`, size=450g). 67 zero/near-zero-GMV catalog items (GWP-not-for-sale, seasonal gift boxes, non-food merch like a jute tote bag, generic import padding) explicitly excluded with documented per-item reasons rather than force-mapped. | 173 taxonomy entries, 174 map rows, `source='LLM'`, `meta_agent='CLAUDE_CODE'` |
+| 2026-07-16 | Pass 2 (this session) | Full reseller/non-principal-Mall unmapped pool = 4,936 products; GMV concentration check showed 95% of remaining GMV sits in just 544 products. Routed the top-GMV portion of that set via text-match against the Pass 1 dictionary (including a shared `BRD-UNBRANDED` catch-all for a recurring generic "Five White Multigrain Instant Oat" commodity product sold by many unrelated resellers) plus new entries for real branded products not seen in Pass 1 (Dr OatCare, Bob's Red Mill additional sizes, Vogel's, familia, Nissin, etc.). A large Chinese-language long tail of TCM-adjacent tonic/meal-replacement products (tremella soup, yam powder, sour date kernel powder) was left unmapped as likely out-of-scope (not genuinely breakfast cereal) rather than force-classified. | 99 new taxonomy entries, 140 map rows. GMV coverage reached 83.9% (target ≥85%) — just short; a follow-up NULL-coverage pass targeting the remaining long tail would close the gap. Remaining SKU headroom (SKU-080423–082150) reserved for that. |
+| 2026-07-16 | QA gate self-check (`--skip-coexistence`, per Full Rebuild pre-delete convention) | Dual-mapped LLM products: 0. Placeholder-leak: 0. Structured-fields (`product_line IS NULL`, distinct entries, excl. `is_multi_size`): 0%. HUMAN+LLM coexistence: 87 (expected at this stage — deletion of HUMAN rows that duplicate an LLM-mapped product is a wrapper-side step, not performed by this session). | All gates applicable to this session pass; no rows deleted by this session per explicit instruction |
 
 ---
 
-## Map Row Counts (as of this session's start)
+## Map Row Counts (as of this session's end)
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 0 | — |
-| HUMAN | 508 | Generic "(all variants)" keyword-seed stubs, retained until superseded per-product by an LLM row |
-| NULL (unmapped) | ~10,300 (10,808 total distinct products − 508 HUMAN) | Below GMV scope or out-of-category |
+| LLM | 314 | 174 Pass 1 + 140 Pass 2, this session |
+| HUMAN | 508 | Pre-existing keyword-seed stubs — untouched; 87 of these duplicate a product now also LLM-mapped and are eligible for wrapper-side deletion per policy |
+| NULL (unmapped) | ~5,600 | Includes long-tail resellers below this session's GMV-impact cutoff and likely-out-of-scope TCM/tonic listings — candidates for a future NULL-coverage pass, not a defect in this run |

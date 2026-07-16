@@ -46,7 +46,7 @@ Last updated: Jun 24 2026
 | sg_laundry_detergent | ⏳ Keyword only | |
 | sg_fabric_softener | ⏳ Keyword only | |
 | sg_household_cleaner | ⏳ Keyword only | |
-| sg_toothpaste | ⏳ Keyword only | |
+| sg_toothpaste | ✅ Complete | LLM Pass 1+2 complete Jul 16, 92.3% GMV coverage, SKU-072001–074000 |
 | sg_diapers | ⏳ Keyword only | |
 | sg_infant_milk | ⏳ Keyword only | |
 | sg_health_food_drink | ⏳ Keyword only | |
@@ -54,14 +54,14 @@ Last updated: Jun 24 2026
 | sg_carbonated_drink | ⏳ Keyword only | |
 | sg_beverages | ⏳ Keyword only | |
 | sg_beer_and_lager | ⏳ Keyword only | |
-| sg_breakfast_cereals | ⏳ Keyword only | |
+| sg_breakfast_cereals | ⏳ LLM Pass 1 complete, Pass 2 partial (83.9% GMV) | SKU-080151–080422; see sg_breakfast_cereals.md for NULL-coverage follow-up scope |
 | sg_pet_food | ⏳ Keyword only | |
 | sg_spirits | ⏳ Keyword only | |
 | sg_toilet_rolls | ⏳ Keyword only | |
 | sg_baby_accessories | ⏳ Keyword only | |
 | sg_vitamin_mineral_health_supplements | ⏳ Keyword only | |
 
-**Total SG:** 0/23 LLM complete — keyword seed provides ~50–70% GMV coverage
+| **Total SG:** 1/23 LLM complete (sg_toothpaste) — keyword seed provides ~50–70% GMV coverage for the rest
 
 ---
 
