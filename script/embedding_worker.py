@@ -67,7 +67,7 @@ def embed_universe_skus(client, model, master_table=None, limit=None):
     scope_clause = "AND u.master_table = @master_table" if master_table else ""
     limit_clause = "LIMIT @row_limit" if limit else ""
     query = f"""
-        SELECT DISTINCT u.product_id, u.ecommerce_platform AS platform, u.country, u.sku_name
+        SELECT u.product_id, u.ecommerce_platform AS platform, u.country, ANY_VALUE(u.sku_name) AS sku_name
         FROM `{PROJECT}.magpie.marketshare_universe_niq` u
         LEFT JOIN `{PROJECT}.magpie_reference.universe_sku_embeddings` ue
           ON ue.product_id = u.product_id AND ue.platform = u.ecommerce_platform AND ue.country = u.country
@@ -75,6 +75,7 @@ def embed_universe_skus(client, model, master_table=None, limit=None):
           AND ue.product_id IS NULL
           AND u.sku_name IS NOT NULL
         {scope_clause}
+        GROUP BY u.product_id, u.ecommerce_platform, u.country
         {limit_clause}
     """
     params = []
