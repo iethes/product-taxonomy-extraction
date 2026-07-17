@@ -81,7 +81,7 @@ all, and the Hetzner VM already exists and is idle capacity, not a new resource 
     products, for audit — no need to special-case which mode needs which rows; embedding is idempotent and cheap
     at this volume).
 - **Worker:** a Python script on the Hetzner VM, cron'd (e.g. hourly), that queries BigQuery via the
-  `google-cloud-bigquery` client for rows in `product_taxonomy` / `marketshare_universe` not yet present in the
+  `google-cloud-bigquery` client for rows in `product_taxonomy` / `marketshare_universe_niq` not yet present in the
   corresponding embeddings table, computes vectors locally with the model above, and batch-loads the results
   back. Fully decoupled from `headless_taxonomy.sh` — it does not run synchronously as part of a Full Rebuild.
 - **This is what keeps Option 1 (Vertex AI) genuinely open, not just documented as an aspiration:** matching
@@ -101,7 +101,7 @@ all, and the Hetzner VM already exists and is idle capacity, not a new resource 
 both of their outputs as filters rather than re-deriving brand or size itself.
 
 ```
-Tier 0 (brand_id resolved via product_brand_map?) ──not resolved──▶ skip, product goes to Tier 5 as today
+Tier 0 (brand_id resolved on marketshare_universe_niq?) ──not resolved──▶ skip, product goes to Tier 5 as today
        │ resolved
        ▼
 Tier 1/2 (parse_size(sku_name))
@@ -133,27 +133,36 @@ Brand resolution itself needs no new work — Stage 03 of the external pipeline
 resolves every product's `brand_id` before any taxonomy work touches it (`BRAND_FIELD` → `PRODUCT_NAME_SCAN` →
 `FALLBACK`).
 
-**Correction found by querying live schema (2026-07-17):** the design originally assumed this was denormalized
-onto `marketshare_universe.brand_id`/`brand_confidence` — that's wrong. `INFORMATION_SCHEMA.COLUMNS` shows the
-live `magpie.marketshare_universe` has no `brand_id`, no `brand_confidence`, and no `master_table` at all (only a
-raw `brand` STRING, plus `category_1/2/3` and `ecommerce_platform` instead of `magpie_category_*`/`platform`) —
-`sql/schema/marketshare_universe.sql` is stale/aspirational, exactly as already flagged by the size-regex-pass
-design's own Appendix. The real resolved `brand_id` lives in `magpie_reference.product_brand_map`, joined on
-`(product_id, platform, country)`, with its own `confidence` STRING column (`'HIGH'|'MEDIUM'|'UNRESOLVED'`, live-
-confirmed) rather than the numeric `brand_confidence` the stale schema implied. This tier joins that table
-instead:
+**Two rounds of live-schema correction, 2026-07-17 — record both, since the second corrects the first:**
+
+1. First pass checked `magpie.marketshare_universe` and found no `brand_id`/`brand_confidence`/`master_table` at
+   all (only a raw `brand` STRING) — concluded brand had to come from a `product_brand_map` join instead.
+2. **That table turned out to be the wrong one entirely.** `magpie.marketshare_universe`'s TH data (live-queried,
+   latest month) is 100% appliance/electronics categories (Lighting, Grooming, Rice Cooker, Air Purifier, etc.) —
+   it's a separate Intrepid/appliance universe, not where FMCG categories like `shopee_th_toothpaste` live. The
+   table `headless_taxonomy.sh` and this tier actually need is **`magpie.marketshare_universe_niq`**
+   (`sql/schema/marketshare_universe_niq.sql`, live-confirmed) — it has `master_table`, `product_id`,
+   `ecommerce_platform`, `sku_name`, and **already-denormalized** `brand_id`/`brand_confidence`/`brand_source`,
+   matching `docs/brand-extraction.md`'s cascade exactly (live-checked distribution for
+   `shopee_th_toothpaste`: `HIGH`/`BRAND_FIELD` 6,996, `UNRESOLVED`/`FALLBACK` 2,011, `MEDIUM`/`PRODUCT_NAME_SCAN`
+   1,206, `HIGH`/`PRODUCT_NAME_SCAN` 340 — real numbers, not the stale schema's aspiration). No
+   `product_brand_map` join needed after all — this table's own columns are the correct source, gated exactly as
+   originally assumed:
 
 ```sql
-JOIN `sincere-hearth-273704.magpie_reference.product_brand_map` pbm
-  ON pbm.product_id = u.product_id AND pbm.platform = u.ecommerce_platform AND pbm.country = u.country
-WHERE pbm.confidence IN ('HIGH', 'MEDIUM')
-  AND pbm.brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
+WHERE u.brand_confidence IN ('HIGH', 'MEDIUM')
+  AND u.brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
 ```
 
 The `NOT IN (...)` half matters as much as the confidence check: `BRD-UNDEFINED`/`BRD-UNBRANDED` are both
 "resolved" values in a data-quality sense, but filtering candidates by either would pool every unknown-brand or
 generic-brand taxonomy entry across the *entire* catalog into one candidate set — exactly the cross-product
 collision risk the brand filter exists to prevent in the first place.
+
+**Scope consequence:** since `marketshare_universe_niq` is TH+SG NIQ only (matching `headless_taxonomy.sh`'s own
+`master_clean_niq.*` source and its explicit warning against the unconfirmed Intrepid path), this tier's
+practical scope for auto-match/audit is TH+SG NIQ categories, full stop — not a hedge, a direct consequence of
+which table has the data. Cross-category matching still holds (Scope section above) *within* that NIQ universe.
 
 **Size filter is a soft fallback.** `parse_size` coverage is narrower (TH-only today) than brand resolution
 (75–90% broad per the traditional-ml doc), so requiring it would gut coverage for a much smaller safety win than
@@ -174,28 +183,27 @@ INSERT INTO `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
 SELECT
   u.product_id, u.master_table, u.ecommerce_platform, u.country,
   pt.taxonomy_id, 'EMBEDDING_MATCH', FORMAT('%.2f', 1 - dist), @meta_agent, CURRENT_TIMESTAMP()
-FROM `sincere-hearth-273704.magpie.marketshare_universe` u
-JOIN `sincere-hearth-273704.magpie_reference.product_brand_map` pbm
-  ON pbm.product_id = u.product_id AND pbm.platform = u.ecommerce_platform AND pbm.country = u.country
+FROM `sincere-hearth-273704.magpie.marketshare_universe_niq` u
 JOIN `sincere-hearth-273704.magpie_reference.universe_sku_embeddings` ue
   ON ue.product_id = u.product_id AND ue.platform = u.ecommerce_platform AND ue.country = u.country
 LEFT JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m
   ON m.product_id = u.product_id AND m.platform = u.ecommerce_platform AND m.country = u.country
 CROSS JOIN UNNEST([`sincere-hearth-273704.magpie_reference.parse_size`(u.sku_name)]) AS parsed
 JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy` pt
-  ON pt.brand_id = pbm.brand_id
+  ON pt.brand_id = u.brand_id
   AND (parsed.size_text IS NULL OR pt.size = parsed.size_text)
 JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_embeddings` pte
   ON pte.taxonomy_id = pt.taxonomy_id
 CROSS JOIN UNNEST([ML.DISTANCE(ue.embedding, pte.embedding, 'COSINE')]) AS dist
-WHERE pbm.confidence IN ('HIGH', 'MEDIUM')
-  AND pbm.brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
+WHERE u.brand_confidence IN ('HIGH', 'MEDIUM')
+  AND u.brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
+  AND u.master_table = @table
   AND m.taxonomy_id IS NULL                -- never touch an already-mapped product
-QUALIFY ROW_NUMBER() OVER (PARTITION BY u.product_id, u.platform, u.country ORDER BY dist ASC) = 1
+QUALIFY ROW_NUMBER() OVER (PARTITION BY u.product_id, u.ecommerce_platform, u.country ORDER BY dist ASC) = 1
   AND dist <= @auto_match_max_distance;
 ```
 
-(`UNNEST([scalar_expr]) AS alias` is BigQuery's way to bring a computed scalar into scope as a joinable column — confirmed live; BigQuery does not support the `AS alias(column)` column-alias-list syntax some other engines use for this.)
+(`UNNEST([scalar_expr]) AS alias` is BigQuery's way to bring a computed scalar into scope as a joinable column — confirmed live; BigQuery does not support the `AS alias(column)` column-alias-list syntax some other engines use for this. `product_brand_map` is no longer needed — `marketshare_universe_niq` has its own brand columns.)
 
 `confidence` is written as a formatted string (`'0.87'`), not a FLOAT64 — live `product_taxonomy_map.confidence`
 is STRING (confirmed via `INFORMATION_SCHEMA.COLUMNS`, another place the schema file's documented FLOAT64 type
@@ -265,7 +273,7 @@ bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 \
   provenance distinguishable from `'LLM'` directly, without needing to infer it from `updated_at` the way the
   regex pass's rows currently have to.
 - Standard dry-run discipline (`bq query --dry_run`) before any real run, given the join touches
-  `marketshare_universe`.
+  `marketshare_universe_niq`.
 - **Known residual gap, not solved here:** with no live pack_count extractor (out of scope per the regex pass's
   own constraints), a single-unit product and its bulk-pack sibling could embed as near-neighbors if
   `canonical_name`'s trailing `x{N}` token doesn't dominate the distance calculation. The pilot should
@@ -313,7 +321,7 @@ bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 \
 2. A new BigQuery table `magpie_reference.taxonomy_match_audit_flags` (product_id, platform, country, current
    taxonomy_id, suggested taxonomy_id, distance, flagged_at).
 3. The Hetzner-VM embedding worker (Python script + cron entry) — embeds `product_taxonomy.canonical_name` and
-   `marketshare_universe.sku_name` for rows not yet present in the tables above, using
+   `marketshare_universe_niq.sku_name` for rows not yet present in the tables above, using
    `intfloat/multilingual-e5-large` via `sentence-transformers`, batch-loaded back via `bq load`.
 4. `sql/queries/embedding_match_auto.sql` — the auto-match INSERT query.
 5. `sql/queries/embedding_match_audit.sql` — the audit-flag INSERT query (same matching logic, different
