@@ -165,14 +165,15 @@ fixed here — but the embedding call itself is no longer illustrative-syntax te
 happens on the Hetzner worker and this query only ever reads plain `ARRAY<FLOAT64>` data via `ML.DISTANCE`):
 
 ```sql
--- Illustrative — thresholds TBD by the pilot (see Testing below). master_table has no NIQ/Intrepid drift
--- concerns here since both product_id join keys used (product_brand_map, universe_sku_embeddings) are
--- confirmed-live composite keys, not the stale marketshare_universe.brand_id assumption corrected above.
+-- Illustrative — thresholds TBD by the pilot (see Testing below). Uses JOIN + QUALIFY ROW_NUMBER() for
+-- top-1-per-product selection, not a LATERAL join — confirmed live (2026-07-17) that BigQuery has no LATERAL
+-- keyword; a bare correlated subquery in FROM fails with "Unrecognized name" for the outer alias. QUALIFY is
+-- the same top-1-per-group idiom this repo's own universe-refresh MERGE query already uses.
 INSERT INTO `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
   (product_id, master_table, platform, country, taxonomy_id, source, confidence, meta_agent, mapped_at)
 SELECT
   u.product_id, u.master_table, u.ecommerce_platform, u.country,
-  cand.taxonomy_id, 'EMBEDDING_MATCH', FORMAT('%.2f', 1 - cand.distance), @meta_agent, CURRENT_TIMESTAMP()
+  pt.taxonomy_id, 'EMBEDDING_MATCH', FORMAT('%.2f', 1 - dist), @meta_agent, CURRENT_TIMESTAMP()
 FROM `sincere-hearth-273704.magpie.marketshare_universe` u
 JOIN `sincere-hearth-273704.magpie_reference.product_brand_map` pbm
   ON pbm.product_id = u.product_id AND pbm.platform = u.ecommerce_platform AND pbm.country = u.country
@@ -181,21 +182,20 @@ JOIN `sincere-hearth-273704.magpie_reference.universe_sku_embeddings` ue
 LEFT JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m
   ON m.product_id = u.product_id AND m.platform = u.ecommerce_platform AND m.country = u.country
 CROSS JOIN UNNEST([`sincere-hearth-273704.magpie_reference.parse_size`(u.sku_name)]) AS parsed
-, LATERAL (
-    SELECT pt.taxonomy_id,
-           ML.DISTANCE(ue.embedding, pte.embedding, 'COSINE') AS distance
-    FROM `sincere-hearth-273704.magpie_reference.product_taxonomy` pt
-    JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_embeddings` pte USING (taxonomy_id)
-    WHERE pt.brand_id = pbm.brand_id
-      AND (parsed.size_text IS NULL OR pt.size = parsed.size_text)
-    ORDER BY distance ASC
-    LIMIT 1
-  ) cand
+JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy` pt
+  ON pt.brand_id = pbm.brand_id
+  AND (parsed.size_text IS NULL OR pt.size = parsed.size_text)
+JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_embeddings` pte
+  ON pte.taxonomy_id = pt.taxonomy_id
+CROSS JOIN UNNEST([ML.DISTANCE(ue.embedding, pte.embedding, 'COSINE')]) AS dist
 WHERE pbm.confidence IN ('HIGH', 'MEDIUM')
   AND pbm.brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
   AND m.taxonomy_id IS NULL                -- never touch an already-mapped product
-  AND cand.distance <= @auto_match_max_distance;
+QUALIFY ROW_NUMBER() OVER (PARTITION BY u.product_id, u.platform, u.country ORDER BY dist ASC) = 1
+  AND dist <= @auto_match_max_distance;
 ```
+
+(`UNNEST([scalar_expr]) AS alias` is BigQuery's way to bring a computed scalar into scope as a joinable column — confirmed live; BigQuery does not support the `AS alias(column)` column-alias-list syntax some other engines use for this.)
 
 `confidence` is written as a formatted string (`'0.87'`), not a FLOAT64 — live `product_taxonomy_map.confidence`
 is STRING (confirmed via `INFORMATION_SCHEMA.COLUMNS`, another place the schema file's documented FLOAT64 type
