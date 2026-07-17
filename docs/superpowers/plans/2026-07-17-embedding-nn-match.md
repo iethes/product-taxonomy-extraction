@@ -719,11 +719,79 @@ git commit -m "Document embedding pre-match step in llm-extraction-rules.md"
 
 ## Appendix: Task 5 pilot findings
 
-_To be filled in by Task 5, Step 5 — following the same convention as
-[`docs/superpowers/plans/2026-07-14-size-regex-pass.md`](2026-07-14-size-regex-pass.md)'s Appendix._
+**Status: BLOCKED.** Precision never clears the 0.98 bar at any candidate threshold — it plateaus around 0.59.
+Per this plan's own Step 4 instruction, this is recorded as a genuine blocker rather than routed around by
+lowering the bar. `AUTO_MATCH_MAX_DISTANCE` and `AUDIT_FLAG_MAX_DISTANCE` are **not set**. Task 6 should not wire
+auto-match into `script/headless_taxonomy.sh` until this is resolved (design change, e.g. a stricter candidate
+key beyond brand+size, or a different embedding input schema) and a re-run of this pilot clears 0.98 at some
+threshold.
 
-- Worker run row counts (Task 5 Step 1):
-- Precision table (Task 5 Step 3):
-- Chosen `AUTO_MATCH_MAX_DISTANCE`:
-- Chosen `AUDIT_FLAG_MAX_DISTANCE`:
-- Pack_count-confusion observations (Task 5 Step 4):
+- **Worker run row counts (Task 5 Step 1):** Ran `python3 script/embedding_worker.py --master-table
+  shopee_th_toothpaste` (no `--limit`) against a fresh Python 3.12 venv (`.venv-embedding/`, created via
+  `python3 -m venv --without-pip` + `get-pip.py` bootstrap, since `python3.12-venv`'s `ensurepip` wasn't
+  installed and no sudo was available; then `pip install -r script/embedding_worker_requirements.txt`, which
+  pulled `torch==2.13.0+cpu` and `sentence-transformers==5.6.0` cleanly). Output: `Embedded 21992
+  product_taxonomy rows` and `Embedded 10540 marketshare_universe_niq rows`. Post-run table totals confirmed via
+  `bq`: `product_taxonomy_embeddings` = 22005 rows (100% of `product_taxonomy`'s 22005 rows — full coverage, up
+  from 10 embedded by Task 2's smoke test), `universe_sku_embeddings` = 10553 rows (matches the full
+  `shopee_th_toothpaste` latest-month-partition scope of 10553 distinct products).
+
+- **Precision table (Task 5 Step 3):** Ground-truth pool: 2166 `source='LLM'` map rows for
+  `shopee_th_toothpaste`, 2126 after the brand-confidence/brand-not-undefined filters, 2069 of those actually
+  produced a brand+size-filtered embedding candidate (the other 57 had no matching brand+size taxonomy row or no
+  embedding — a separate, smaller structural gap, not counted below). Minimum observed distance across all 2069
+  rows was 0.070 — above the brief's 0.05 threshold, so that bucket is empty by construction, not a bug (verified
+  directly: `COUNTIF(dist <= 0.05) = 0`).
+
+  | threshold | candidates_under_threshold | correct | precision |
+  |-----------|-----------------------------|---------|-----------|
+  | 0.05      | 0                           | —       | —         |
+  | 0.10      | 48                          | 29      | 0.6042    |
+  | 0.15      | 1674                        | 996     | 0.5950    |
+  | 0.20      | 2064                        | 1222    | 0.5921    |
+  | 0.25      | 2069                        | 1223    | 0.5911    |
+  | 0.30      | 2069                        | 1223    | 0.5911    |
+
+  (Note: re-running the identical query produces `correct` counts that wobble by ±1-2 rows run-to-run, e.g. 1220
+  vs 1222 at the 0.20 bucket seen across two runs. Root cause: `QUALIFY ROW_NUMBER() OVER (... ORDER BY dist
+  ASC)` has no tiebreaker, so exact-tied distances resolve nondeterministically. Immaterial to the conclusion —
+  precision stays in the high-50s/low-60s regardless.)
+
+  Precision caps around 59-60% and is essentially flat across thresholds from 0.15 up — widening the threshold
+  mostly adds more candidates at the same hit rate, it does not find a "sweet spot" band of high precision at any
+  distance cutoff. **No threshold clears 0.98.** The single highest-precision bucket (0.10, precision 0.604) is
+  both far below the bar and built on only 48 candidates — too thin to trust even if it had cleared 0.98.
+
+  Root-cause check: of the 846-847 incorrect top-1 matches, 743 (~88%) had the *actually-correct* taxonomy_id
+  present somewhere in that product's brand+size candidate pool — the embedding distance simply ranked a
+  different, wrong entry closer. Only ~104 (~12%) were structural misses where the correct entry wasn't even a
+  candidate. This means the dominant failure mode is a **ranking/discrimination problem inherent to the
+  embedding approach as scoped** (brand+size filter, whole-name embedding), not a filter-coverage gap that a
+  different SQL join could fix.
+
+- **Chosen `AUTO_MATCH_MAX_DISTANCE`:** Not set — blocked, see above.
+
+- **Chosen `AUDIT_FLAG_MAX_DISTANCE`:** Not set — this value is defined as "one step looser than the auto-match
+  value," which is undefined when auto-match itself is blocked. Separately, even if a value were chosen, the
+  implied audit-mode false-positive rate here (~40-41%) is high enough to be a real design question in its own
+  right (a large fraction of `taxonomy_match_audit_flags` rows would be noise for the QA queue), not just a
+  "wasted look" as the brief characterizes acceptable audit-mode cost.
+
+- **Pack_count-confusion observations (Task 5 Step 4):** The design doc's flagged failure shape — a single-unit
+  product matching its bulk-pack sibling — does show up in practice, and is a meaningful contributor, but is
+  **not the dominant one**. Of 846 incorrect top-1 matches: 210 (~25%) were single-unit products (`pack_count =
+  1`) matched to a bulk-pack candidate (`pack_count > 1`); 90 (~11%) were the inverse (bulk matched to single);
+  338 (~40%) had the *same* `pack_count` on both sides but a different flavor/formulation/product-line variant
+  (e.g. "Dentiste Ultra Sensitive 100g" vs. "Dentiste 100% Natural Toothpaste 100g" — same brand, same size, same
+  pack count, different product). The remaining ~208 had mismatched-but-not-1-vs-N pack counts (e.g. 2 vs 6).
+  So pack-count confusion (both directions combined) accounts for ~36% of all errors — real and worth a
+  structural fix (e.g. requiring pack_count to match, not just size) — but same-brand/same-size/same-pack
+  *variant* confusion is the larger single bucket, suggesting the embedding text (`canonical_name` alone) isn't
+  discriminative enough between close product-line siblings even before pack count is considered.
+
+- **SQL deviation note:** the committed `sql/queries/pilot_validate_th_toothpaste.sql` differs from this
+  section's Step 2 text in one respect: the inline `AND u.month = (SELECT MAX(month) FROM ...)` inside the
+  universe JOIN's `ON` clause errors on this project's live BigQuery engine (`Unsupported subquery with table in
+  join predicate`). Restructured as a 1-row `latest_month` CTE cross-joined in, with the month comparison moved
+  to `WHERE` — a semantics-preserving change for an inner join. All precision numbers above were produced by the
+  committed (working) version of the file.
