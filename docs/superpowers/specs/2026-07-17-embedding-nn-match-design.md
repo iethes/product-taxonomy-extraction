@@ -33,6 +33,13 @@ This gives the tier two independent jobs, sharing one matching mechanism:
 - **Both modes ship together** in this design — audit mode reuses the exact same matching query as auto-match
   (same candidate filter, same distance calculation), just pointed at already-mapped rows and writing to a
   different destination. Building one without the other would duplicate the matching logic for no reason.
+- **The candidate pool is the entire `product_taxonomy` table, not scoped to the target category.** A product
+  being taxonomized for the first time in one category can still have a confident match in a *different*
+  category or country's existing taxonomy — same brand, same size, genuinely the same or a near-identical
+  physical product (cross-category duplicates, or the same SKU resurfacing under a different Intrepid
+  country/platform). The candidate filter is `WHERE pt.brand_id = <resolved> AND (size filter)` with no
+  `master_table` restriction — this is what makes wiring into Full Rebuild (below) actually pay off, not just the
+  "new products in an already-built category" case.
 - **Pilot category: `th_toothpaste`** — 5 QA passes (the most scrutinized TH category per
   `docs/categories/STATUS.md`), ~700 taxonomy rows across two SKU blocks, 92.5% GMV coverage. Its already-correct
   LLM mappings serve as ground truth to tune both thresholds below before either mode runs unattended anywhere.
@@ -72,6 +79,22 @@ for the categorical filter on the segment where it's missing. Products without a
 already the harder tail Tier 0's deterministic match couldn't handle, and get zero cost regression from being
 skipped here (they fall through to Tier 5 exactly as they do today).
 
+Brand resolution itself needs no new work — Stage 03 of the external pipeline
+(`pipeline/03_product_mapping/build_product_brand_map.py`, documented in `docs/brand-extraction.md`) already
+resolves every product's `brand_id` before any taxonomy work touches it (`BRAND_FIELD` → `PRODUCT_NAME_SCAN` →
+`FALLBACK`), and the result is already denormalized onto `marketshare_universe.brand_id`/`brand_confidence`. This
+tier just reads that column, gated the same way `marketshare_universe.sql`'s own documented "standard market
+share filter" already gates it:
+
+```sql
+brand_confidence IN ('HIGH', 'MEDIUM') AND brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
+```
+
+The `NOT IN (...)` half matters as much as the confidence check: `BRD-UNDEFINED`/`BRD-UNBRANDED` are both
+"resolved" values in a data-quality sense, but filtering candidates by either would pool every unknown-brand or
+generic-brand taxonomy entry across the *entire* catalog into one candidate set — exactly the cross-product
+collision risk the brand filter exists to prevent in the first place.
+
 **Size filter is a soft fallback.** `parse_size` coverage is narrower (TH-only today) than brand resolution
 (75–90% broad per the traditional-ml doc), so requiring it would gut coverage for a much smaller safety win than
 requiring brand does. When `parse_size` returns NULL, match on brand + embedding alone, at a stricter
@@ -109,6 +132,43 @@ WHERE m.taxonomy_id IS NULL              -- never touch an already-mapped produc
 `m.taxonomy_id IS NULL`, comparing `cand.taxonomy_id` against the existing `m.taxonomy_id`, and writing to
 `taxonomy_match_audit_flags` instead of `product_taxonomy_map` — omitted here to avoid duplicating the same shape
 twice; the implementation plan writes both queries out in full against the real schema.
+
+## Wiring into `script/headless_taxonomy.sh`
+
+Auto-match runs as a **bash-level pre-step, before the `claude -p` invocation** — not folded into the LLM
+session's own instructions. Deterministic SQL belongs outside the prompt, same posture as everything else this
+tier does; it also means the pre-step runs (and can fail or no-op) independently of whatever the LLM session
+does.
+
+```bash
+# script/headless_taxonomy.sh — new block, inserted after argument parsing, before the claude -p call
+echo "Running embedding pre-match for ${TABLE}..."
+bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 \
+  --parameter=table:STRING:"${TABLE}" \
+  < sql/queries/embedding_match_auto.sql \
+  || echo "Embedding pre-match failed or found nothing — continuing to claude -p unfiltered."
+```
+
+- **Scoped to this run's table** (`WHERE u.master_table = @table AND m.taxonomy_id IS NULL`) — but the *candidate*
+  side of the match (`product_taxonomy`) is still the full cross-category table, per the Scope section above.
+  Only the *incoming* side is scoped to `${TABLE}`; that's what makes this useful for a from-scratch category
+  build, catching products that already exist elsewhere in the taxonomy.
+- **Never blocks the run.** The `||` fallback means a failed or empty pre-match still lets `claude -p` proceed
+  and do a normal Pass 1/Pass 2 build — this tier is a pure optimization on LLM volume, never a correctness
+  dependency. `set -e` in the script would otherwise abort the whole Full Rebuild over what should be a
+  best-effort filter.
+- **The existing `claude -p` prompt needs one added line**, not a restructure: STEP 1 already runs `SELECT
+  source, COUNT(*) FROM product_taxonomy_map WHERE master_table = @table GROUP BY source` and already tells the
+  session not to assume 0/0 — `source='EMBEDDING_MATCH'` rows just show up as another value in that breakdown
+  the session already has to handle. Add: *"Do not re-extract or re-map any product that already has a
+  `source='EMBEDDING_MATCH'` row — Pass 1/Pass 2 scope to products with no existing map row at all."*
+- **Net effect:** by the time Pass 1 starts, some fraction of `${TABLE}`'s products already have a taxonomy_id
+  (reused from elsewhere in the catalog, zero LLM cost) — directly shrinking the candidate pool Pass 1/Pass 2
+  and any per-image vision reads have to cover, which is the cost/duration half of the original problem this
+  tier targets.
+- The sg_shampoo-style worked example embedded directly in `docs/headless-runbook.md` (not `headless_taxonomy.sh`
+  itself) should get the same pre-step and prompt line eventually, for consistency — not required for this
+  design to land, flagged as a natural same-shape follow-up.
 
 ## Safety guards
 
@@ -177,6 +237,9 @@ twice; the implementation plan writes both queries out in full against the real 
 5. A short subsection in `docs/llm-extraction-rules.md` (or a new `docs/embedding-match.md`, TBD in the plan)
    documenting that a pre-mapping step now runs before Tier 5, and that `source='EMBEDDING_MATCH'` /
    `taxonomy_match_audit_flags` are new things a session touching taxonomy provenance should know about.
+6. `script/headless_taxonomy.sh` modified: the `bq query` pre-step added before its `claude -p` invocation, and
+   the one-line addition to that prompt telling the session not to re-map `source='EMBEDDING_MATCH'` rows (see
+   Wiring section above).
 
 ## Relationship to other designs
 
