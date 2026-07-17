@@ -98,7 +98,121 @@ decide_next_step() {
   esac
 }
 
+mark_failed_qa() {
+  local table="$1"
+  echo "Marking most recent ACTIVE targeted_qa_fix block for ${table} as FAILED_QA..." >&2
+  bq query --use_legacy_sql=false --project_id="${PROJECT}" \
+    "UPDATE \`${PROJECT}.magpie_reference.sku_block_registry\`
+     SET status = 'FAILED_QA'
+     WHERE master_table = '${table}' AND scenario = 'targeted_qa_fix' AND status = 'ACTIVE'
+       AND claimed_at = (
+         SELECT MAX(claimed_at) FROM \`${PROJECT}.magpie_reference.sku_block_registry\`
+         WHERE master_table = '${table}' AND scenario = 'targeted_qa_fix' AND status = 'ACTIVE'
+       )"
+}
+
+run_universe_refresh() {
+  local table="$1"
+  echo "Running universe refresh for ${table}..."
+  bq query --use_legacy_sql=false --project_id="${PROJECT}" \
+    "MERGE \`${PROJECT}.magpie_reference.universe_taxonomy_overlay\` t
+     USING (
+       SELECT m.product_id, m.platform, m.country, m.master_table,
+              pt.taxonomy_id, pt.canonical_name, m.source, m.confidence, m.meta_agent
+       FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\` m
+       JOIN \`${PROJECT}.magpie_reference.product_taxonomy\` pt ON m.taxonomy_id = pt.taxonomy_id
+       WHERE m.master_table = '${table}'
+       QUALIFY ROW_NUMBER() OVER (
+         PARTITION BY m.product_id, m.platform, m.country
+         ORDER BY CASE m.source WHEN 'LLM' THEN 0 ELSE 1 END, m.taxonomy_id
+       ) = 1
+     ) src
+     ON t.product_id = src.product_id AND t.platform = src.platform AND t.country = src.country
+       AND t.master_table = '${table}'
+     WHEN MATCHED THEN UPDATE SET
+       taxonomy_id = src.taxonomy_id,
+       sku_type_complete = src.canonical_name,
+       taxonomy_source = src.source,
+       taxonomy_confidence = src.confidence,
+       taxonomy_meta_agent = src.meta_agent,
+       updated_at = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED BY SOURCE AND t.master_table = '${table}' THEN DELETE
+     WHEN NOT MATCHED BY TARGET THEN INSERT
+       (product_id, platform, country, master_table, taxonomy_id, sku_type_complete,
+        taxonomy_source, taxonomy_confidence, taxonomy_meta_agent, updated_at)
+       VALUES (src.product_id, src.platform, src.country, src.master_table, src.taxonomy_id, src.canonical_name,
+               src.source, src.confidence, src.meta_agent, CURRENT_TIMESTAMP())"
+}
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 <TABLE>" >&2
+    echo "  e.g. $0 shopee_th_detergent" >&2
+    exit 1
+  fi
+  local table="$1"
+
+  local category_file
+  if ! category_file=$(resolve_category_file "$table"); then
+    echo "ERROR: no category file found at docs/categories/${table}.md or docs/categories/${table#shopee_}.md" >&2
+    echo "A Targeted QA Fix requires an existing, documented category — write the category file (and its '## Targeted QA Fix Brief' section) first." >&2
+    exit 1
+  fi
+
+  echo "${table}"
+  echo "TARGETED QA FIX STARTED (brief: ${category_file})"
+  echo "==========================="
+
+  local prompt
+  prompt=$(build_prompt "$table" "$category_file")
+
+  local claude_output
+  claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns 30 "$prompt")
+
+  local result_json
+  result_json=$(echo "$claude_output" | jq -r '.result // empty')
+
+  if [[ -z "$result_json" ]]; then
+    echo "ERROR: claude -p produced no parseable .result field. Raw output:" >&2
+    echo "$claude_output" >&2
+    mark_failed_qa "$table"
+    exit 1
+  fi
+
+  local decision
+  decision=$(decide_next_step "$result_json")
+
+  case "$decision" in
+    BLOCKED)
+      echo "STATUS: blocked. Claimed block left ACTIVE (nothing written) — see blockers below."
+      echo "$result_json" | jq -r '.blockers[]?' >&2
+      exit 0
+      ;;
+    NOOP)
+      echo "STATUS: complete/partial with rows_created=0 — nothing to gate or refresh. Block left ACTIVE."
+      exit 0
+      ;;
+    MARK_FAILED)
+      echo "STATUS: failed or malformed. Marking block FAILED_QA." >&2
+      echo "$result_json" >&2
+      mark_failed_qa "$table"
+      exit 1
+      ;;
+    GATE_AND_REFRESH)
+      echo "STATUS: rows written — running independent QA gates via script/qa_report.sh..."
+      if ./script/qa_report.sh "$table"; then
+        run_universe_refresh "$table"
+        echo "============================"
+        echo "TARGETED QA FIX FINISHED — universe refreshed"
+      else
+        echo "QA gates failed — marking block FAILED_QA, skipping universe refresh." >&2
+        mark_failed_qa "$table"
+        exit 1
+      fi
+      ;;
+  esac
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  echo "script/targeted_qa_fix.sh: main() not wired up yet (Task 3)." >&2
-  exit 1
+  main "$@"
 fi
