@@ -1,6 +1,10 @@
 # Design: Embedding + Nearest-Neighbor Taxonomy Match, with an LLM-Compliance Audit Mode (Rec 3, `traditional-ml-execution-model.md`)
 
-> Status: approved design, not yet implemented.
+> Status: approved design, not yet implemented. Revised 2026-07-17: embedding generation moved to a self-hosted
+> worker on the existing Hetzner VM (Option 2 from the cost review) rather than BigQuery-native Vertex AI
+> (Option 1, kept open — see "Embedding generation" below for why the matching layer is forward-compatible with
+> switching to it later); brand-resolution join corrected against live schema (`product_brand_map`, not
+> `marketshare_universe.brand_id`, which doesn't exist on the live table).
 > Implements Recommendation 3 from
 > [`docs/traditional-ml-execution-model.md`](../../traditional-ml-execution-model.md) ("Embedding + nearest-neighbor
 > match against the canonical taxonomy") — that doc's own "biggest structural win" tier, chosen as the next tier to
@@ -41,11 +45,55 @@ This gives the tier two independent jobs, sharing one matching mechanism:
   `master_table` restriction — this is what makes wiring into Full Rebuild (below) actually pay off, not just the
   "new products in an already-built category" case.
 - **Pilot category: `th_toothpaste`** — 5 QA passes (the most scrutinized TH category per
-  `docs/categories/STATUS.md`), ~700 taxonomy rows across two SKU blocks, 92.5% GMV coverage. Its already-correct
-  LLM mappings serve as ground truth to tune both thresholds below before either mode runs unattended anywhere.
+  `docs/categories/STATUS.md`), 92.5% GMV coverage, and (live-queried 2026-07-17) **4,177** mapped products in
+  `product_taxonomy_map` — a real sample size, not the ~700-row SKU-block-range figure `STATUS.md`'s notation
+  first suggested (that range is the *taxonomy_id* block claimed for new entries, not the count of products
+  mapped to them). Its already-correct LLM mappings serve as ground truth to tune both thresholds below before
+  either mode runs unattended anywhere.
 - **Country/category rollout after the pilot clears its precision bar:** auto-match starts on new TH products
   (brand + size resolution both most mature there); audit mode can run across all existing `source='LLM'` rows
   immediately, since it only ever produces a flag and can't damage existing state.
+
+## Embedding generation: self-hosted on the existing Hetzner VM
+
+**Decision (2026-07-17):** embeddings are generated externally, on the existing Hetzner VM (AMD Ryzen 7 7700,
+8-core, 128GB RAM, no GPU), not via BigQuery's `ML.GENERATE_EMBEDDING`/Vertex AI. Reasoning from the cost/tradeoff
+review: dollar cost is a non-factor either way (Vertex AI would run under $10 total even embedding the entire
+6.16M-row universe once; self-hosted compute is a few dollars of VM time at this data volume). The real
+difference is *what kind of new infrastructure this repo takes on* — Vertex AI needs a new BQ `CLOUD_RESOURCE`
+connection plus a project-level IAM grant (`roles/aiplatform.user`); self-hosting needs no new GCP IAM surface at
+all, and the Hetzner VM already exists and is idle capacity, not a new resource to provision.
+
+- **Model:** `intfloat/multilingual-e5-large` (560M params) via `sentence-transformers`, run on CPU. Chosen over
+  an English-only model because `canonical_name`/`sku_name` mix Thai and English text; chosen over a smaller
+  multilingual model because 128GB RAM and 8 cores comfortably absorb the larger model's cost at this data
+  volume (21,415 catalog rows, low-hundred-thousands of incoming rows per pass — not a throughput-constrained
+  workload even on CPU). `e5`'s explicit `"query: "`/`"passage: "` prefix convention maps naturally onto this
+  tier's asymmetric comparison (incoming `sku_name` as query, existing `canonical_name` as passage). Revisable in
+  the plan/pilot if `th_toothpaste` validation shows a different model matching better — not fixed by this design.
+- **Storage:** two new BigQuery tables, populated by batch load (`bq load`, never the streaming API — same rule
+  as everywhere else in this pipeline, avoids the 90-minute streaming-buffer restriction):
+  - `magpie_reference.product_taxonomy_embeddings` (taxonomy_id STRING, embedding ARRAY<FLOAT64>, model_version
+    STRING, computed_at TIMESTAMP) — one row per catalog entry.
+  - `magpie_reference.universe_sku_embeddings` (product_id, platform, country — the ADR-006 composite key —
+    embedding ARRAY<FLOAT64>, model_version STRING, computed_at TIMESTAMP) — one row per incoming product this
+    tier has ever considered a candidate (both unmapped products, for auto-match, and `source='LLM'` mapped
+    products, for audit — no need to special-case which mode needs which rows; embedding is idempotent and cheap
+    at this volume).
+- **Worker:** a Python script on the Hetzner VM, cron'd (e.g. hourly), that queries BigQuery via the
+  `google-cloud-bigquery` client for rows in `product_taxonomy` / `marketshare_universe` not yet present in the
+  corresponding embeddings table, computes vectors locally with the model above, and batch-loads the results
+  back. Fully decoupled from `headless_taxonomy.sh` — it does not run synchronously as part of a Full Rebuild.
+- **This is what keeps Option 1 (Vertex AI) genuinely open, not just documented as an aspiration:** matching
+  (below) is pure BigQuery SQL over plain `ARRAY<FLOAT64>` columns using `ML.DISTANCE` — a native, zero-connection
+  BigQuery function that works identically regardless of *how* the vectors were produced. Swapping the generation
+  step for `ML.GENERATE_EMBEDDING`/Vertex AI later touches only the worker; the matching queries, thresholds, and
+  safety guards below don't change.
+- **Cold-start consequence, not a defect:** a brand-new `master_table` has zero rows in `universe_sku_embeddings`
+  until the Hetzner cron job next runs against it. `headless_taxonomy.sh`'s pre-step (below) only ever reads
+  whatever embeddings already exist — on a table's very first Full Rebuild, before the worker has ever seen it,
+  the pre-step may find zero candidates and every product falls through to Tier 5 as it does today. Same
+  graceful-degradation principle as every other guard in this design, not a new failure mode to handle specially.
 
 ## Mechanism
 
@@ -53,7 +101,7 @@ This gives the tier two independent jobs, sharing one matching mechanism:
 both of their outputs as filters rather than re-deriving brand or size itself.
 
 ```
-Tier 0 (brand_id resolved?) ──not resolved──▶ skip this tier entirely, product goes to Tier 5 as today
+Tier 0 (brand_id resolved via product_brand_map?) ──not resolved──▶ skip, product goes to Tier 5 as today
        │ resolved
        ▼
 Tier 1/2 (parse_size(sku_name))
@@ -62,7 +110,8 @@ Tier 1/2 (parse_size(sku_name))
 Candidate filter: product_taxonomy WHERE brand_id = <resolved> AND size = <parsed size, if any>
        │
        ▼
-AI.EMBED(sku_name) vs. AI.EMBED(canonical_name) over the filtered candidates, top-1 by cosine distance
+Precomputed embeddings (Hetzner worker, see above) joined by key; ML.DISTANCE(incoming, candidate, 'COSINE')
+over the filtered candidates, top-1 by distance
        │
        ├─ auto-match mode:  distance ≤ AUTO_MATCH_MAX_DISTANCE  → INSERT new product_taxonomy_map row
        │                    (source='EMBEDDING_MATCH'), skip Tier 5
@@ -82,12 +131,23 @@ skipped here (they fall through to Tier 5 exactly as they do today).
 Brand resolution itself needs no new work — Stage 03 of the external pipeline
 (`pipeline/03_product_mapping/build_product_brand_map.py`, documented in `docs/brand-extraction.md`) already
 resolves every product's `brand_id` before any taxonomy work touches it (`BRAND_FIELD` → `PRODUCT_NAME_SCAN` →
-`FALLBACK`), and the result is already denormalized onto `marketshare_universe.brand_id`/`brand_confidence`. This
-tier just reads that column, gated the same way `marketshare_universe.sql`'s own documented "standard market
-share filter" already gates it:
+`FALLBACK`).
+
+**Correction found by querying live schema (2026-07-17):** the design originally assumed this was denormalized
+onto `marketshare_universe.brand_id`/`brand_confidence` — that's wrong. `INFORMATION_SCHEMA.COLUMNS` shows the
+live `magpie.marketshare_universe` has no `brand_id`, no `brand_confidence`, and no `master_table` at all (only a
+raw `brand` STRING, plus `category_1/2/3` and `ecommerce_platform` instead of `magpie_category_*`/`platform`) —
+`sql/schema/marketshare_universe.sql` is stale/aspirational, exactly as already flagged by the size-regex-pass
+design's own Appendix. The real resolved `brand_id` lives in `magpie_reference.product_brand_map`, joined on
+`(product_id, platform, country)`, with its own `confidence` STRING column (`'HIGH'|'MEDIUM'|'UNRESOLVED'`, live-
+confirmed) rather than the numeric `brand_confidence` the stale schema implied. This tier joins that table
+instead:
 
 ```sql
-brand_confidence IN ('HIGH', 'MEDIUM') AND brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
+JOIN `sincere-hearth-273704.magpie_reference.product_brand_map` pbm
+  ON pbm.product_id = u.product_id AND pbm.platform = u.ecommerce_platform AND pbm.country = u.country
+WHERE pbm.confidence IN ('HIGH', 'MEDIUM')
+  AND pbm.brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
 ```
 
 The `NOT IN (...)` half matters as much as the confidence check: `BRD-UNDEFINED`/`BRD-UNBRANDED` are both
@@ -100,33 +160,47 @@ collision risk the brand filter exists to prevent in the first place.
 requiring brand does. When `parse_size` returns NULL, match on brand + embedding alone, at a stricter
 `AUTO_MATCH_MAX_DISTANCE`/`AUDIT_FLAG_MAX_DISTANCE` pair than the size-filtered case uses.
 
-**Illustrative auto-match query shape** (final SQL, exact `AI.EMBED`/`AI.SEARCH` syntax, and threshold constants
-are implementation-plan work, not fixed here):
+**Illustrative auto-match query shape** (final SQL and threshold constants are implementation-plan work, not
+fixed here — but the embedding call itself is no longer illustrative-syntax territory, since generation now
+happens on the Hetzner worker and this query only ever reads plain `ARRAY<FLOAT64>` data via `ML.DISTANCE`):
 
 ```sql
--- Illustrative — thresholds and exact embedding-function calls TBD by the pilot (see Testing below).
-INSERT INTO `magpie_reference.product_taxonomy_map`
-  (product_id, platform, country, taxonomy_id, source, confidence, meta_agent, created_at)
+-- Illustrative — thresholds TBD by the pilot (see Testing below). master_table has no NIQ/Intrepid drift
+-- concerns here since both product_id join keys used (product_brand_map, universe_sku_embeddings) are
+-- confirmed-live composite keys, not the stale marketshare_universe.brand_id assumption corrected above.
+INSERT INTO `sincere-hearth-273704.magpie_reference.product_taxonomy_map`
+  (product_id, master_table, platform, country, taxonomy_id, source, confidence, meta_agent, mapped_at)
 SELECT
-  u.product_id, u.platform, u.country,
-  cand.taxonomy_id, 'EMBEDDING_MATCH', 1 - cand.distance, @meta_agent, CURRENT_TIMESTAMP()
-FROM `magpie.marketshare_universe` u
-JOIN <brand resolution output>  b  ON b.product_id = u.product_id  -- Tier 0's resolved brand_id
-LEFT JOIN `magpie_reference.product_taxonomy_map` m
-  ON m.product_id = u.product_id AND m.platform = u.platform AND m.country = u.country
-CROSS JOIN UNNEST([magpie_reference.parse_size(u.sku_name)]) AS parsed
+  u.product_id, u.master_table, u.ecommerce_platform, u.country,
+  cand.taxonomy_id, 'EMBEDDING_MATCH', FORMAT('%.2f', 1 - cand.distance), @meta_agent, CURRENT_TIMESTAMP()
+FROM `sincere-hearth-273704.magpie.marketshare_universe` u
+JOIN `sincere-hearth-273704.magpie_reference.product_brand_map` pbm
+  ON pbm.product_id = u.product_id AND pbm.platform = u.ecommerce_platform AND pbm.country = u.country
+JOIN `sincere-hearth-273704.magpie_reference.universe_sku_embeddings` ue
+  ON ue.product_id = u.product_id AND ue.platform = u.ecommerce_platform AND ue.country = u.country
+LEFT JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m
+  ON m.product_id = u.product_id AND m.platform = u.ecommerce_platform AND m.country = u.country
+CROSS JOIN UNNEST([`sincere-hearth-273704.magpie_reference.parse_size`(u.sku_name)]) AS parsed
 , LATERAL (
     SELECT pt.taxonomy_id,
-           ML.DISTANCE(AI.EMBED(u.sku_name), AI.EMBED(pt.canonical_name), 'COSINE') AS distance
-    FROM `magpie_reference.product_taxonomy` pt
-    WHERE pt.brand_id = b.brand_id
+           ML.DISTANCE(ue.embedding, pte.embedding, 'COSINE') AS distance
+    FROM `sincere-hearth-273704.magpie_reference.product_taxonomy` pt
+    JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_embeddings` pte USING (taxonomy_id)
+    WHERE pt.brand_id = pbm.brand_id
       AND (parsed.size_text IS NULL OR pt.size = parsed.size_text)
     ORDER BY distance ASC
     LIMIT 1
   ) cand
-WHERE m.taxonomy_id IS NULL              -- never touch an already-mapped product
+WHERE pbm.confidence IN ('HIGH', 'MEDIUM')
+  AND pbm.brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
+  AND m.taxonomy_id IS NULL                -- never touch an already-mapped product
   AND cand.distance <= @auto_match_max_distance;
 ```
+
+`confidence` is written as a formatted string (`'0.87'`), not a FLOAT64 — live `product_taxonomy_map.confidence`
+is STRING (confirmed via `INFORMATION_SCHEMA.COLUMNS`, another place the schema file's documented FLOAT64 type
+doesn't match reality), matching the numeric-string convention existing `source='LLM'` rows already use (e.g.
+`'0.85'`, `'0.95'`).
 
 **Illustrative audit query shape** is the same candidate/distance logic, filtered to `m.source = 'LLM'` instead of
 `m.taxonomy_id IS NULL`, comparing `cand.taxonomy_id` against the existing `m.taxonomy_id`, and writing to
@@ -179,8 +253,12 @@ bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 \
 - **No confident candidate** (filters leave nothing, or top-1 exceeds the threshold) → skip; product falls
   through to Tier 5 unchanged. This is the expected common case for anything outside this tier's confidence, not
   an error.
-- **`AI.EMBED` failure/NULL on a given row** → skip that row for the run, don't fail the batch; tally skips in a
-  run summary.
+- **No embedding yet for a given row** (Hetzner worker hasn't reached it — see cold-start note above) → the
+  `JOIN` against `universe_sku_embeddings`/`product_taxonomy_embeddings` simply excludes that row; no special
+  error handling needed since an inner join already skips anything missing an embedding.
+- **Worker-side failure** (model load error, BigQuery load job failure) → the cron run logs and exits non-zero;
+  next scheduled run picks up wherever the "not yet embedded" query naturally leaves off. No partial-state
+  cleanup needed since the worker only ever adds rows to the embeddings tables, never updates or deletes.
 - **Rollback is cheap**: undo a bad auto-match run with `DELETE ... WHERE source = 'EMBEDDING_MATCH' AND
   created_at >= <run start>` — no manual pre-run snapshot needed, unlike the regex pass's UPDATE-based backfill.
 - **`meta_agent` set on every inserted row** per the AGENTS.md hard rule; `source = 'EMBEDDING_MATCH'` keeps
@@ -203,7 +281,11 @@ bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 \
 - **Pass bar:** pick the tightest distance where auto-match precision is ≥98% against this set before trusting it
   to write unattended.
 - Unlike `parse_size`'s embedded static test block, this runnable check is necessarily a live read-only query
-  against real taxonomy data — it depends on `AI.EMBED` output and the actual catalog, not hardcoded structs.
+  against real taxonomy data — it depends on the Hetzner worker having already embedded `th_toothpaste`'s catalog
+  and universe rows, not hardcoded structs.
+- **Pilot precondition:** run the Hetzner worker against `th_toothpaste`'s ~4,177 mapped products and its
+  taxonomy entries first (a small, fast one-off run, not waiting for the full cron cadence) before the
+  precision-measurement query can return anything.
 - Only after the pilot clears the precision bar: auto-match rolls out to new TH products first; audit mode can
   run immediately across all existing `source='LLM'` rows since it's flag-only.
 
@@ -226,18 +308,23 @@ bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 \
 
 ## Deliverables
 
-1. A new BigQuery table `magpie_reference.taxonomy_match_audit_flags` (product_id, platform, country, current
+1. Two new BigQuery tables: `magpie_reference.product_taxonomy_embeddings` and
+   `magpie_reference.universe_sku_embeddings` (schemas above).
+2. A new BigQuery table `magpie_reference.taxonomy_match_audit_flags` (product_id, platform, country, current
    taxonomy_id, suggested taxonomy_id, distance, flagged_at).
-2. `sql/queries/embedding_match_auto.sql` — the auto-match INSERT query.
-3. `sql/queries/embedding_match_audit.sql` — the audit-flag INSERT query (same matching logic, different
+3. The Hetzner-VM embedding worker (Python script + cron entry) — embeds `product_taxonomy.canonical_name` and
+   `marketshare_universe.sku_name` for rows not yet present in the tables above, using
+   `intfloat/multilingual-e5-large` via `sentence-transformers`, batch-loaded back via `bq load`.
+4. `sql/queries/embedding_match_auto.sql` — the auto-match INSERT query.
+5. `sql/queries/embedding_match_audit.sql` — the audit-flag INSERT query (same matching logic, different
    destination and filter).
-4. Pilot validation query + recorded results against `th_toothpaste`, determining the two distance thresholds —
+6. Pilot validation query + recorded results against `th_toothpaste`, determining the two distance thresholds —
    findings recorded in the implementation plan the way the regex pass's discovery findings were merged into its
    own plan's Appendix.
-5. A short subsection in `docs/llm-extraction-rules.md` (or a new `docs/embedding-match.md`, TBD in the plan)
+7. A short subsection in `docs/llm-extraction-rules.md` (or a new `docs/embedding-match.md`, TBD in the plan)
    documenting that a pre-mapping step now runs before Tier 5, and that `source='EMBEDDING_MATCH'` /
    `taxonomy_match_audit_flags` are new things a session touching taxonomy provenance should know about.
-6. `script/headless_taxonomy.sh` modified: the `bq query` pre-step added before its `claude -p` invocation, and
+8. `script/headless_taxonomy.sh` modified: the `bq query` pre-step added before its `claude -p` invocation, and
    the one-line addition to that prompt telling the session not to re-map `source='EMBEDDING_MATCH'` rows (see
    Wiring section above).
 
