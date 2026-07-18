@@ -1060,3 +1060,98 @@ dimension this bucket depends on."
    category not explicitly re-run with `--master-table`. If this fix is judged worth keeping, the cron
    invocation should be changed to loop over categories with `--master-table` set (or the worker extended with
    a dynamic per-row `master_clean_niq` join) — not attempted here, out of scope for this task.
+
+---
+
+## Appendix update: 2026-07-18 — fix objectively-wrong ground-truth rows, re-measure unambiguous bucket (Task 5c)
+
+**Status: DONE. Corrected unambiguous-bucket precision is 87.37% (173/198), up from 85.35% (169/198) — still
+short of 0.98. Recommendation: do not enable the unambiguous-bucket auto-match carve-out.** This section does
+not delete or supersede the 2026-07-18 (Task 5b) section above; it records the follow-up the human plan owner
+directed after reading that section's option (ii).
+
+### Motivation
+
+Task 5b's qualitative spot-check found that of the unambiguous bucket's 29 disagreements against recorded
+`product_taxonomy_map` ground truth, 16 had a recorded `product_taxonomy.size` that objectively contradicts the
+product's own `parse_size(sku_name)` output — a purely mechanical criterion, not a judgment call. The plan
+owner directed: fix those rows, then re-measure (option (ii) from Task 5b's Recommendation section).
+
+### Re-derivation and spot-check (Task 5c Steps 1-2)
+
+The 16-row list was re-derived from a live query (`sql/queries/task5c_unambiguous_disagreements.sql`, new
+file) rather than trusted from the prior report — it reproduced the same 16/29 count, confirming the underlying
+data hadn't shifted. Each of the 16 was then spot-checked by eye (brand, size, and any product-line/pack-count
+claim in the correction candidate's `canonical_name`, against the product's own `sku_name`) before being
+applied. **Only 4 of the 16 held up**; the other 12 were rejected:
+
+- 5 products ("ริ้วใสเย็นสดชื่น"/Clear Cool Refreshing 90g Colgate listings) would have been repointed to
+  SKU-072016 "Colgate Miracle Repair Gum Revival Toothpaste 90g x2" — a specific, different product line never
+  mentioned in any of the listings, and a different pack count. It's the *only* 90g Colgate taxonomy row, which
+  is exactly why it looked "unambiguous" — not because it's actually the right answer.
+- 5 products (generic "Colgate 35g pack of 12" listings, no "Optic White" mention) would have been repointed to
+  SKU-047025 "Colgate Optic White O2 35g" — the only 35g Colgate row, same failure pattern.
+- 1 product (Sparkle, "Coffee&Tea Drinker 50g" with a buy-1-get-1 promo) would have been repointed to the only
+  50g Sparkle row, "Sparkle Toothpaste 50g x3" — a specific 3-pack claim that doesn't clearly match a 2-unit
+  promo. Genuinely uncertain; skipped per the brief's instruction to leave anything that doesn't clearly hold up
+  alone.
+- 1 product (Veldent, product_id `41350139292`) is the bundle-text case already flagged in Task 5b's qualitative
+  spot-check as category (a) "candidate genuinely wrong": a mouthwash+toothpaste bundle listing where
+  `parse_size` grabbed the mouthwash's 250ml token, producing a spuriously unambiguous 250ml candidate for what
+  is actually, correctly, a 100g toothpaste. The currently recorded mapping is right; left untouched.
+
+**This is the most important finding of Task 5c:** of the candidates that passed the purely mechanical
+"ground truth size is wrong" filter, 75% (12/16) failed a basic sanity check of whether the *correction*
+candidate itself was trustworthy. All 12 share one structural cause — the taxonomy has only one SKU at that
+brand+size, and that SKU happens to name a specific product line or pack count the product's own text never
+claims. `candidate_count = 1` was being produced by sparse taxonomy coverage at that size, not by the product
+genuinely, uniquely matching that row. This is a sharper, more concrete version of the "candidate key too
+loose" finding already flagged as the top recommendation in both the 2026-07-17 and 2026-07-18 sections above.
+
+### Fix applied (Task 5c Step 3)
+
+4 rows in `product_taxonomy_map` (`master_table = 'shopee_th_toothpaste'`) were updated via guarded `UPDATE`
+statements (`sql/queries/task5c_fix_ground_truth.sql`, new file — each `WHERE` clause matches the exact
+pre-verified old `taxonomy_id`, so it's a no-op rather than a silent overwrite under a race):
+
+| product_id | old taxonomy_id (size) | new taxonomy_id (size) |
+|---|---|---|
+| 10390380966 | SKU-047039 (150g) | SKU-055000 (155g, "Colgate MaxFresh Toothpaste 155g x2") |
+| 21024306852 | SKU-001044 (150g) | SKU-047037 (135g, "Colgate Toothpaste 135g") |
+| 47754649733 | SKU-055011 (150g) | SKU-047038 (140g, "Colgate Toothpaste 140g") |
+| 54756259132 | SKU-055001 (150g) | SKU-047033 (75g, "Colgate Toothpaste 75g") |
+
+`confidence` was bumped 0.75-0.80 → 0.95 (not 1.00, since 3 of 4 candidates lose some flavor specificity even
+though the size is now correct); `source` was left as `'LLM'` (the brand identification itself wasn't wrong,
+only the downstream size/candidate resolution); `meta_agent` re-asserted as `'CLAUDE_CODE'`; `llm_raw` set to a
+`{"method": "task5c_ground_truth_size_fix", "reason": "..."}` JSON note per the existing convention used
+elsewhere in that column; `mapped_at` set to the correction timestamp. Full before/after values in
+`.superpowers/sdd/task-5c-report.md`.
+
+### Re-measured precision (Task 5c Step 4, same `pilot_validate_th_toothpaste.sql`, unmodified)
+
+| bucket | threshold | candidates | correct | precision |
+|---|---|---|---|---|
+| unambiguous | 2.0 (ungated) | 198 | **173** | **0.8737** (was 169/198 = 0.8535) |
+| ambiguous | 2.0 (ungated) | 1871 | 979 | 0.5232 (unchanged, bit-for-bit) |
+| overall | 2.0 (ungated) | 2069 | 1152 | 0.5568 (was 1148/2069 = 0.5549) |
+
+Exactly +4 more `correct` in the unambiguous bucket, matching the 4 rows fixed; the ambiguous bucket is
+unchanged, confirming the fix stayed scoped as intended with no side effects elsewhere.
+
+### Reassessment of option 3 (Task 5c Step 5)
+
+**Recommendation: still do not enable the unambiguous-bucket auto-match carve-out. Hold option (i) — leave
+this bucket to Tier 5 (LLM), as today.** Two reasons:
+
+1. 87.37% still doesn't clear 0.98 — the ground-truth fix closed only part of the gap.
+2. More importantly, the spot-check process itself is evidence against the carve-out: 75% (12/16) of the
+   candidates that looked like "ground truth is objectively wrong" were themselves untrustworthy, for a
+   structural reason (sparse taxonomy coverage at a given brand+size manufactures false "unambiguous" matches).
+   This means Task 5b's qualitative estimate that "55% of this bucket's disagreements are arguably as good or
+   better than ground truth" was measuring something weaker than it looked — many of those candidates only look
+   reasonable until you check whether the taxonomy actually has the right row on offer. This directly reinforces
+   the standing recommendation (both here and in 2026-07-17/2026-07-18) that the real next lever is tightening
+   the candidate key (`pack_count` equality, and plausibly a minimal product-line/flavor token check) — not
+   further ground-truth auditing, which has now been shown to only account for a modest, bounded slice of this
+   bucket's measured gap.
