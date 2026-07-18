@@ -795,3 +795,236 @@ threshold.
   join predicate`). Restructured as a 1-row `latest_month` CTE cross-joined in, with the month comparison moved
   to `WHERE` — a semantics-preserving change for an inner join. All precision numbers above were produced by the
   committed (working) version of the file.
+
+---
+
+## Appendix update: 2026-07-18 — `sku_name_EN` fix + unambiguous-bucket carve-out (Task 5b)
+
+**Status: STILL BLOCKED for the ambiguous bucket. Unresolved judgment call for the plan owner on the
+unambiguous (candidate_count = 1) fast path — see Recommendation below.** This section does not delete or
+supersede the 2026-07-17 findings above; it records what changed and re-measures against the same ground-truth
+pool (2069 eligible rows), so the two sections are directly comparable.
+
+### Motivation
+
+The human plan owner inspected two of the original pilot's mismatches directly and found the embedding worker
+was embedding `marketshare_universe_niq.sku_name` — often untranslated/mixed Thai-English/garbled text (e.g.
+`"Tepthai เทพไทย ยาสีฟันสมุนไพร สูตรเข้มข้น 30/70กรัม"`) — against `product_taxonomy.canonical_name`, which is
+clean English (e.g. `"Tepthai Concentrated Formula Toothpaste 70g"`). Hypothesis: this language/register
+mismatch, not a fundamental embedding-quality problem, was degrading the ranking.
+`master_clean_niq.shopee_th_toothpaste.sku_name_EN` (machine-translated English) is 99.99%-filled and was
+proposed as the fix. Decision (verbatim): **"continue with alternative 1 combined with 2, and fix the query to
+include sku_name_EN"** — alternative 1 = auto-match only when brand+size uniquely identifies one taxonomy entry
+(no embedding ranking needed), alternative 2 = re-embed `sku_name_EN` instead of raw `sku_name` for the
+incoming side.
+
+### Worker change
+
+`script/embedding_worker.py`'s `embed_universe_skus` now, when `--master-table` is given, joins
+`master_clean_niq.{master_table}` (deduplicated per `product_id` via `ARRAY_AGG(sku_name_EN ORDER BY month
+DESC, created_date DESC LIMIT 1)[OFFSET(0)]`, since `master_clean_niq` is the raw per-listing source table, not
+deduplicated to product-month grain like `marketshare_universe_niq`) and prefers `sku_name_EN` over raw
+`sku_name` per row via `COALESCE(NULLIF(en.sku_name_en, ''), universe.sku_name)`. Verified before the real run:
+all 10,553 `shopee_th_toothpaste` products matched a `master_clean_niq` row 1:1 (no dropped/duplicated rows
+relative to the `marketshare_universe_niq`-driven candidate list), and 100% got a non-empty `sku_name_EN` (0
+fell back to raw `sku_name`). Table name is interpolated via f-string (BigQuery cannot parameterize table
+identifiers) — guarded with a `^[a-zA-Z0-9_]+$` regex check on `--master-table` before interpolation, since this
+is now a second injection surface beyond the existing `@master_table` query parameter use.
+
+**Scope limitation (disclosed, not papered over):** this preference only applies when `--master-table` is
+passed. An unscoped full sweep (`--master-table` omitted) has no single `master_clean_niq` table to join
+against — each row in that sweep can belong to a different category's master table — so unscoped runs still
+embed raw `sku_name` only, unchanged from before. The hourly cron job described in Task 2 Step 7 runs unscoped,
+so this fix does **not** apply automatically to future incremental embeddings unless the cron invocation is
+changed to iterate `--master-table` per category (out of scope for this task; noted here for whoever picks that
+up).
+
+### Recompute (Task 5b Step 2)
+
+The existing 10,553 `universe_sku_embeddings` rows for `shopee_th_toothpaste` were computed from raw
+`sku_name`. Deleted via a `DELETE ... WHERE EXISTS (SELECT 1 FROM marketshare_universe_niq WHERE master_table =
+'shopee_th_toothpaste' AND <key match>)` (join-scoped, not a blanket truncate — `universe_sku_embeddings` has no
+`master_table` column of its own by design). Verified before deleting that all 10,553 existing rows belonged to
+this scope (no other `master_table` had been embedded yet), so the delete was a clean full-table clear in
+practice, but done via the scoped join query as a matter of process discipline for when that stops being true.
+`product_taxonomy_embeddings` (canonical-name side) was not touched, per the brief.
+
+| step | row count |
+|---|---|
+| `universe_sku_embeddings` before delete | 10,553 |
+| `universe_sku_embeddings` after delete | 0 |
+| Smoke test (`--limit 5`) after worker fix | 5 embedded |
+| Full recompute (`--master-table shopee_th_toothpaste`, no limit) | 10,548 embedded |
+| `universe_sku_embeddings` after recompute | 10,553 (matches pre-delete count exactly) |
+
+Both runs used the reused `.venv-embedding/` venv from the original Task 5 pilot (same `torch==2.13.0+cpu`,
+`sentence-transformers==5.6.0`, `google-cloud-bigquery` versions) — no reinstall needed. `product_taxonomy_embeddings`
+was untouched and remained at 22,005 rows (100% coverage of `product_taxonomy`'s current 22,005 rows — confirmed
+unchanged before/after, and `embed_taxonomy` correctly returned 0 new rows both times since coverage was already
+complete).
+
+### Updated pilot query (`sql/queries/pilot_validate_th_toothpaste.sql`)
+
+Edited in place (not forked) per the brief's preference. Additions beyond the 2026-07-17 version:
+
+- A `candidate_count` dimension (via a `brand_size_pool` CTE counting distinct `taxonomy_id`s passing the
+  brand+size filter, before any embedding ranking) splits every row into `unambiguous` (`candidate_count = 1`)
+  or `ambiguous` (`candidate_count > 1`), via `GROUP BY GROUPING SETS ((bucket, threshold), (threshold))` so the
+  per-bucket and overall rows come out of one query.
+- A deterministic tiebreaker (`ORDER BY dist ASC, pt.taxonomy_id ASC` in the top-1 `QUALIFY`) — the original
+  query's `correct` counts wobbled ±1-2 rows run-to-run on exact-tied distances; this pins it down.
+- A sentinel threshold `2.0` (COSINE distance's theoretical max, i.e. "ungated") added to the threshold array,
+  on advisor review of an earlier draft of this task: the unambiguous fast path (alternative 1) auto-matches its
+  single candidate regardless of embedding distance, so measuring its precision/volume at a distance-gated
+  threshold would understate it. The `2.0` row reports the true ungated precision/volume for each bucket, and
+  the true ungated overall precision.
+- Finer low-end threshold steps (`0.02` increments from `0.02`–`0.12`, vs. the original `0.05` increments) to
+  pinpoint the ambiguous-bucket 0.98 crossover, if any — the original run's low-end buckets were too coarse to
+  localize a crossover, and EN-translated text was expected to compress distances toward zero.
+
+### Precision table (Task 5b, ground truth pool: same 2,069 eligible rows as the 2026-07-17 run)
+
+Same ground-truth derivation as before: 2,166 `source='LLM'` map rows for `shopee_th_toothpaste` → 2,126 after
+brand-confidence/brand-not-undefined filters → 2,069 that produced a brand+size-filtered candidate. Of those,
+**1,871 (90.4%) are ambiguous** (candidate_count > 1) and **198 (9.6%) are unambiguous** (candidate_count = 1).
+
+| bucket | threshold | candidates_under_threshold | correct | precision |
+|---|---|---|---|---|
+| overall | 0.08 | 32 | 20 | 0.6250 |
+| overall | 0.10 | 207 | 77 | 0.3720 |
+| overall | 0.12 | 759 | 376 | 0.4954 |
+| overall | 0.15 | 1842 | 1018 | 0.5527 |
+| overall | 0.20 | 2066 | 1148 | 0.5557 |
+| overall | 0.25 | 2068 | 1148 | 0.5551 |
+| overall | 0.30 | 2069 | 1148 | 0.5549 |
+| **overall** | **2.0 (ungated)** | **2069** | **1148** | **0.5549** |
+| ambiguous | 0.08 | 32 | 20 | 0.6250 |
+| ambiguous | 0.10 | 203 | 73 | 0.3596 |
+| ambiguous | 0.12 | 715 | 336 | 0.4699 |
+| ambiguous | 0.15 | 1676 | 870 | 0.5191 |
+| ambiguous | 0.20 | 1868 | 979 | 0.5241 |
+| ambiguous | 0.25 | 1870 | 979 | 0.5235 |
+| ambiguous | 0.30 | 1871 | 979 | 0.5232 |
+| **ambiguous** | **2.0 (ungated)** | **1871** | **979** | **0.5232** |
+| unambiguous | 0.10 | 4 | 4 | 1.0000 |
+| unambiguous | 0.12 | 44 | 40 | 0.9091 |
+| unambiguous | 0.15 | 166 | 148 | 0.8916 |
+| unambiguous | 0.20 | 198 | 169 | 0.8535 |
+| unambiguous | 0.25 | 198 | 169 | 0.8535 |
+| unambiguous | 0.30 | 198 | 169 | 0.8535 |
+| **unambiguous** | **2.0 (ungated)** | **198** | **169** | **0.8535** |
+
+(Thresholds 0.02, 0.04, 0.06 are omitted — 0 candidates at those cutoffs; ambiguous-bucket minimum observed
+distance is 0.0631, unambiguous-bucket minimum is 0.0877.)
+
+**Headline result: the `sku_name_EN` fix did not improve raw precision-against-recorded-ground-truth — it is
+essentially flat-to-slightly-worse than the original raw-`sku_name` run** (overall ungated 0.5549 here vs. the
+original's flat ~0.591 plateau at thresholds ≥0.15). This was verified as a real result, not a bug: same
+2,069-row ground-truth pool both times, embeddings confirmed freshly computed today with 100% `sku_name_EN`
+coverage (0 fallback-to-raw), correct join keys, `product_taxonomy_embeddings` unchanged between runs. This
+contradicts the motivating hypothesis taken at face value — see the qualitative spot-check below for why the
+raw number alone is misleading here.
+
+The **unambiguous bucket** (alternative 1's fast path) measures at **0.8535 ungated precision on 198 rows (9.6%
+of the eligible pool)** — well above the ambiguous bucket's 0.5232, but *not* the ~100%-by-construction outcome
+the brief's design intuition suggested. `candidate_count = 1` only guarantees there's nothing to rank between —
+it does not guarantee the one candidate is the ground-truth answer, since the ground-truth `taxonomy_id` can
+still be excluded from the brand+size pool entirely (the original pilot's ~12% "structural miss" category
+applies here too).
+
+### Qualitative spot-check (Task 5b Step 4)
+
+Two independent samples were pulled and read row-by-row (`sku_name_EN`, actual `canonical_name`, candidate
+`canonical_name`), each categorized as **(a)** candidate genuinely wrong, **(b)** candidate arguably
+as-good-or-better than the recorded ground truth, or **(c)** genuinely ambiguous/unclear:
+
+- **Sample 1 — 30 random rows from all disagreements** (dominated by the ambiguous bucket, since only 29 of 921
+  total disagreements are unambiguous, so a 30-row uniform random sample was very unlikely to include any —
+  and did not): **(a) 7/30 (~23%)**, **(b) 10/30 (~33%)**, **(c) 13/30 (~43%)**.
+- **Sample 2 — all 29 unambiguous-bucket disagreements** (the full population, not a sample, since it's small):
+  **(a) 4/29 (~14%)**, **(b) 16/29 (~55%)**, **(c) 9/29 (~31%)**.
+
+Concrete examples:
+
+- **(b) example (strong):** product `28826577969`, `sku_name_EN` = `"[1 piece] Colgate Total Plaque Release
+  Toothpaste ... ขนาด 95 กรัม (1 ชิ้น)"` (explicitly 95g, 1 piece). Actual ground truth =
+  `"Colgate Total 150g"` — **wrong size** (150g vs. the stated 95g). Candidate =
+  `"Colgate Total Plaque Release Toothpaste RevivingCool 95g"` — exact size and product-line match. The
+  candidate is clearly correct and the recorded ground truth is clearly wrong here.
+- **(b) example (taxonomy-gap flavor):** product `10390380966`, `sku_name_EN` = `"Colgate Toothpaste MaxFresh
+  Pepper Mint Ice 155g Pack of 2"`. Actual = `"Colgate Toothpaste 150g"` (wrong size, generic, no line).
+  Candidate = `"Colgate MaxFresh Toothpaste 155g x2"` — matches size, product line, and pack count exactly.
+- **(a) example:** product `28927991365`, `sku_name_EN` = `"[Systema] Systema Toothpaste 80 grams x 6 tubes"` —
+  a generic listing naming no specific product line. Actual = `"Systema Toothpaste"` (a plausible generic
+  match for a generic listing). Candidate = `"Systema Ultra Care & Protect Toothpaste"` — introduces a specific
+  line not supported anywhere in the text. Here the candidate is the one overreaching.
+- **(a) example (bundle-text confusion):** product `41350139292`, `sku_name_EN` = `"Veldent Extra Bright Smile
+  Mouthwash 250ml & CHIC SMILE Toothpaste Veldent 100g (Free! Toothpaste Pump)"` — a bundle listing containing
+  both a mouthwash and a toothpaste. Actual = `"Veldent Toothpaste 100g"` (correctly picks the toothpaste
+  component's size). Candidate = `"Veldent Toothpaste 250ml"` — the `parse_size` filter apparently grabbed the
+  *mouthwash's* size token (250ml) from the bundle text instead of the toothpaste's own 100g, steering the
+  brand+size candidate pool wrong before ranking ever ran. A structural (filter-input) failure, not a ranking
+  failure.
+- **(c) example:** product `54756259132`, `sku_name_EN` = `"Colgate Toothpaste, Herbs & Salt Formula, 75 g"`.
+  Actual = `"Colgate Salt Herbal Toothpaste 150g"` — matches the stated flavor family exactly but the **wrong
+  size** (150g vs. 75g). Candidate = `"Colgate Toothpaste 75g"` — matches the size exactly but is generic,
+  losing the "Herbs & Salt" specificity. Neither is a clean win; genuinely a toss-up.
+
+**Recurring pattern worth flagging:** a large share of both the (a)-wrong and (b)-better cases hinge on whether
+a pack-count/multiplier phrase in the source text ("Twin Pack", "4 tubes", "Buy 1 Get 1", "12 Pieces", "Set of
+4") was captured correctly — sometimes the candidate captures it and the recorded ground truth doesn't (→ (b)),
+sometimes the reverse (→ (a)). This echoes the original 2026-07-17 pilot's finding that ~36% of errors were
+pack-count confusion, and reinforces its Recommendation #1 (tighten the candidate key to also require
+`pack_count` equality, not just `size`) as a promising next lever — not attempted in this task, out of scope,
+noted here for whoever picks up Task 5c.
+
+**Interpretation:** raw precision-against-recorded-ground-truth substantially understates real-world matcher
+quality here — in the unambiguous bucket, only 4/29 (~14%) of "disagreements" are unambiguous candidate errors;
+the rest are either arguably-correct candidates exposing ground-truth gaps (55%) or genuinely ambiguous (31%).
+This is exactly the phenomenon the human plan owner flagged from their own two manual spot-checks, now
+confirmed at a larger sample size. It does not, however, change the measured number against the *recorded*
+ground truth, which is what the formal 0.98 bar is defined against.
+
+### Threshold determination (Task 5b Step 5)
+
+**Ambiguous bucket (candidate_count > 1):** No threshold clears 0.98. The tightest/best bucket is `dist ≤ 0.08`
+at 0.6250 precision, and it rests on only 32 candidates — too thin to trust even before considering it's still
+36 points short of the bar. This is the same conclusion as the original 2026-07-17 pilot (which similarly found
+no threshold clearing 0.98, best case ~0.60 on a thin 48-row bucket). **`AUTO_MATCH_MAX_DISTANCE` remains
+unset. The ambiguous bucket remains BLOCKED**, per the brief's explicit instruction not to lower the bar
+unilaterally — this is reported as the measured number, with the ground-truth-quality confound above flagged
+as context, not as grounds for a different conclusion.
+
+**Unambiguous bucket (candidate_count = 1, alternative 1's fast path):** measured ungated precision is 0.8535
+(169/198) against recorded ground truth — also short of 0.98 on the raw number. However: (1) this bucket
+requires no embedding-distance threshold at all by design (alternative 1's premise is "skip ranking when
+brand+size uniquely identifies one candidate"), so there is no threshold to tune here — it's a binary
+apply-or-don't-apply decision on the whole bucket; and (2) the qualitative spot-check found the *majority*
+(16/29, ~55%) of this bucket's disagreements have a candidate that is arguably as-good-or-better than the
+recorded ground truth, versus only ~14% genuine candidate errors — a materially stronger version of the
+ground-truth-quality confound than the ambiguous bucket shows. **This is the real judgment call for the
+controller, not resolved here per the brief's explicit instruction**: the measured number (0.8535) does not
+clear 0.98, but the qualitative composition of that gap looks meaningfully different from a "the matcher is
+bad" story — it looks more like "the recorded ground truth itself has real gaps in exactly the size/pack-count
+dimension this bucket depends on."
+
+### Recommendation
+
+1. **Do not enable auto-match for the ambiguous bucket** (candidate_count > 1) at any threshold — this
+   conclusion is unchanged from 2026-07-17 and the `sku_name_EN` fix did not move it. If a future pass wants to
+   revisit this, the pack-count-equality candidate-key tightening flagged above (echoing the original report's
+   Recommendation #1) is the most evidence-backed next lever, not another embedding-input change.
+2. **The unambiguous bucket (candidate_count = 1) is a genuine open decision for the controller**, not
+   something this task resolves: 0.8535 measured precision is below the formal 0.98 bar, but ~55% of its
+   measured "errors" look like ground-truth gaps rather than matcher errors on manual inspection, and the bucket
+   is small (9.6% of volume) with no threshold to tune — it's an all-or-nothing carve-out. Options for the
+   controller: (i) hold the line at 0.98 measured-against-recorded-ground-truth and leave this bucket to Tier 5
+   (LLM) as today, consistent with the brief's "don't lower the bar unilaterally" instruction; (ii) spend
+   analyst time correcting the ~16 identified likely-wrong ground-truth rows in this bucket and re-measure
+   before deciding; or (iii) accept a lower empirical bar for this specific low-volume, low-risk carve-out given
+   the qualitative evidence, which is the option this task was explicitly told not to pick unilaterally.
+3. **Unscoped-sweep scope gap:** the `sku_name_EN` preference only applies when a worker run is `--master-table`-
+   scoped. The hourly cron job (Task 2 Step 7) runs unscoped and will keep embedding raw `sku_name` for any
+   category not explicitly re-run with `--master-table`. If this fix is judged worth keeping, the cron
+   invocation should be changed to loop over categories with `--master-table` set (or the worker extended with
+   a dynamic per-row `master_clean_niq` join) — not attempted here, out of scope for this task.
