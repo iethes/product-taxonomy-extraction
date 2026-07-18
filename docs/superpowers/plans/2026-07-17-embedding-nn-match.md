@@ -2,6 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **STATUS: Stopped after Task 5, 2026-07-18.** Tasks 1-5 executed successfully (infrastructure built, three
+> rounds of pilot validation run against `shopee_th_toothpaste`) but Task 5's own success criterion — 0.98
+> precision before trusting auto-match to write unattended — was never met: ~52-55% in the ambiguous-candidate
+> bucket (90% of the pool), ~87% in the unambiguous bucket even after fixing genuine ground-truth errors. Human
+> decision: do not proceed to Task 6 (production wiring) or Task 7 (docs) under this design. Full precision
+> tables, root-cause analysis, and the three-round pilot history are in the Appendix at the bottom of this file.
+> See [`docs/traditional-ml-execution-model.md`](../../traditional-ml-execution-model.md) Rec. 3 for the
+> pointer future sessions will actually read, and the design doc's status line for the short version.
+
 **Goal:** Ship a Tier 3 embedding-match layer — auto-match new products to existing taxonomy entries (skipping
 the LLM entirely when confident) and flag disagreements on already-mapped `source='LLM'` rows (audit mode,
 never auto-fixing) — wired into `script/headless_taxonomy.sh` as a pre-step before every `claude -p` call.
@@ -607,6 +616,10 @@ git commit -m "Run embedding-match pilot against th_toothpaste, record chosen th
 
 ### Task 6: Wire into `script/headless_taxonomy.sh`
 
+> **NOT STARTED.** Blocked on Task 5's threshold requirement, which was never met — see the STATUS note at the
+> top of this file and the Appendix below. Left as written (steps unchecked) for whoever picks this back up with
+> a redesigned candidate key, not because the work was forgotten.
+
 **Files:**
 - Modify: `script/headless_taxonomy.sh`
 
@@ -676,6 +689,8 @@ git commit -m "Wire embedding auto-match as a pre-step in headless_taxonomy.sh, 
 ---
 
 ### Task 7: Document the pre-mapping step
+
+> **NOT STARTED.** Same reason as Task 6 — there is no pre-mapping step in production to document.
 
 **Files:**
 - Modify: `docs/llm-extraction-rules.md`

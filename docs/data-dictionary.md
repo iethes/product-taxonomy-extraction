@@ -202,15 +202,19 @@ WHERE brand_confidence IN ('HIGH', 'MEDIUM')
 | Column | Type | Description |
 |--------|------|-------------|
 | `taxonomy_id` | STRING PK | Format: `SKU-{6digits}` e.g. `SKU-000001`. Never reuse. Allocated in 1000-slot blocks per category. |
-| `canonical_name` | STRING | Full product name: `{Brand} {Line} {Variant} {Size} [x{N}]` e.g. `"Vaseline Gluta-Hya UV Serum 400ml x2"` |
 | `brand_id` | STRING FK | → `brand_dict.brand_id` |
+| `product_line` | STRING | Product line name as shown on packaging e.g. `"Gluta-Hya"`, `"Cool Menthol"`. Never a generic category word. |
+| `sub_line` | STRING | Optional sub-line e.g. `"UV Serum"` — populated only where a real signal exists. |
+| `variant` | STRING | Optional flavor/formula variant e.g. `"Charcoal (Black)"` — populated only where a genuine variant exists. |
 | `size` | STRING | e.g. `200ml`, `400g`, `1L`. NULL only if genuinely multi-size (is_multi_size=TRUE) |
 | `pack_count` | INT | Units per listing. 1 = single; ≥2 = multipack |
+| `canonical_name` | STRING | Full product name: `{Brand} {Product Line} {Sub-line/Variant} {Size} [x{N}]` e.g. `"Vaseline Gluta-Hya UV Serum 400ml x2"` |
 | `is_multi_size` | BOOL | TRUE = this entry covers multiple sizes legitimately |
 | `is_multi_variant` | BOOL | TRUE = covers multiple formula/flavor variants |
 | `is_bundle` | BOOL | TRUE = cross-brand bundle (e.g. Coke + Fanta pack) |
 | `meta_agent` | STRING | `CLAUDE_CODE`, `CODEX`, or `HUMAN` — never NULL |
 | `created_at` | TIMESTAMP | |
+| `updated_at` | TIMESTAMP | |
 
 **Canonical name format:** `{Brand} {Product Line} {Sub-line/Variant} {Size} [x{N}]`
 
@@ -221,7 +225,7 @@ WHERE brand_confidence IN ('HIGH', 'MEDIUM')
 - Wrong: `"Vaseline Body Lotion All Variants"` (never use "All Variants")
 - Wrong: `"Crystal Drinking Water 1.5L x90 (15 packs of 6)"` (no breakdown suffix)
 
-**Current MAX taxonomy_id:** SKU-058455. See [`docs/categories/STATUS.md`](categories/STATUS.md) for full SKU allocation map.
+See [`docs/categories/STATUS.md`](categories/STATUS.md) for the current SKU allocation map — always query BQ for the live MAX before inserting.
 
 ---
 
@@ -340,3 +344,19 @@ magpie_category_1
 ```
 
 Mapping source: `niq_category_mapping` tab in working Sheet (239 rows as of May 2026).
+
+---
+
+## Embedding-match pilot tables (unused, not part of any live pipeline)
+
+Three `magpie_reference` tables exist from a 2026-07-18 pilot of embedding-based taxonomy matching — piloted and
+blocked, not wired into production. Listed here only so they aren't mistaken for a missing/undocumented live
+table:
+
+| Table | Grain | Purpose |
+|-------|-------|---------|
+| `product_taxonomy_embeddings` | One row per `taxonomy_id` | `canonical_name` embedding vectors |
+| `universe_sku_embeddings` | One row per `(product_id, platform, country)` | `sku_name`/`sku_name_EN` embedding vectors |
+| `taxonomy_match_audit_flags` | One row per flagged disagreement | Unused — audit-mode output, never populated in production |
+
+Full context: [`docs/superpowers/plans/2026-07-17-embedding-nn-match.md`](superpowers/plans/2026-07-17-embedding-nn-match.md).

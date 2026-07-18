@@ -92,6 +92,30 @@ Embedding calls have no output-token cost and are roughly an order of magnitude 
 
 **Feasibility:** High — supported natively in BigQuery, no separate ML infra to stand up. **Difficulty:** Medium — mainly threshold-tuning per category (some categories will need a tighter distance cutoff than others) and validating against a category with known-good ground truth (e.g. `th_body_wash`, which already has full LLM extraction to compare against). **Cost:** $ — embedding-only, no generation cost; the catalog side (~15–68K rows) is embedded once and reused for every incoming product.
 
+**Piloted 2026-07-18 — blocked, do not re-attempt this exact design without reading the findings first.**
+Full pilot against `shopee_th_toothpaste` (real data, self-hosted `multilingual-e5-large` embeddings, not the
+`AI.SEARCH` sketch above): precision against existing LLM ground truth **never cleared the required 0.98 bar** —
+capped at ~52–55% for products where brand+size matches multiple taxonomy entries (90% of the pool), and only
+~87% even for products where brand+size matches exactly one entry (the remaining 10%, after fixing genuine
+ground-truth errors found along the way). Two independent fix attempts (translating `sku_name` to English before
+embedding; correcting bad ground-truth rows) each moved the number by only a few points. Root cause, confirmed
+by manual spot-check: **brand+size is too loose a candidate key** — it doesn't discriminate between same-
+brand/same-size product-line variants (different flavor/formulation), and "unambiguous" (exactly one candidate)
+often just means the taxonomy has sparse coverage at that brand+size, not that the match is actually correct.
+
+The infrastructure this pilot built is real and reusable if this is picked up again: two BigQuery tables
+(`magpie_reference.product_taxonomy_embeddings`, `magpie_reference.universe_sku_embeddings`), a self-hosted
+embedding worker (`script/embedding_worker.py`, runs on commodity CPU hardware — no Vertex AI/GPU needed), and
+validated `JOIN` + `QUALIFY ROW_NUMBER()` / `ML.DISTANCE` SQL patterns (BigQuery has no `LATERAL` keyword — a
+real gotcha hit and fixed during this pilot). What's *not* reusable as-is is the matching logic itself — the
+next attempt needs a materially tighter candidate key (e.g. `pack_count` equality plus some product-line/flavor
+signal, not brand+size alone) before another pilot is worth running.
+
+Full findings, precision tables, and the exact root-cause analysis:
+[`docs/superpowers/specs/2026-07-17-embedding-nn-match-design.md`](superpowers/specs/2026-07-17-embedding-nn-match-design.md)
+(the design) and [`docs/superpowers/plans/2026-07-17-embedding-nn-match.md`](superpowers/plans/2026-07-17-embedding-nn-match.md)
+(the plan — see its Appendix for the full pilot history across three rounds).
+
 ---
 
 ## 4. Cluster the unmatched products instead of sending each to an LLM
@@ -155,7 +179,7 @@ Embedding calls have no output-token cost and are roughly an order of magnitude 
 ## Suggested sequencing
 
 1. **Cheapest, ship first:** Rec. 2 (regex fix — closes the reported bug directly) and Rec. 6 (OCR-first for brand-from-image) — both reuse infrastructure that already exists.
-2. **Biggest structural win:** Rec. 3 (embedding + nearest-neighbor match) — this is the one that actually changes the cost curve, since it removes the LLM from the common case entirely rather than making the LLM call cheaper.
+2. **Biggest structural win, *if* it can be made to work:** Rec. 3 (embedding + nearest-neighbor match) — this is the one that actually changes the cost curve, since it removes the LLM from the common case entirely rather than making the LLM call cheaper. **Piloted 2026-07-18 and blocked as originally scoped** (brand+size candidate key, whole-name embedding) — see Rec. 3's own section above for the full findings before attempting this again. Not proven infeasible in general, just proven that *this specific* candidate-key design doesn't discriminate well enough.
 3. **Compounds with #2:** Rec. 4 (clustering unmatched products) — only pays off once Tier 3 exists to feed it a "no match" pool to cluster.
 4. **Opportunistic:** Rec. 5 and Rec. 7 — smaller wins, pick up once the pipeline above is stable.
 5. **Only if the simpler tiers plateau:** Rec. 8 — the highest-effort item; worth it only if regex and nearest-neighbor matching leave a persistent, sizable residual that a distilled model would meaningfully shrink.

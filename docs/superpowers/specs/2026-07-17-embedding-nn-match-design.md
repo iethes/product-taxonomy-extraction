@@ -1,6 +1,17 @@
 # Design: Embedding + Nearest-Neighbor Taxonomy Match, with an LLM-Compliance Audit Mode (Rec 3, `traditional-ml-execution-model.md`)
 
-> Status: approved design, not yet implemented. Revised 2026-07-17: embedding generation moved to a self-hosted
+> Status: **piloted and blocked, 2026-07-18.** Tasks 1-5 of the implementation plan (tables, embedding worker,
+> matching queries, three rounds of pilot validation against `shopee_th_toothpaste`) were completed; precision
+> never cleared the required 0.98 bar in either the ambiguous-candidate bucket (~52-55%) or the unambiguous
+> bucket (~87%, after fixing genuine ground-truth errors). Tasks 6-7 (production wiring, documentation) were not
+> started — the human decision was to stop rather than ship at this precision. Root cause: the brand+size
+> candidate key doesn't discriminate between same-brand/same-size product-line variants. Full findings:
+> [`docs/superpowers/plans/2026-07-17-embedding-nn-match.md`](../plans/2026-07-17-embedding-nn-match.md)'s
+> Appendix (three dated rounds). The tables, worker, and SQL patterns below remain valid and reusable
+> infrastructure for a future attempt with a tighter candidate key — only the matching-logic scope is invalidated,
+> not the mechanism.
+>
+> Revised 2026-07-17 (pre-pilot): embedding generation moved to a self-hosted
 > worker on the existing Hetzner VM (Option 2 from the cost review) rather than BigQuery-native Vertex AI
 > (Option 1, kept open — see "Embedding generation" below for why the matching layer is forward-compatible with
 > switching to it later); brand-resolution join corrected against live schema (`product_brand_map`, not
