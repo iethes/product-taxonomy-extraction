@@ -61,6 +61,9 @@ SELECT
      IF(l.parsed_size = l.candidate_size, 'match', 'mismatch')) AS size_match,
   REGEXP_EXTRACT(LOWER(l.sku_name), 'x\\s*(\\d+)') AS pack_multiplier_signal,
   l.candidate_pack_count,
+  -- REPLACE (not REGEXP_REPLACE): brand_canonical is a literal substring here, not a regex pattern.
+  -- Real brand names contain regex metacharacters (e.g. "Malin+Goetz", unbalanced parens in Thai-translated names)
+  -- that cause silent wrong stripping or outright RE2 compile crashes with REGEXP_REPLACE.
   EDIT_DISTANCE(
     LOWER(REPLACE(REPLACE(l.sku_name, l.brand_canonical, ''), IFNULL(l.parsed_size, ''), '')),
     LOWER(REPLACE(REPLACE(l.candidate_canonical_name, l.brand_canonical, ''), IFNULL(l.parsed_size, ''), ''))
