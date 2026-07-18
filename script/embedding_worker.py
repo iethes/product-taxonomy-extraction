@@ -161,16 +161,69 @@ def embed_universe_skus(client, model, master_table=None, limit=None):
     return _load_rows(client, json_rows, "magpie_reference.universe_sku_embeddings")
 
 
+def embed_mapped_universe_skus(client, model, master_table, limit=None):
+    """Embeds only sku_name for products that already have a product_taxonomy_map row for master_table -
+    the training-anchor subset, not the full category universe. Used for classifier training backfill."""
+    limit_clause = "LIMIT @row_limit" if limit else ""
+    query = f"""
+        SELECT DISTINCT u.product_id, u.ecommerce_platform AS platform, u.country, u.sku_name
+        FROM `{PROJECT}.magpie.marketshare_universe_niq` u
+        JOIN `{PROJECT}.magpie_reference.product_taxonomy_map` m
+          ON m.product_id = u.product_id AND m.platform = u.ecommerce_platform AND m.country = u.country
+        LEFT JOIN `{PROJECT}.magpie_reference.universe_sku_embeddings` ue
+          ON ue.product_id = u.product_id AND ue.platform = u.ecommerce_platform AND ue.country = u.country
+        WHERE u.month = (SELECT MAX(month) FROM `{PROJECT}.magpie.marketshare_universe_niq`)
+          AND u.master_table = @master_table
+          AND m.master_table = @master_table
+          AND m.source = 'LLM'
+          AND ue.product_id IS NULL
+          AND u.sku_name IS NOT NULL
+        {limit_clause}
+    """
+    params = [bigquery.ScalarQueryParameter("master_table", "STRING", master_table)]
+    if limit:
+        params.append(bigquery.ScalarQueryParameter("row_limit", "INT64", limit))
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+    rows = list(client.query(query, job_config=job_config).result())
+    if not rows:
+        return 0
+
+    texts = [f"query: {r.sku_name}" for r in rows]
+    vectors = model.encode(texts, batch_size=BATCH_SIZE, show_progress_bar=False, normalize_embeddings=True)
+    now = datetime.now(timezone.utc).isoformat()
+    json_rows = [
+        {
+            "product_id": r.product_id,
+            "platform": r.platform,
+            "country": r.country,
+            "embedding": vec.tolist(),
+            "model_version": MODEL_NAME,
+            "computed_at": now,
+        }
+        for r, vec in zip(rows, vectors)
+    ]
+    return _load_rows(client, json_rows, "magpie_reference.universe_sku_embeddings")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--master-table", default=None,
                          help="Scope universe embedding to one master_table (e.g. shopee_th_toothpaste); omit for full sweep")
     parser.add_argument("--limit", type=int, default=None,
                          help="Cap rows processed this run (smoke-test/pilot use)")
+    parser.add_argument("--mapped-only", action="store_true",
+                         help="Embed only already-mapped products for --master-table (training backfill), not the full category universe")
     args = parser.parse_args()
 
     client = bigquery.Client(project=PROJECT)
     model = load_model()
+
+    if args.mapped_only:
+        if not args.master_table:
+            parser.error("--mapped-only requires --master-table")
+        n = embed_mapped_universe_skus(client, model, args.master_table, limit=args.limit)
+        print(f"Embedded {n} mapped-only universe rows for {args.master_table}")
+        return
 
     n_taxonomy = embed_taxonomy(client, model, limit=args.limit)
     print(f"Embedded {n_taxonomy} product_taxonomy rows")
