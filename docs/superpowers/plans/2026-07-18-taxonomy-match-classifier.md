@@ -1105,11 +1105,49 @@ git commit -m "Document classifier-based taxonomy matching in llm-extraction-rul
 
 ## Appendix: Task 4 training/evaluation findings
 
-_To be filled in by Task 4, Step 5._
+**Result: BLOCKED. Precision does not clear the 0.98 bar — Tasks 5-8 do not proceed.**
 
-- Training set size / held-out set size:
-- Raw precision:
-- Ground-truth-clean subset precision:
-- Feature importances:
-- Chosen `AUTO_MATCH_MIN_PROBABILITY`:
-- Chosen `AUDIT_FLAG_MIN_CONFIDENCE_DELTA`:
+- Training set size: 463,174 pairs (82,148 positive), all categories except `shopee_th_toothpaste`.
+- Held-out set size: 12,069 pairs (2,122 positive) / 2,124 distinct `(product_id, platform, country)` products
+  from `shopee_th_toothpaste`, held out entirely from training.
+- Raw precision (top-1 by predicted probability, held-out set): **0.5579** (1,185 / 2,124 correct).
+- Ground-truth-clean subset precision (parse_size self-consistency filter, n=2,019 of 2,124 products):
+  **0.5666**. The clean-subset filter barely moves the number (+0.9pp) — this is not a ground-truth-hygiene
+  problem, the model is genuinely picking the wrong candidate roughly 43-44% of the time regardless of label
+  quality.
+- Feature importances (XGBoost `feature_importances_`, gain-normalized):
+  - `size_match_code`: 0.4249
+  - `pack_match_code`: 0.1492
+  - `pack_signal_present`: 0.0923
+  - `embedding_cosine_distance`: 0.0972
+  - `text_length_ratio`: 0.0828
+  - `keyword_table_hit`: 0.0669
+  - `token_jaccard_stripped`: 0.0524
+  - `edit_distance_stripped`: 0.0345
+  - The specific failure mode this plan was watching for — the model leaning >80% on
+    `embedding_cosine_distance` alone (i.e. quietly collapsing back to v1's unsupervised-ranking design) — is
+    **not** what happened. Embedding is only 9.7% of total importance; the non-embedding features (size, pack,
+    keyword, edit-distance, token overlap) carry ~90% of it combined, with `size_match_code` alone dominating
+    at 42.5%. In other words, this plan's central hypothesis — that adding keyword-table, edit-distance, and
+    size/pack-matching features on top of the embedding signal would clear the bar v1's ranking-only design
+    couldn't — was genuinely tested, the new features are being used heavily by the model, and precision is
+    *still* ~56%. That is a more informative negative result than v1's: the problem isn't "the extra signal
+    got ignored," it's "the extra signal, even fully utilized, is insufficient to disambiguate same-line /
+    different-size decoys reliably enough for auto-matching."
+  - Sanity checks performed before accepting this result (to rule out a pipeline bug rather than a real
+    modeling limitation): no NaNs in any feature column for train or eval; 2,120 of 2,124 held-out products
+    have exactly 1 positive candidate in their candidate set (only 3 have zero, 1 has two — not a labeling
+    artifact); cross-checked by re-training with two other categories held out instead of toothpaste
+    (`shopee_th_shampoo`: 0.532, `shopee_th_coffee`: 0.4712) — precision in the 47-56% range holds across
+    independent held-out categories, so this is not an artifact of the toothpaste category specifically.
+- Chosen `AUTO_MATCH_MIN_PROBABILITY`: **N/A — bar not cleared.** Per the brief, the threshold sweep (Step 6)
+  is gated on clearing 0.98 precision first; it was not run.
+- Chosen `AUDIT_FLAG_MIN_CONFIDENCE_DELTA`: **N/A — bar not cleared**, same reason as above.
+
+**Conclusion:** Per the brief's explicit instruction to apply the same discipline as v1's Task 5 (report the
+real number, do not lower the bar to force a pass), this is a genuine, documented blocker. Tasks 5 through 8
+of this plan should not proceed on the current feature set / model design. Any future attempt to revisit this
+approach should start from the fact that size/pack-matching signals — not the embedding — are already doing
+most of the discriminative work and it's still not enough; the likely next lever is either richer text
+features (the raw SKU/candidate text itself, not just derived scalars) or a fundamentally different
+candidate-generation strategy, not more scalar features layered onto the same architecture.
