@@ -932,6 +932,31 @@ it does not guarantee the one candidate is the ground-truth answer, since the gr
 still be excluded from the brand+size pool entirely (the original pilot's ~12% "structural miss" category
 applies here too).
 
+**This 0.8535 figure is embedding-independent.** When `candidate_count = 1` there is exactly one
+`product_taxonomy` row in the brand+size pool, so top-1 selection trivially returns that row regardless of
+embedding distance — no vector comparison influences the outcome. This number would be identical whether
+`universe_sku_embeddings` had been computed from raw `sku_name`, `sku_name_EN`, or not recomputed at all; its
+ceiling is set entirely by brand+size filter coverage and recorded-ground-truth quality, not by anything the
+`sku_name_EN` change touched. Reported here because it's part of the alternative-1 carve-out this task measured,
+not because the fix produced it.
+
+**Root-cause reassessment — why the fix didn't move the ambiguous bucket:** `intfloat/multilingual-e5-large` is
+a multilingual model purpose-built for cross-lingual matching, so comparing Thai `sku_name` against English
+`canonical_name` was likely never really a language-mismatch problem at the embedding level — that was the
+motivating hypothesis, but the measured result doesn't support it. Translating to `sku_name_EN` instead
+measurably introduced its own noise: the spot-check found literal translation errors that actively hurt matching
+(e.g. the Thai brand name "ดอกบัวคู่" — properly "Dokbuaku" in the taxonomy — translated to the generic phrase
+"Lotus Pair," discarding the brand token; "PREMIO" translated to the generic "PREMIUM"). Practical implication:
+further input-text engineering is likely not the lever — the residual ambiguous-bucket precision looks like a
+variant/pack-discrimination problem (same-brand-same-size-different-flavor/pack-count siblings) that no change
+to either side's input text is likely to fix. This reinforces the pack-count-equality candidate-key tightening
+(Recommendation #1, both here and in the original 2026-07-17 pilot) as the more promising next lever.
+
+**A/B cleanliness:** `parse_size` still runs against raw `sku_name` in both the original and this run — only the
+*embedded ranking text* changed, not candidate-pool construction — so the ~73-row swing in `correct` counts is
+attributable to the embedding-text change itself, not a query-restructuring artifact, and is well outside the
+±1-2 row tie-break wobble the original pilot noted.
+
 ### Qualitative spot-check (Task 5b Step 4)
 
 Two independent samples were pulled and read row-by-row (`sku_name_EN`, actual `canonical_name`, candidate
@@ -984,6 +1009,13 @@ the rest are either arguably-correct candidates exposing ground-truth gaps (55%)
 This is exactly the phenomenon the human plan owner flagged from their own two manual spot-checks, now
 confirmed at a larger sample size. It does not, however, change the measured number against the *recorded*
 ground truth, which is what the formal 0.98 bar is defined against.
+
+**Objective corroboration:** a follow-up query checked, for all 29 unambiguous-bucket disagreements, how many
+have a recorded ground-truth `product_taxonomy.size` that literally contradicts the `parse_size`-parsed size
+from the product's own `sku_name` (e.g. ground truth says `150g` but the product's own name says `95g`).
+Result: **16 of 29 (55%)** — an exact match to the hand-categorized (b) count, on a purely structural criterion
+rather than a judgment call. Strong, checkable evidence that most of this bucket's "errors" are recorded-
+ground-truth size mistakes, not matcher failures (there is no ranking to fail in this bucket — see above).
 
 ### Threshold determination (Task 5b Step 5)
 
