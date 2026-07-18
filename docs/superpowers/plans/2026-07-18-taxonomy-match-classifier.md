@@ -424,11 +424,10 @@ this script rather than creating a new venv, installing these two additional pac
 
 ```python
 #!/usr/bin/env python3
-"""Runs sql/queries/training_pairs.sql, adds the one Python-computed feature (token_jaccard_stripped - awkward
-to express in BigQuery SQL, trivial here, computed from the already brand/size-stripped text the query already
-produces), and writes the labeled training set to a local parquet file for Task 4's training script to read."""
-import re
-
+"""Runs sql/queries/training_pairs.sql and writes the raw labeled pairs to a local parquet file. Deliberately
+does NOT compute derived features here (e.g. token_jaccard_stripped, the categorical encodings) - that logic
+lives once, in script/taxonomy_match_encoding.py (Task 4), shared with the scoring script (Task 5) so training
+and inference can never silently compute a feature two different ways."""
 import pandas as pd
 from google.cloud import bigquery
 
@@ -436,24 +435,11 @@ PROJECT = "sincere-hearth-273704"
 OUTPUT_PATH = "training_features.parquet"
 
 
-def token_jaccard(a, b):
-    tokens_a = set(re.findall(r"\w+", a))
-    tokens_b = set(re.findall(r"\w+", b))
-    if not tokens_a or not tokens_b:
-        return 0.0
-    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
-
-
 def main():
     client = bigquery.Client(project=PROJECT)
     with open("sql/queries/training_pairs.sql") as f:
         query = f.read()
     df = client.query(query).to_dataframe()
-
-    df["token_jaccard_stripped"] = df.apply(
-        lambda r: token_jaccard(str(r["sku_text_stripped"]), str(r["candidate_text_stripped"])), axis=1
-    )
-
     df.to_parquet(OUTPUT_PATH, index=False)
     print(f"Wrote {len(df)} training pairs ({df['label'].sum()} positive) to {OUTPUT_PATH}")
 
@@ -489,16 +475,19 @@ git commit -m "Add training-pair feature computation (SQL + Python) for taxonomy
 ### Task 4: Train and evaluate the classifier — the go/no-go gate
 
 **Files:**
+- Create: `script/taxonomy_match_encoding.py`
 - Create: `script/train_taxonomy_matcher.py`
 - Create: `script/train_requirements.txt`
 - Modify: this plan file (append findings to the Appendix at the bottom)
 
 **Interfaces:**
 - Consumes: `training_features.parquet` (Task 3).
-- Produces: `taxonomy_matcher_model.json` (the trained XGBoost model, local file) and the precision numbers that
-  gate whether Tasks 5-8 proceed. **Tasks 5-8 depend on this task's evaluation clearing a real precision bar —
-  do not proceed past this task if it doesn't, per the same discipline v1's Task 5 used: report the real number,
-  do not lower the bar to force a pass.**
+- Produces: `script/taxonomy_match_encoding.py` exporting `FEATURE_COLUMNS` (list of 8 strings) and
+  `encode_features(df) -> df` — **Task 5 imports this module directly, not a copy of its logic.** Also produces
+  `taxonomy_matcher_model.json` (the trained XGBoost model, local file) and the precision numbers that gate
+  whether Tasks 5-8 proceed. **Tasks 5-8 depend on this task's evaluation clearing a real precision bar — do not
+  proceed past this task if it doesn't, per the same discipline v1's Task 5 used: report the real number, do not
+  lower the bar to force a pass.**
 
 - [ ] **Step 1: Write `script/train_requirements.txt`**
 
@@ -507,7 +496,65 @@ xgboost>=2.0
 scikit-learn>=1.4
 ```
 
-- [ ] **Step 2: Write `script/train_taxonomy_matcher.py`**
+- [ ] **Step 2: Write `script/taxonomy_match_encoding.py`** — the single source of truth for turning raw query
+  output (from either `training_pairs.sql` or Task 5's `candidate_scoring_pairs.sql` — both produce the same
+  columns: `embedding_cosine_distance, size_match, pack_multiplier_signal, candidate_pack_count,
+  edit_distance_stripped, sku_text_stripped, candidate_text_stripped, keyword_table_hit, text_length_ratio`)
+  into model-ready features. Both training and scoring import this — a shared BigQuery table function was
+  considered for the SQL side too, but confirmed non-viable: BigQuery rejects correlated table-function calls
+  (`FROM t1, tvf(t1.column)` fails the same way `LATERAL` does, live-tested while writing this plan), so the SQL
+  stays duplicated between `training_pairs.sql` and `candidate_scoring_pairs.sql`. This module is what closes
+  the risk that matters most — training and scoring silently computing the same-named feature two different
+  ways:
+
+```python
+#!/usr/bin/env python3
+"""Single source of truth for taxonomy-match feature encoding, shared by train_taxonomy_matcher.py and
+score_taxonomy_candidates.py so the two can never silently compute a feature differently. A shared BigQuery
+table function was considered for the upstream SQL too, but BigQuery rejects correlated table-function calls
+(same restriction as LATERAL) - the SQL queries stay separate, this module is what stays shared."""
+import re
+
+FEATURE_COLUMNS = [
+    "embedding_cosine_distance",
+    "edit_distance_stripped",
+    "token_jaccard_stripped",
+    "keyword_table_hit",
+    "text_length_ratio",
+    "size_match_code",
+    "pack_signal_present",
+    "pack_match_code",
+]
+
+
+def token_jaccard(a, b):
+    tokens_a = set(re.findall(r"\w+", str(a)))
+    tokens_b = set(re.findall(r"\w+", str(b)))
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+
+
+def encode_features(df):
+    """Takes the raw output of training_pairs.sql or candidate_scoring_pairs.sql and returns a copy with
+    FEATURE_COLUMNS populated, ready for model.fit / model.predict_proba."""
+    df = df.copy()
+    df["token_jaccard_stripped"] = df.apply(
+        lambda r: token_jaccard(r["sku_text_stripped"], r["candidate_text_stripped"]), axis=1
+    )
+    df["size_match_code"] = df["size_match"].map({"match": 1, "mismatch": -1, "unknown": 0})
+    df["keyword_table_hit"] = df["keyword_table_hit"].astype(int)
+    df["pack_signal_present"] = df["pack_multiplier_signal"].notna().astype(int)
+    df["pack_match_code"] = 0
+    has_both = df["pack_multiplier_signal"].notna() & df["candidate_pack_count"].notna()
+    df.loc[has_both, "pack_match_code"] = (
+        df.loc[has_both, "pack_multiplier_signal"].astype(float)
+        == df.loc[has_both, "candidate_pack_count"].astype(float)
+    ).astype(int) * 2 - 1
+    return df
+```
+
+- [ ] **Step 3: Write `script/train_taxonomy_matcher.py`**
 
 ```python
 #!/usr/bin/env python3
@@ -519,32 +566,9 @@ import pandas as pd
 import xgboost as xgb
 from google.cloud import bigquery
 
+from taxonomy_match_encoding import FEATURE_COLUMNS, encode_features
+
 PROJECT = "sincere-hearth-273704"
-
-FEATURE_COLUMNS = [
-    "embedding_cosine_distance",
-    "edit_distance_stripped",
-    "token_jaccard_stripped",
-    "keyword_table_hit",
-    "text_length_ratio",
-    "size_match_code",
-    "pack_signal_present",
-    "pack_match_code",
-]  # exact name and order Task 5's score_taxonomy_candidates.py must match — the model is trained on this order
-
-
-def encode_categorical(df):
-    df = df.copy()
-    df["size_match_code"] = df["size_match"].map({"match": 1, "mismatch": -1, "unknown": 0})
-    df["keyword_table_hit"] = df["keyword_table_hit"].astype(int)
-    df["pack_signal_present"] = df["pack_multiplier_signal"].notna().astype(int)
-    df["pack_match_code"] = 0
-    has_both = df["pack_multiplier_signal"].notna() & df["candidate_pack_count"].notna()
-    df.loc[has_both, "pack_match_code"] = (
-        df.loc[has_both, "pack_multiplier_signal"].astype(float)
-        == df.loc[has_both, "candidate_pack_count"].astype(float)
-    ).astype(int) * 2 - 1
-    return df
 
 
 def get_ground_truth_clean_product_ids(client):
@@ -566,7 +590,7 @@ def get_ground_truth_clean_product_ids(client):
 
 def main():
     df = pd.read_parquet("training_features.parquet")
-    df = encode_categorical(df)
+    df = encode_features(df)
 
     train_df = df[df["master_table"] != "shopee_th_toothpaste"]
     eval_df = df[df["master_table"] == "shopee_th_toothpaste"]
@@ -598,7 +622,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 3: Run it**
+- [ ] **Step 4: Run it**
 
 ```bash
 source .venv-embedding/bin/activate
@@ -606,7 +630,7 @@ pip install -r script/train_requirements.txt
 python3 script/train_taxonomy_matcher.py
 ```
 
-- [ ] **Step 4: Record the real result — do not round up or lower the bar**
+- [ ] **Step 5: Record the real result — do not round up or lower the bar**
 
 Read the printed raw precision, clean-subset precision, and feature importances. If either precision number is
 below 0.98: this is a genuine blocker, same discipline as v1's Task 5. Report it as such rather than proceeding
@@ -615,17 +639,17 @@ to wire anything into production. If feature importances show the model leans ov
 approach has quietly collapsed back into v1's ranking-only design despite the added features, and that's worth
 surfacing before declaring success even if the precision number looks good.
 
-- [ ] **Step 5: Append findings to this plan's Appendix**
+- [ ] **Step 6: Append findings to this plan's Appendix**
 
 Record: training set size, held-out set size, raw precision, clean-subset precision, full feature-importance
 breakdown, and — if the bar is cleared — the chosen `AUTO_MATCH_MIN_PROBABILITY` threshold (pick the tightest
 threshold from a sweep, e.g. `[0.90, 0.95, 0.98, 0.99]` against the held-out set, mirroring v1's threshold-sweep
 methodology) and `AUDIT_FLAG_MIN_CONFIDENCE_DELTA`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add script/train_taxonomy_matcher.py script/train_requirements.txt docs/superpowers/plans/2026-07-18-taxonomy-match-classifier.md
+git add script/taxonomy_match_encoding.py script/train_taxonomy_matcher.py script/train_requirements.txt docs/superpowers/plans/2026-07-18-taxonomy-match-classifier.md
 git commit -m "Train and evaluate taxonomy-match classifier against held-out shopee_th_toothpaste"
 ```
 
@@ -641,10 +665,12 @@ the negative result the same way v1's was treated — a real, documented finding
 - Create: `script/score_taxonomy_candidates.py`
 
 **Interfaces:**
-- Consumes: `taxonomy_matcher_model.json` (Task 4), `magpie_reference.brand_variant_keywords` (Task 1),
-  `universe_sku_embeddings`/`product_taxonomy_embeddings` (Task 2/existing). Feature columns and order
-  (`FEATURE_COLUMNS` in the script below) must stay in sync with Task 4's `train_taxonomy_matcher.py` — the
-  model was trained on exactly this feature set/order.
+- Consumes: `taxonomy_matcher_model.json` (Task 4), `script/taxonomy_match_encoding.py` (Task 4 — imports
+  `FEATURE_COLUMNS` and `encode_features` directly, not a copy; confirmed live that running
+  `python3 script/score_taxonomy_candidates.py` from the repo root correctly resolves this import since Python
+  adds a run script's own containing directory to `sys.path`, no `PYTHONPATH` setup needed as long as both files
+  stay in `script/`), `magpie_reference.brand_variant_keywords` (Task 1),
+  `universe_sku_embeddings`/`product_taxonomy_embeddings` (Task 2/existing).
 - Produces: rows in `magpie_reference.taxonomy_match_scores` (schema from Task 1). CLI:
   `python3 script/score_taxonomy_candidates.py --master-table TABLE`.
 
@@ -722,45 +748,10 @@ import pandas as pd
 import xgboost as xgb
 from google.cloud import bigquery
 
+from taxonomy_match_encoding import FEATURE_COLUMNS, encode_features
+
 PROJECT = "sincere-hearth-273704"
 MODEL_VERSION = "xgboost-v1"
-
-FEATURE_COLUMNS = [
-    "embedding_cosine_distance",
-    "edit_distance_stripped",
-    "token_jaccard_stripped",
-    "keyword_table_hit",
-    "text_length_ratio",
-    "size_match_code",
-    "pack_signal_present",
-    "pack_match_code",
-]
-
-
-def encode_and_featurize(df):
-    import re
-
-    def token_jaccard(a, b):
-        tokens_a = set(re.findall(r"\w+", str(a)))
-        tokens_b = set(re.findall(r"\w+", str(b)))
-        if not tokens_a or not tokens_b:
-            return 0.0
-        return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
-
-    df = df.copy()
-    df["token_jaccard_stripped"] = df.apply(
-        lambda r: token_jaccard(r["sku_text_stripped"], r["candidate_text_stripped"]), axis=1
-    )
-    df["size_match_code"] = df["size_match"].map({"match": 1, "mismatch": -1, "unknown": 0})
-    df["keyword_table_hit"] = df["keyword_table_hit"].astype(int)
-    df["pack_signal_present"] = df["pack_multiplier_signal"].notna().astype(int)
-    df["pack_match_code"] = 0
-    has_both = df["pack_multiplier_signal"].notna() & df["candidate_pack_count"].notna()
-    df.loc[has_both, "pack_match_code"] = (
-        df.loc[has_both, "pack_multiplier_signal"].astype(float)
-        == df.loc[has_both, "candidate_pack_count"].astype(float)
-    ).astype(int) * 2 - 1
-    return df
 
 
 def main():
@@ -779,7 +770,7 @@ def main():
         print(f"No candidates to score for {args.master_table}")
         return
 
-    df = encode_and_featurize(df)
+    df = encode_features(df)
 
     model = xgb.XGBClassifier()
     model.load_model("taxonomy_matcher_model.json")
