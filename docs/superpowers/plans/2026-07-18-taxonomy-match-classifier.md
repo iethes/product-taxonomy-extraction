@@ -1151,3 +1151,134 @@ approach should start from the fact that size/pack-matching signals — not the 
 most of the discriminative work and it's still not enough; the likely next lever is either richer text
 features (the raw SKU/candidate text itself, not just derived scalars) or a fundamentally different
 candidate-generation strategy, not more scalar features layered onto the same architecture.
+
+## Appendix: 2026-07-18 follow-up — `product_line` feature + `shopee_sg_toothpaste` eval
+
+Follow-up experiment requested by the project owner: ("Try `product_line` on sg_toothpaste") — two independent
+changes tested together, not a full production build-out. Tasks 5-8 remain not started; this section only
+extends the Task 4 findings above.
+
+**What changed:**
+- **New feature — `product_line_match`.** `product_taxonomy.product_line` is 91.5% filled (20,143/22,005 rows;
+  the brief's 87.7% figure was from an earlier snapshot — re-verified directly against BigQuery before starting),
+  far denser than the `variant` field `keyword_table_hit` depends on (19.4% filled, 4,272/22,005 — confirmed
+  unchanged). Added `pt.product_line` to the `candidates` CTE in `sql/queries/training_pairs.sql`, threaded it
+  through `labeled` (which already does `SELECT *`), and added
+  `product_line_match = IF(candidate_product_line IS NOT NULL AND STRPOS(LOWER(sku_name), LOWER(candidate_product_line)) > 0, TRUE, FALSE)`
+  to the final SELECT — same substring-match pattern as the existing `keyword_table_hit` column. Added
+  `product_line_match_code` (0/1 cast) to `FEATURE_COLUMNS` in `script/taxonomy_match_encoding.py`.
+- **New eval target — `shopee_sg_toothpaste`.** Broadened the anchor filter in `training_pairs.sql` from
+  `master_table LIKE 'shopee_th_%'` to `(... OR master_table = 'shopee_sg_toothpaste')`. Backfilled
+  `universe_sku_embeddings` for this category first (`--mapped-only`, 1,117 mapped products → 935 embedded
+  rows after joining to the latest month, in a few minutes) since it had zero rows before this experiment;
+  confirmed `product_taxonomy_embeddings` needed no equivalent backfill — it is embedded unscoped and already
+  covered all 22,005 taxonomy rows (22,004 with a non-null embedding) regardless of category. Changed the
+  train/eval split in `script/train_taxonomy_matcher.py` (both the `train_df`/`eval_df` filter and the
+  hardcoded `master_table` filter inside `get_ground_truth_clean_product_ids`) from `shopee_th_toothpaste` to
+  `shopee_sg_toothpaste`. Training now covers all 20 TH categories (including `shopee_th_toothpaste`, no longer
+  held out) plus nothing from SG; eval is exclusively the 930 `shopee_sg_toothpaste` products with a candidate
+  set (4,830 pairs, 942 positive).
+- Dry-ran the modified `training_pairs.sql` before executing (`bq query --dry_run`) — validated clean, ~3.05 GB
+  scan estimate. Re-ran `compute_training_features.py`: row count moved from 463,174 (previous run) to 480,073
+  pairs (85,212 positive) — the expected effect of adding one more category's anchors.
+
+**Precision results (held out `shopee_sg_toothpaste`, n=930 products):**
+- Raw precision (top-1 by predicted probability): **0.5118** (476/930 correct).
+- Ground-truth-clean subset precision (parse_size self-consistency, n=913 of 930): **0.5159**.
+- Both numbers are in the same 47-56% band as the original TH-only cross-checks (`shopee_th_toothpaste` 0.5579,
+  `shopee_th_shampoo` 0.532, `shopee_th_coffee` 0.4712, now `shopee_sg_toothpaste` 0.5118). SG's smaller catalog
+  and the new feature together move the number by roughly -4.6pp relative to the original toothpaste run —
+  not an improvement, and well within the spread already seen across held-out TH categories. **SG toothpaste
+  does not behave differently from TH toothpaste** in any way that matters for this metric; catalog size was
+  not the limiting factor.
+
+**Feature importances (XGBoost `feature_importances_`, gain-normalized, this run):**
+
+| Feature | Importance |
+|---|---|
+| `size_match_code` | 0.3692 |
+| `pack_match_code` | 0.1409 |
+| `product_line_match_code` | 0.1257 |
+| `embedding_cosine_distance` | 0.0948 |
+| `keyword_table_hit` | 0.0695 |
+| `text_length_ratio` | 0.0664 |
+| `pack_signal_present` | 0.0489 |
+| `token_jaccard_stripped` | 0.0489 |
+| `edit_distance_stripped` | 0.0357 |
+
+`product_line_match_code` landed as the **3rd most important feature**, ahead of `embedding_cosine_distance`
+— in the original Task 4 run `embedding_cosine_distance` ranked 3rd (0.0972, behind `size_match_code` and
+`pack_match_code`); adding `product_line_match_code` pushes it down to 4th (0.0948) here.
+
+**Clean ablation (isolating the feature's effect, same `shopee_sg_toothpaste` eval set both ways):** the
+0.5118-vs-0.5579 comparison above is confounded — those are two different eval sets (SG vs TH), so it can't
+isolate what `product_line` itself did. Re-trained with the identical train/eval split but the 8 features
+*minus* `product_line_match_code`: raw precision came out to **0.5301** on the same 930 `shopee_sg_toothpaste`
+products — i.e., *removing* the feature raised precision by +1.8pp relative to the 9-feature run (0.5118).
+So on a clean, same-eval-set comparison, `product_line_match_code` is not neutral — it's a small net negative
+on this eval set, despite ranking 3rd in the model's own importance accounting. The model uses the feature
+heavily (it isn't ignored), but "used heavily" and "helps precision" are different claims here: the model
+appears to be trading off against it in a way that costs slightly more than it gains, plausibly because
+`product_line` substring-matches are noisier than `size`/`pack_count` matches (a substring hit doesn't
+guarantee genuine product-line identity the way an exact size/pack equality does) and is correlated enough
+with the existing size/pack signal that it mostly adds noise rather than new information on the residual,
+harder cases. **Sanity check on the feature's mechanics:** confirmed `product_taxonomy.product_line` has 844
+empty-string (not NULL) rows out of 22,005 globally, which would be a hazard for this feature (BigQuery
+`STRPOS(x, '') = 1`, so an empty-string `product_line` would spuriously match every SKU under the
+`IS NOT NULL` guard) — but checked directly against `shopee_sg_toothpaste`'s actual mapped taxonomy rows and
+found 0 empty strings among them (436 NULLs, correctly excluded by the `IS NOT NULL` filter, out of 2,651),
+so this specific result is not contaminated by that edge case. It remains a latent robustness gap worth fixing
+(e.g. treating `''` the same as NULL) if this feature is ever adopted more broadly, since other categories'
+brands were not individually checked.
+
+**Confidence-threshold sweep** (max-probability candidate per product, `shopee_sg_toothpaste` eval set,
+n=930 products):
+
+| Threshold | n at/above | Coverage | Precision |
+|---|---|---|---|
+| 0.00 | 930 | 1.0000 | 0.5118 |
+| 0.50 | 372 | 0.4000 | 0.4812 |
+| 0.70 | 151 | 0.1624 | 0.5298 |
+| 0.80 | 89 | 0.0957 | 0.6742 |
+| 0.85 | 23 | 0.0247 | 0.7826 |
+| 0.90 | 11 | 0.0118 | 1.0000 |
+| 0.95 | 3 | 0.0032 | 1.0000 |
+| 0.97 | 0 | 0.0000 | n/a |
+| 0.98 | 0 | 0.0000 | n/a |
+| 0.99 | 0 | 0.0000 | n/a |
+
+This is the first time the threshold-sweep mechanism (Step 6/7) has actually been run — previously it was
+correctly gated on clearing the unconditional 0.98 bar first, which never happened. The sweep confirms the
+gate was the right call rather than overly conservative: precision does climb sharply with threshold (0.51 →
+0.78 → 1.00), but coverage collapses even faster. The model reaches 100% precision only at ≥0.90 confidence,
+where it covers **1.18% of products** (11 of 930); at 0.95 confidence it's 3 products (0.32% coverage). No
+threshold in the requested sweep reaches the 0.98 confidence bin with any predictions at all — the model
+essentially never assigns a probability that high. Even the most generous practically-useful reading of this
+table (≥0.85, 78% precision) leaves 97.5% of products with no auto-match. There is no threshold at which this
+model is both confident and covers a useful fraction of the catalog.
+
+**Honest assessment:**
+- **Did `product_line` help?** No — the clean ablation (same eval set, feature removed) shows precision
+  *without* it is 0.5301 vs. 0.5118 *with* it: a small net regression (-1.8pp), not an improvement. The model
+  does use the feature substantially (3rd-ranked importance, ahead of the embedding) — it isn't dead weight in
+  the sense of being ignored — but "heavily used" isn't the same as "helpful": on this eval set it appears to
+  be trading away a bit of accuracy elsewhere in exchange for a signal that's noisier than it looks. Having
+  higher raw fill-rate than `variant` (91.5% vs 19.4%) did not translate into more *discriminative power*; the
+  substring-match construction catches largely the same same-brand-different-line cases that
+  `size_match_code`/`pack_match_code` already resolve, and adds some noise on top rather than new information
+  on the harder residual cases.
+- **Does `sg_toothpaste` behave differently from `th_toothpaste`?** No. Precision (0.51 vs 0.56) and the
+  overall shape of the failure are consistent with the TH-category spread already documented (0.47-0.56)
+  in the original Task 4 findings. Smaller catalog, different country, same failure mode. This rules out
+  "TH catalog difficulty" as an explanation for the block — the ambiguity is intrinsic to the matching problem
+  (same-brand candidates differing in attributes the feature set doesn't fully capture), not a TH-specific data
+  quality issue.
+- **Is 0.85-0.90 now in reach?** Not at any coverage worth deploying. Unconditional precision (~0.51) is
+  unchanged from before within noise. The threshold sweep shows the *only* way to hit 0.85+ precision is to
+  restrict to <2.5% of products, which is not a usable auto-match policy at any reasonable definition of
+  production coverage. This experiment closes essentially none of the gap to 0.85-0.90 as a general-purpose
+  threshold; it does add one confirmed-useful feature and a documented instance of the fully-gated threshold
+  sweep, for whoever attempts the next iteration. The next lever remains what the original Task 4 findings
+  said: richer text features on the raw SKU/candidate strings, or a different candidate-generation strategy —
+  not incremental scalar features on the current architecture, which this experiment is now the second
+  negative data point for.

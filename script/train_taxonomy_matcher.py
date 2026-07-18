@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trains an XGBoost classifier on training_features.parquet, held out on shopee_th_toothpaste, and reports
+"""Trains an XGBoost classifier on training_features.parquet, held out on shopee_sg_toothpaste, and reports
 precision both raw and on the ground-truth-hygiene-filtered subset (parse_size self-consistency)."""
 import json
 
@@ -23,7 +23,7 @@ def get_ground_truth_clean_product_ids(client):
         JOIN `{PROJECT}.magpie_reference.product_taxonomy` pt ON pt.taxonomy_id = m.taxonomy_id
         CROSS JOIN UNNEST([`{PROJECT}.magpie_reference.parse_size`(u.sku_name)]) AS parsed
         WHERE u.month = (SELECT MAX(month) FROM `{PROJECT}.magpie.marketshare_universe_niq`)
-          AND m.master_table = 'shopee_th_toothpaste' AND m.source = 'LLM'
+          AND m.master_table = 'shopee_sg_toothpaste' AND m.source = 'LLM'
           AND (parsed.size_text IS NULL OR pt.size IS NULL OR parsed.size_text = pt.size)
     """
     return set(r.product_id for r in client.query(query).result())
@@ -33,8 +33,8 @@ def main():
     df = pd.read_parquet("training_features.parquet")
     df = encode_features(df)
 
-    train_df = df[df["master_table"] != "shopee_th_toothpaste"]
-    eval_df = df[df["master_table"] == "shopee_th_toothpaste"]
+    train_df = df[df["master_table"] != "shopee_sg_toothpaste"]
+    eval_df = df[df["master_table"] == "shopee_sg_toothpaste"]
 
     model = xgb.XGBClassifier(n_estimators=200, max_depth=4, eval_metric="logloss")
     model.fit(train_df[FEATURE_COLUMNS], train_df["label"])
@@ -53,7 +53,7 @@ def main():
 
     importances = dict(zip(FEATURE_COLUMNS, model.feature_importances_.tolist()))
 
-    print(f"Held-out shopee_th_toothpaste top-1 count: {len(top1)}")
+    print(f"Held-out shopee_sg_toothpaste top-1 count: {len(top1)}")
     print(f"Raw precision: {raw_precision:.4f}")
     print(f"Ground-truth-clean subset precision: {clean_precision:.4f} (n={len(clean_subset)})")
     print(f"Feature importances: {json.dumps(importances, indent=2)}")

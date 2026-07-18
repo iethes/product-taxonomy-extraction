@@ -21,7 +21,7 @@ anchors AS (
     ON ue.product_id = m.product_id AND ue.platform = m.platform AND ue.country = m.country
   WHERE u.month = latest_month.month
     AND m.source = 'LLM'
-    AND m.master_table LIKE 'shopee_th_%'
+    AND (m.master_table LIKE 'shopee_th_%' OR m.master_table = 'shopee_sg_toothpaste')
     AND u.brand_confidence IN ('HIGH', 'MEDIUM')
     AND u.brand_id NOT IN ('BRD-UNDEFINED', 'BRD-UNBRANDED')
 ),
@@ -37,6 +37,7 @@ candidates AS (
     a.parsed_size, a.brand_canonical, a.brand_id,
     pt.taxonomy_id AS candidate_taxonomy_id,
     pt.size AS candidate_size, pt.pack_count AS candidate_pack_count,
+    pt.product_line AS candidate_product_line,
     pt.canonical_name AS candidate_canonical_name,
     ML.DISTANCE(a.product_embedding, pte.embedding, 'COSINE') AS embedding_cosine_distance
   FROM anchors_parsed a
@@ -71,7 +72,8 @@ SELECT
   LOWER(REPLACE(REPLACE(l.sku_name, l.brand_canonical, ''), IFNULL(l.parsed_size, ''), '')) AS sku_text_stripped,
   LOWER(REPLACE(REPLACE(l.candidate_canonical_name, l.brand_canonical, ''), IFNULL(l.parsed_size, ''), '')) AS candidate_text_stripped,
   IFNULL(bvk.variant, '') != '' AS keyword_table_hit,
-  SAFE_DIVIDE(LENGTH(l.sku_name), LENGTH(l.candidate_canonical_name)) AS text_length_ratio
+  SAFE_DIVIDE(LENGTH(l.sku_name), LENGTH(l.candidate_canonical_name)) AS text_length_ratio,
+  IF(l.candidate_product_line IS NOT NULL AND STRPOS(LOWER(l.sku_name), LOWER(l.candidate_product_line)) > 0, TRUE, FALSE) AS product_line_match
 FROM labeled l
 LEFT JOIN `sincere-hearth-273704.magpie_reference.brand_variant_keywords` bvk
   ON bvk.brand_id = l.brand_id

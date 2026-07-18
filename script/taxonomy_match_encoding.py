@@ -14,6 +14,7 @@ FEATURE_COLUMNS = [
     "size_match_code",
     "pack_signal_present",
     "pack_match_code",
+    "product_line_match_code",
 ]
 
 
@@ -41,4 +42,5 @@ def encode_features(df):
         df.loc[has_both, "pack_multiplier_signal"].astype(float)
         == df.loc[has_both, "candidate_pack_count"].astype(float)
     ).astype(int) * 2 - 1
+    df["product_line_match_code"] = df["product_line_match"].astype(int)
     return df
