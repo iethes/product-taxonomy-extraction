@@ -1,2 +1,3 @@
 *.parquet
 taxonomy_matcher_model.json
+.venv-embedding/
