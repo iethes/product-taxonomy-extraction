@@ -229,6 +229,15 @@ Every LLM extraction call should extract `brand_from_image` from the product ima
 - Pattern: add a keyword guard (`has_body_wash_keyword(sku_name) = TRUE`) in the GMV query,
   or use the NIQ category mapping to pre-filter to in-scope products only.
 - This applies to every category with a mixed-content source table.
+- **This keyword gate is a brand-ranking control only — it must never be used to decide whether an individual product gets extracted.**
+  Every product in the in-scope worklist (top-95%-cumulative-GMV, GWP-zeroed, plus
+  official-store listings per `docs/quality-standards.md` §2) must be read (image + text) by the LLM. Only the
+  LLM's own category/type match-or-create gate (`docs/product-lifecycle.md` §4.2), applied
+  *after* reading the product, may conclude a product doesn't belong to this category and leave it NULL —
+  never a pre-extraction keyword/text heuristic. This matters most for high-GMV Mall-seller listings that are
+  genuinely miscategorized (their `sku_name` doesn't match the category's expected keywords even though the
+  product itself belongs): a keyword pre-filter would drop them before the LLM ever sees them; the
+  category/type gate, applied per-product, catches them correctly.
 
 ---
 
