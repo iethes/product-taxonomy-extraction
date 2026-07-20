@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./script/headless_taxonomy.sh <TABLE> [MONTH]
+# Usage: ./script/headless_taxonomy.sh <TABLE> [MONTH] [MAX_TURNS]
 # e.g.  ./script/headless_taxonomy.sh shopee_th_conditioner
-#       ./script/headless_taxonomy.sh shopee_th_suncare 2026-06   (explicit month instead of live-latest)
+#       ./script/headless_taxonomy.sh shopee_th_suncare 2026-06        (explicit month instead of live-latest)
+#       ./script/headless_taxonomy.sh shopee_th_suncare "" 800         (default month, larger turn budget for a big gap)
+#
+# MAX_TURNS defaults to 300 if omitted. Raise it for a large live gap you want closed in one session — bulk-first
+# processing (see build_topup_prompt) means turn count no longer scales 1:1 with worklist size, but a very large
+# gap can still exhaust the default budget partway; that's fine (status='partial'), just re-run to continue.
 #
 # Auto-detects scenario from live BigQuery state:
 #   - gap_count == 0                    -> nothing to do, exit 0, no claude -p call
@@ -127,7 +132,7 @@ Claim ${block_size} slots — sized by the wrapper for a first-run category (pro
 
 STEP 4 — Pass 1: build taxonomy ONLY from the Official Store Allowlist merchant names you just wrote into the category file — not the full Mall-badged pool.
 
-STEP 5 — Pass 2: route remaining official-store-unmatched and reseller products primarily via bulk SQL text-matching of sku_name against the Pass 1 taxonomy you just built. Only read product images for individual products where text matching is genuinely ambiguous — do not vision-read the full candidate pool. This keyword/text-matching step is a routing convenience, never a scope filter: this keyword gate must never be used to decide whether an individual product gets extracted. Every product in the 95%-cumulative-GMV-or-official-store in-scope set (docs/quality-standards.md §2) must be read and evaluated — only your own category/type match-or-create gate (docs/product-lifecycle.md §4.2), applied after reading a product, may conclude it doesn't belong here and leave it NULL. This matters most for high-GMV Mall-seller listings that are genuinely miscategorized (their sku_name doesn't match the category's expected keywords even though the product itself belongs) — a text pre-filter would silently drop them before you ever looked.
+STEP 5 — Pass 2: the priority for Pass 2 is closing the coverage gap quickly, not per-row precision — quality correctness (exact product_line wording, variant capture, pack-count edge cases, D1-D5 of docs/quality-standards.md) is a separate, later concern owned by script/targeted_qa_fix.sh, scoped by GMV impact; do not spend this session's turns chasing it. Route remaining official-store-unmatched and reseller products in BULK via SQL text-matching of sku_name against the Pass 1 taxonomy you just built — group by brand+line pattern and write statements that map many products per statement, not one row at a time. Only read product images for individual products where text matching is genuinely ambiguous — do not vision-read the full candidate pool. This keyword/text-matching step is a routing convenience, never a scope filter: this keyword gate must never be used to decide whether an individual product gets extracted. Every product in the 95%-cumulative-GMV-or-official-store in-scope set (docs/quality-standards.md §2) must be considered — only your own category/type match-or-create gate (docs/product-lifecycle.md §4.2), applied after reading a product, may conclude it doesn't belong here and leave it NULL. This matters most for high-GMV Mall-seller listings that are genuinely miscategorized (their sku_name doesn't match the category's expected keywords even though the product itself belongs) — a text pre-filter would silently drop them before you ever looked. Hard gates G1 (no dual-mapping), G2 (no HUMAN+LLM coexistence), G4 (no cross-category mapping), and G5 (provenance) are structural invariants and must still pass regardless of this speed-first approach — never skip or relax those.
 
 STEP 6 — For every taxonomy entry, populate product_line, sub_line, and variant as their own structured columns — do NOT leave them NULL while folding that same information into canonical_name as free text. product_line is close to mandatory (populate it whenever a real on-label line name exists, per docs/llm-extraction-rules.md §3); sub_line and variant are optional — populate only where a real signal exists, leave NULL rather than guess when the text doesn't clearly support a split. This was gotten wrong before: 934 entries once shipped with product_line NULL on 100% of them because the extraction wrote good canonical_name text but never decomposed it into the structured fields.
 
@@ -161,9 +166,15 @@ Known pitfall from prior sessions: \`bq query\` silently truncates displayed res
 STEP 0 — Get the live worklist (do not trust any number in this prompt or in ${table}.md):
 ${query}
 
-STEP 1 — For every product in that live worklist, apply reuse-before-mint against ${table}'s EXISTING taxonomy first (docs/product-lifecycle.md §4's match-or-create decision tree: brand gate, category gate, type gate, specificity match, size+pack match). Only mint a new SKU-XXXXXX entry when no existing brand+line+size+pack entry fits — a correct-but-granular new entry is always better than a wrong reuse.
+STEP 1 — Bulk-first reuse-before-mint. The priority for this session is closing the coverage gap quickly, not per-row precision — quality correctness (exact product_line wording, variant capture, pack-count edge cases, D1-D5 of docs/quality-standards.md) is a separate, later concern: script/targeted_qa_fix.sh is the dedicated follow-up tool for that, scoped by GMV impact. Do not spend this session's turns chasing it.
 
-Read product image + sku_name directly for each product. This is a routing convenience, never a scope filter: this keyword gate must never be used to decide whether an individual product gets extracted — every product in the live worklist gets read. Only your own category/type match-or-create gate, applied after reading a product, may conclude it doesn't belong here and leave it NULL. This matters most for high-GMV Mall-seller listings that are genuinely miscategorized (their sku_name doesn't match the category's expected keywords even though the product itself belongs) — a text pre-filter would silently drop them before you ever looked.
+Do NOT process the live worklist one product at a time — that under-uses this session's budget and is why a prior top-up run on this exact category only resolved 31 of 790 rows (it read one image per product and then self-limited to match this category's older QA History session sizes, which reflect the OLD targeted_qa_fix.sh workflow's smaller 200-slot/30-turn scope, not this scenario's real budget). Instead:
+(a) Group the live worklist by brand (via product_brand_map/brand_dict) and by sku_name pattern. Write BULK SQL (INSERT ... SELECT / UPDATE with a JOIN) that maps many matching products to an existing ${table} taxonomy entry in a single statement wherever a clear brand+line+size+pack text match exists (docs/product-lifecycle.md §4's match-or-create decision tree) — reuse-before-mint via bulk text matching, not per-item image verification.
+(b) For groups of worklist products that share a brand+line but don't match any existing entry (new size/pack/variant), mint ONE new taxonomy entry per group and map every matching product to it in one bulk statement — never process that group's products one by one.
+(c) Only read an individual product's image when text signals (sku_name, product_specification, product_description) are genuinely insufficient to identify brand or product line for minting a new entry. Even then, look for other unresolved worklist rows with a similar sku_name pattern and batch them under the same new entry rather than reading and minting one at a time. This is a routing convenience, never a scope filter: this keyword gate must never be used to decide whether an individual product gets extracted — every product in the live worklist gets considered. Only your own category/type match-or-create gate may conclude a product doesn't belong here and leave it NULL. This matters most for high-GMV Mall-seller listings that are genuinely miscategorized (their sku_name doesn't match the category's expected keywords even though the product itself belongs) — a text pre-filter would silently drop them before you ever looked.
+(d) Attempt to resolve the ENTIRE live worklist within your available turn budget this session — do not self-limit to a small sample or match this category's older QA History session sizes. Stop early only when you are genuinely running low on turns, and say so honestly in findings — never as a strategic choice to work only the top of the list.
+
+Hard gates G1 (no dual-mapping), G2 (no HUMAN+LLM coexistence), G4 (no cross-category mapping), and G5 (provenance) are structural invariants and must still pass regardless of this speed-first approach — never skip or relax those.
 
 STEP 2 — Claim a ${block_size}-slot SKU block atomically (DECLARE before BEGIN TRANSACTION — reversing that order is a real BigQuery scripting syntax error):
 BEGIN
@@ -195,13 +206,15 @@ PROMPT
 
 main() {
   if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <TABLE> [MONTH]" >&2
+    echo "Usage: $0 <TABLE> [MONTH] [MAX_TURNS]" >&2
     echo "  e.g. $0 shopee_th_conditioner" >&2
-    echo "  e.g. $0 shopee_th_suncare 2026-06   (explicit month instead of live-latest)" >&2
+    echo "  e.g. $0 shopee_th_suncare 2026-06        (explicit month instead of live-latest)" >&2
+    echo "  e.g. $0 shopee_th_suncare \"\" 800         (default month, larger turn budget for a big gap)" >&2
     exit 1
   fi
   local table="$1"
   local month="${2:-}"
+  local max_turns="${3:-300}"
 
   if [[ -z "$month" ]]; then
     month=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
@@ -230,7 +243,7 @@ main() {
   local block_size
   block_size=$(compute_block_size "$scenario" "$gap_count")
 
-  echo "Scenario: ${scenario} (existing_llm_rows=${existing_llm_rows}, gap_count=${gap_count}, block_size=${block_size})"
+  echo "Scenario: ${scenario} (existing_llm_rows=${existing_llm_rows}, gap_count=${gap_count}, block_size=${block_size}, max_turns=${max_turns})"
   echo "TAXONOMY EXTRACTION STARTED"
   echo "==========================="
 
@@ -241,7 +254,7 @@ main() {
     prompt=$(build_topup_prompt "$table" "$month" "$block_size" "$gap_count")
   fi
 
-  claude -p --output-format json --permission-mode bypassPermissions --max-turns 300 "$prompt"
+  claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt"
 
   echo "============================"
   echo "TAXONOMY EXTRACTION FINISHED"

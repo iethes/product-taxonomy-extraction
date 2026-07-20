@@ -26,8 +26,18 @@ reuse-before-mint, smaller SKU block sized to the gap). The check is scoped to `
 pre-existing `source='HUMAN'` keyword-seed rows (the norm for most categories before Phase 5 ever runs) don't
 count as prior LLM coverage and must not misroute a genuine first pass into top-up.
 
+**Priority is coverage, not precision.** Both scenarios' prompts instruct bulk-first processing (grouped SQL
+text-matching against existing/newly-built taxonomy, not one image read per product) and explicitly forbid
+self-limiting to a small sample — the whole live worklist should be attempted within the session's turn
+budget. Per-row quality (exact product_line wording, variant capture, pack-count edge cases) is intentionally
+deprioritized here; that's `targeted_qa_fix.sh`'s job. Hard gates (G1, G2, G4, G5) are the exception — those
+are structural invariants and always apply, even in a speed-first pass.
+
+`MAX_TURNS` is an optional 3rd argument (default 300) for scaling the session budget on a large gap — e.g.
+`./script/headless_taxonomy.sh shopee_th_suncare "" 800`.
+
 ```
-$ ./script/headless_taxonomy.sh <TABLE>
+$ ./script/headless_taxonomy.sh <TABLE> [MONTH] [MAX_TURNS]
         │
    no TABLE arg? ──yes──▶ print usage, exit 1
         │ no

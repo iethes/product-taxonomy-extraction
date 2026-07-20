@@ -189,6 +189,18 @@ a hand-written Brief):
 7. Self-check QA gates (same as today's STEP 7), report actual numbers.
 8. `status='blocked'` remains a valid, expected outcome.
 
+**Addendum (2026-07-20, caught in a live run against `shopee_th_suncare`):** step 4 as originally written
+("for each worklist product") let a session interpret per-row image verification as the default, and — having
+read the category's older `targeted_qa_fix.sh`-era QA History (33–58 resolved/session) — self-limit to a
+similarly small sample (31 of 790) instead of using this scenario's actual, much larger budget. Fixed by
+making step 4 explicitly bulk-first: group the worklist by brand/sku_name pattern, write bulk SQL
+INSERT/UPDATE statements mapping many products per statement, and only fall back to individual image reads
+when text signals are genuinely insufficient. The prompt now states plainly that this scenario's priority is
+closing the coverage gap quickly, not per-row precision (that's `targeted_qa_fix.sh`'s job, scoped by GMV
+impact) — except hard gates G1/G2/G4/G5, which remain non-negotiable regardless. `MAX_TURNS` is also now an
+optional 3rd CLI argument (default 300) so a large gap can be given a bigger session budget explicitly,
+instead of the script silently under- or over-running on a fixed value.
+
 Universe refresh is **not** run by this script in either scenario, unchanged from today — that stays a
 separate step, matching `docs/headless-scripts-flow.md`'s existing note that `headless_taxonomy.sh` never
 touches `universe_taxonomy_overlay`.

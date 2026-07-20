@@ -302,6 +302,20 @@ proceed):
   smaller block (sized to the gap, floor 200 / cap 2,000) and works only that live gap via reuse-before-mint
   against the category's existing taxonomy — never a full Pass 1/Pass 2 re-extraction.
 
+**Priority is coverage, not precision.** Both scenarios' prompts require bulk-first processing — grouped SQL
+text-matching against existing/newly-built taxonomy, not one image read per product — and explicitly forbid
+self-limiting to a small sample; the agent should attempt the entire live worklist within its turn budget,
+not silently mirror an older, smaller session-size convention from the category's own QA History. (Caught
+live against `shopee_th_suncare`: a top-up run resolved only 31 of 790 in-scope rows, having matched an old
+`targeted_qa_fix.sh`-era cadence of 33–58/session instead of using this scenario's real budget.) Per-row
+quality — exact `product_line` wording, variant capture, pack-count edge cases — is intentionally
+deprioritized here; that precision work belongs to `targeted_qa_fix.sh`, scoped by GMV impact. Hard gates
+(G1, G2, G4, G5) are the one exception: those are structural invariants and always apply, even in a
+speed-first pass.
+
+`MAX_TURNS` is an optional 3rd CLI argument (`<TABLE> [MONTH] [MAX_TURNS]`, default 300) for scaling the
+session's turn budget on a large gap, e.g. `./script/headless_taxonomy.sh shopee_th_suncare "" 800`.
+
 The rest of this section describes the first-run procedure.
 
 **Worked example: `shopee_sg_shampoo`.** Attempt #1 (2026-07-15) claimed a real block (`SKU-069001`–
