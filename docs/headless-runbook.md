@@ -261,6 +261,13 @@ Do NOT run any UPDATE/INSERT/DELETE. Read-only assessment only.
 Small SKU block (~200), narrow prompt scope (specific flagged products, not a full category rebuild), QA gates
 scoped to affected `product_id`s only, universe refresh runs but only touches the products actually rerouted.
 
+**Scope boundary:** this scenario fixes existing-row quality defects only — `docs/quality-standards.md`
+§3's D1–D5 dimensions (generic-stub product lines, missing size/variant/pack-count, wrong product line) and
+§4's hard gates G1/G2/G3/G5/G6, plus `brand_mismatch` review per `docs/brand-extraction.md`.
+Coverage gaps (products with `taxonomy_id IS NULL`) are explicitly out of scope for this script — see
+"Scenario: Full Rebuild" below, which now also covers re-running against an already-complete category to
+close a live coverage gap.
+
 1. Claim a ~200-slot block (Shared mechanics § Atomic SKU block claim, `@block_size = 200`, `@scenario =
    'targeted_qa_fix'`).
 2. Invoke `claude -p` with the claimed range and the specific fix list (pack-count corrections, wrong-size
@@ -276,9 +283,21 @@ scoped to affected `product_id`s only, universe refresh runs but only touches th
 
 ## Scenario: Full Rebuild
 
-Full SKU block (~1,000 slots), rebuilds a category's taxonomy from scratch — supersedes old map rows (delete
-*after* the new taxonomy is built and QA'd, never before — see step 4), re-extracts via Pass 1 (official
-stores) + Pass 2 (reseller routing), then QA gates + universe refresh across the whole category.
+`script/headless_taxonomy.sh` implements two scenarios, auto-selected from live BigQuery state rather than
+chosen by the operator — the script itself checks whether any `product_taxonomy_map` rows exist for the
+target table and picks accordingly:
+
+- **First run** (0 existing rows): full SKU block (~2,000 slots), rebuilds a category's taxonomy from
+  scratch, re-extracts via Pass 1 (official stores) + Pass 2 (reseller routing), then QA gates. This is the
+  procedure documented below.
+- **Top-up** (existing rows present): the script always re-checks whether the live 95%-cumulative-GMV
+  (GWP-zeroed) worklist still has products with no `taxonomy_id`, regardless of `docs/categories/STATUS.md`
+  marking the category "complete" — categories accumulate new listings over time. If the live gap is 0, the
+  script exits immediately with no SKU claim and no `claude -p` call. If the gap is nonzero, it claims a
+  smaller block (sized to the gap, floor 200 / cap 2,000) and works only that live gap via reuse-before-mint
+  against the category's existing taxonomy — never a full Pass 1/Pass 2 re-extraction.
+
+The rest of this section describes the first-run procedure.
 
 **Worked example: `shopee_sg_shampoo`.** Attempt #1 (2026-07-15) claimed a real block (`SKU-069001`–
 `SKU-070000`, still `ACTIVE`, zero rows written) and correctly stopped itself before writing anything — see

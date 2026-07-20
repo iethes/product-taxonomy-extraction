@@ -15,7 +15,14 @@ for why.
 
 ---
 
-## `script/headless_taxonomy.sh` — Full Rebuild
+## `script/headless_taxonomy.sh` — Coverage Closer (Full Rebuild + Top-Up)
+
+Auto-detects scenario from live state before invoking `claude -p`: if the live 95%-cumulative-GMV
+(GWP-zeroed) worklist for `<TABLE>` has 0 products with no `taxonomy_id`, the script exits immediately —
+no SKU claim, no LLM call, safe to re-run against any category regardless of `docs/categories/STATUS.md`.
+Otherwise it picks **first-run** (0 existing `product_taxonomy_map` rows — full Pass 1/Pass 2 rebuild, shown
+below) or **top-up** (existing rows present — closes just the live gap via reuse-before-mint, smaller SKU
+block sized to the gap).
 
 ```
 $ ./script/headless_taxonomy.sh <TABLE>
@@ -84,6 +91,10 @@ step after this script exits. This is the main thing `targeted_qa_fix.sh` (below
 ---
 
 ## `script/targeted_qa_fix.sh` — Targeted QA Fix
+
+Scope is existing-row quality defects only (`docs/quality-standards.md` D1–D5, hard gates G1/G2/G3/G5/G6,
+`brand_mismatch` review). Coverage gaps (`taxonomy_id IS NULL`) are out of scope for this script — see
+`script/headless_taxonomy.sh`'s top-up scenario above.
 
 ```
 $ ./script/targeted_qa_fix.sh <TABLE>
