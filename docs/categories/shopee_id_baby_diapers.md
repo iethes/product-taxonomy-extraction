@@ -45,7 +45,7 @@ flagging this as a real follow-up item, not something this session can or should
 | Block | Usage |
 |-------|-------|
 | SKU-093462–094397 | Pass 1 OFFICIAL (936 entries, allowlist-scoped) — within the original 2000-slot claim |
-| SKU-094398–096475 | Pass 2 RESELLER (2078 entries, text-match routed/created) — spills into a supplemental 1500-slot claim (095462–096961) after the original block filled |
+| SKU-094398–096475 | Pass 2 RESELLER (2060 entries after dedup, text-match routed/created) — spills into a supplemental 1500-slot claim (095462–096961) after the original block filled; 18 IDs in this range were deleted as duplicates, see QA History |
 | SKU-096476–096961 | Unused remainder of the supplemental block — still `ACTIVE`, safe to reuse for a future QA/gap-fill pass on this category |
 
 ---
@@ -225,6 +225,8 @@ genuine ambiguity, not for exhaustive per-row reads.
 | 2026-07-20 | Pass 1 | Fluffy and Baby Happy packaging/sku_names carry no distinguishable sub-line name beyond the brand itself (confirmed via image for Fluffy) | `product_line = NULL` by design for these two brands — Tier B per quality-standards.md §3 (D1), not a parsing gap |
 | 2026-07-20 | Pass 2 | 20,746 raw CREATE candidates collapsed to 2,078 distinct `(brand, line, variant, type, size, pack_count)` keys once deduplicated — the raw count would have been extreme over-fragmentation | Grouped before minting; 42% of the 2,078 are singleton-product entries but only ~8% of Pass-2-create GMV, consistent with genuine reseller long-tail variety |
 | 2026-07-20 | Pass 2 | Some multi-size reseller listings (e.g. `"Mamy Poko Pants X-tra Kering NB40 S38 M32 L28 XL26 XXL24"`, buyer picks one) were parsed to a single (first-matched) size rather than `is_multi_size=TRUE` | Known simplification — product_taxonomy_map is 1 row per product_id, GMV on these specific listings is negligible-to-zero in the sample checked; flagged here rather than fixed, since fixing would need a second full multi-size-detection pass for low expected GMV payoff |
+| 2026-07-20 | Post-Pass-2 self-check | Pass 2's reuse-key check omitted `type` (pants/tape) from the lookup, and a same-key overwrite bug in the type index meant 18 Pass-2 entries were exact-spec duplicates of existing Pass-1 entries rather than reusing them | Merged: rerouted the 18 duplicate SKUs' `product_taxonomy_map` rows to the original (lower) `taxonomy_id`, deleted the duplicate `product_taxonomy` rows. G1 (dual-mapped) confirmed 0 both before and after — no product lost its mapping |
+| 2026-07-20 | Post-Pass-2 self-check | Spot-checked the top-40-by-GMV products still unmapped after Pass 2 (advisor-suggested check, since the Pass 2 pull used a brand-keyword filter that STEP 5 forbids as an *extraction* gate — it's meant only for *routing*). Findings: (a) most are genuinely brand-unidentifiable "repack"/"non kemasan" (no-packaging, rebranded) resellers — correctly out of scope; (b) a real long tail of brands below the 95% threshold even by their true identity (Kinto, Hanuka, Runbeier — all confirmed in the Brand Scope raw ranking below rank 12); (c) a meaningful chunk (e.g. `"[TOKO MANUR]...MERRIES..."`, `"...MAKUKU..."`, `"...BABY HAPPY..."`, `"MAMYPOKO 1 KARTON..."`) ARE in-scope-brand listings that the regex pull did catch, but the size/pack parser failed on them — bulk multi-pack descriptors (`KARTON`, `BALL`) with no explicit size letter, and Indonesian size words (`Ukuran Besar/Sedang/Kecil` = Large/Medium/Small) my regex doesn't recognize. These are already counted in the 1,950-product/6.66B-IDR `UNRESOLVED_NO_SPEC` bucket above, not a *new* gap — confirms the 91.93% coverage number is honest, not inflated by a silent keyword-filter exclusion | Documented as the Pass 2 known-limitation list below; not fixed this session (would need Indonesian size-word support + bulk-pack-without-size handling, real but bounded follow-up work) |
 
 ---
 
@@ -246,7 +248,7 @@ not via `pipeline/05_product_taxonomy/llm_{table}/*.py` scripts.
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 34,185 (1,674 Pass 1 + 32,511 Pass 2) | 3,014 new `product_taxonomy` entries (936 Pass 1 + 2,078 Pass 2) |
+| LLM | 34,185 (1,674 Pass 1 + 32,511 Pass 2) | 2,996 new `product_taxonomy` entries (936 Pass 1 + 2,060 Pass 2 after dedup — 18 Pass 2 entries were exact-spec duplicates of Pass 1 entries, since the reuse-key check didn't include type; merged post-hoc, map rows rerouted to the earlier SKU, no product lost its mapping) |
 | HUMAN | 0 | No prior keyword seed existed for this table |
 | NULL (unmapped) | 6,280 products / ~17.6B IDR GMV within the brand-identifiable pool, plus the long tail outside the 11-brand 95% scope | See breakdown below |
 
