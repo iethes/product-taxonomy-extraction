@@ -96,6 +96,21 @@ Built by querying distinct `merchant_name WHERE merchant_badge='Shopee Mall'` pe
 
 ---
 
+## Targeted QA Fix Brief
+
+> Scope: quality-standard violations on products that **already have** a `taxonomy_id` — generic-stub
+> product lines, missing size/variant/pack-count, wrong product line, hard-gate violations (G1, G2, G3, G5,
+> G6 per docs/quality-standards.md §4), brand_mismatch review per docs/brand-extraction.md. Never products
+> with `taxonomy_id IS NULL` — that coverage gap is `script/headless_taxonomy.sh`'s job (its live worklist
+> query finds it automatically; no brief needed for that).
+
+**Verdict:** {defect class, e.g. "D1 Tier-C generic stubs" / "D5 pack-count errors" / "G6 unreviewed brand_mismatch rows"}
+
+{Fix A/B/C description: which products, what's wrong, how to detect them (a SQL snippet if useful),
+category-specific QA gate notes.}
+
+---
+
 ## Scripts
 
 | Script | Purpose |
