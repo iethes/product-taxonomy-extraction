@@ -59,7 +59,13 @@ SELECT
   SUM(CASE WHEN t.flag_GWP = FALSE THEN t.gmv_monthly ELSE 0 END) AS gmv_total_excl_gwp
 FROM master_clean_niq.{table} t
 JOIN magpie_reference.product_brand_map pbm
-  ON t.product_id = pbm.product_id AND pbm.master_table = '{table}'
+  ON t.product_id = pbm.product_id
+  -- Join on product_id ALONE, not + master_table (revised 2026-07-17). Since ADR-006 (2026-06-30),
+  -- product_brand_map is deduped to one row per (product_id, platform, country); master_table is now
+  -- just "first source table this product was ever seen in," not a reliable join key. Filtering on
+  -- master_table = '{table}' silently drops products whose brand-map row happens to be filed under a
+  -- different category table they also appeared in — confirmed live: 71 of 212 unmapped shopee_th_suncare
+  -- products in the 2026-07-17 v2 rebuild had a valid brand_map row, just under the wrong master_table.
 JOIN magpie_reference.brand_dict bd
   ON pbm.brand_id = bd.brand_id
 WHERE t.month = '{month}'
@@ -68,7 +74,8 @@ ORDER BY gmv_total_excl_gwp DESC
 -- → user confirms which brands are in scope
 
 -- Step 2: Product-level fetch for in-scope brands
--- GWP products excluded entirely; GWP GMV zeroed in cumulative for threshold calc
+-- GWP products ARE included in all passes (revised 2026-07-17); their GMV stays zeroed in cumulative
+-- for threshold calc only — zeroing GMV does not exclude the row, it just keeps GWP from inflating rank
 SELECT
   t.product_id,
   t.merchant_badge,
@@ -82,11 +89,16 @@ SELECT
   SUM(CASE WHEN t.flag_GWP = FALSE THEN t.gmv_monthly ELSE 0 END) AS gmv_total
 FROM master_clean_niq.{table} t
 JOIN magpie_reference.product_brand_map pbm
-  ON t.product_id = pbm.product_id AND pbm.master_table = '{table}'
+  ON t.product_id = pbm.product_id
+  -- Join on product_id ALONE, not + master_table (revised 2026-07-17). Since ADR-006 (2026-06-30),
+  -- product_brand_map is deduped to one row per (product_id, platform, country); master_table is now
+  -- just "first source table this product was ever seen in," not a reliable join key. Filtering on
+  -- master_table = '{table}' silently drops products whose brand-map row happens to be filed under a
+  -- different category table they also appeared in — confirmed live: 71 of 212 unmapped shopee_th_suncare
+  -- products in the 2026-07-17 v2 rebuild had a valid brand_map row, just under the wrong master_table.
 JOIN magpie_reference.brand_dict bd
   ON pbm.brand_id = bd.brand_id
 WHERE t.month = '{month}'
-  AND t.flag_GWP = FALSE               -- exclude GWP products entirely from all passes
   AND t.flag_discontinued = FALSE
   AND pbm.brand_id IN ({confirmed_brand_ids})
   -- Pass 1 only: add AND t.merchant_name IN ({brand_official_store_names})
@@ -99,7 +111,7 @@ ORDER BY gmv_total DESC
 ```
 
 Key points:
-- **`flag_GWP = TRUE` → GMV zeroed in all cumulative calculations** — GWP products never count toward brand GMV rank or product threshold eligibility; excluded from all passes entirely
+- **`flag_GWP = TRUE` → GMV zeroed in all cumulative calculations** — GWP products never count toward brand GMV rank or product threshold eligibility, but they are NOT excluded from the passes (revised 2026-07-17, was previously a hard exclusion — see ADR-005). They still get a taxonomy_id like any other in-scope product; only their GMV contribution to ranking/threshold math is zeroed
 - **`brand_canonical`** (from `brand_dict`) is the brand input to the LLM — already clean, no Thai suffix stripping needed
 - **`source`** (from `product_brand_map`) is included to determine whether brand mismatch check applies
 - **`sku_name`** is the original listing title (not `sku_name_EN` which is machine-translated)

@@ -8,7 +8,7 @@ Last updated: Jun 24 2026
 
 | Category | Pass 1 | Pass 2 | GMV Coverage | SKU Range (Pass 1) | SKU Range (Pass 2) | Notes |
 |----------|--------|--------|-------------|--------------------|--------------------|-------|
-| th_suncare | ✅ | ✅ | ~85% | SKU-003353–003516 | SKU-003517–003546 + SKU-005885–005957 | 3 passes total |
+| th_suncare | ✅ | ✅ | 65.0% v2-only | SKU-082151–082859 | (v2, single block) | v2 rebuild Jul 17 2026 (fixed `(all variants)` leak + NULL pack_count); 90 v1-only + 11 HUMAN-only rows kept live, v1 backed up |
 | th_moisturizer_for_face | ✅ | ✅ | 85.6% | SKU-042000–042424 | SKU-042500–042526 | Rebuilt Jun 23 |
 | th_moisturizer_for_body | ✅ | ✅ | ~80% | SKU-037000–037886 | SKU-038000–039088 | Rebuilt Jun 22; QA pass Jun 22–23 |
 | th_body_wash | ✅ | ✅ | 75.5% | SKU-058000–058423 | SKU-057000–057569 | v3 rebuild Jun 24 |
