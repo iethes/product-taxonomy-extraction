@@ -9,11 +9,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD — see Map Row Counts at end of session |
-| Last run | 2026-07-20 |
-| Current MAX taxonomy_id (registry floor at session start) | SKU-100345 (`sku_block_registry` MAX(block_end)) |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete + top-up session (2026-07-20) closed most of the remaining coverage gap — 871 products still unmapped, see Targeted QA Fix Brief |
+| GMV Coverage | 99.34% (see Map Row Counts) |
+| Last run | 2026-07-20 (top-up session) |
+| Current MAX taxonomy_id (registry floor at session start of top-up) | SKU-102345 (`sku_block_registry` MAX(block_end)) |
 
 **Pipeline onboarding gap (read before trusting any downstream join for this table) — same gap
 documented in `shopee_id_baby_diapers.md`, confirmed again live for this table:**
@@ -286,12 +286,16 @@ categories; verify against sku_name/image per `llm-extraction-rules.md` §1 befo
 | 2026-07-20 | Brand scope | 110 brands required for 95% GMV threshold (vs. ~12 for baby_diapers) — a much more fragmented category; confirmed via full live query, not a fixed-size snapshot | Full ranking documented; regenerate query provided above |
 | 2026-07-20 | Brand scope | 10 top-95%-scope brands absent from `brand_dict` | Flagged for new `BRD-ID-*` entries during Pass 1 (see Brand Scope) |
 | 2026-07-20 | Official store allowlist | 99 merchant names selling ≥3 distinct scope brands identified as multi-brand retailers via data-driven detection (more reliable than name-pattern matching alone at this brand count) and excluded | Allowlist scoped to 180 genuine merchant names across 102 brands |
+| 2026-07-20 | Top-up coverage session | Live re-query of the STEP 0 worklist (95%-cumulative-GMV, GWP-zeroed, `canonical_name IS NULL`) found 4,241 distinct unmapped products (8,817 product/model rows) — close to but not identical to the wrapper's stale pre-check number, confirming the live re-query was necessary. Bulk-first reuse-before-mint pipeline (SQL text-matching, not per-row image reads): (1) 195 products matched to existing taxonomy entries via brand+product_line substring match; (2) 2,759 products minted into 2,652 new entries via brand resolution (direct `brand_dict` match + empirical brand_raw→brand_id lookup from already-mapped products) + regex size/pack extraction + cluster-by-normalized-sku_name; (3) 262 more products resolved via a broader `brand_dict`-wide sku_name-prefix scan (after filtering ~187 false-positive generic-word matches like "Foundation"/"Ready"/"Promo" via a stoplist) → 251 new entries; (4) 154 more products resolved via official-store merchant_name → brand inference, minting 47 new `BRD-ID-*` brand_dict entries for genuine single-brand stores not yet registered (cross-checked against this file's known multi-brand-retailer exclusion list — Watsons/Guardian/BEAUTYHAUL/Blessing Mask/Nihonmart/Boots/Ulta Beauty excluded from store-as-brand inference) → 154 new entries. Total: 3,370 of 4,241 products resolved (79.5%); 871 remain genuinely unresolved (no identifiable brand from text signals within this session's bulk-SQL budget — mostly blank-`brand` field long-tail resellers with generic/non-descriptive titles). Category GMV coverage rose to 99.34%. | 3,057 new `product_taxonomy` entries (`SKU-104246`–`SKU-107302`, within claimed blocks; `SKU-100346`–`101545` range reused for the 195 text-matches), 3,370 new `product_taxonomy_map` rows, all `source='LLM'`, `meta_agent='CLAUDE_CODE'`, confidence 0.62–0.75 (bulk text-match tier, not image-verified — flagged for `targeted_qa_fix.sh` precision pass per D1–D5). QA gates (G1 dual-mapped, G2 HUMAN+LLM coexistence, placeholder-leak, G5 provenance) all passed at 0, run without `--skip-coexistence`. Universe refresh NOT run this session (separate step, pending independent QA verification). Remaining 871-product gap and D1–D5 precision (generic-stub product lines from the regex extraction, e.g. verbose marketing-copy `product_line` values) are real follow-up items for a future `targeted_qa_fix.sh` session, not resolved here — this session's explicit priority was coverage, not precision. |
 
 ---
 
 ## Targeted QA Fix Brief
 
-> Not applicable yet — this is the first extraction pass for this category.
+> Follow-up items from the 2026-07-20 top-up session (see QA History above), for a future `targeted_qa_fix.sh` run:
+> - 871 products still unmapped (95%-cumulative-GMV scope) — mostly blank-`brand`-field long-tail resellers with non-descriptive titles; need per-product image reads.
+> - The 3,057 entries minted this session used regex-only size/pack/product_line extraction (no image verification) — expect generic-stub / verbose product_line text needing D1–D3 cleanup, and NULL size on products where the regex didn't catch the unit format.
+> - 47 new `BRD-ID-*` brand_dict entries minted from official-store merchant names — spot-check for accuracy (a few store names had inconsistent suffix-stripping, e.g. `URRACX Official Store` may have retained its suffix in `canonical_name`).
 
 ---
 
@@ -304,4 +308,6 @@ via `pipeline/05_product_taxonomy/llm_{table}/*.py` scripts.
 
 ## Map Row Counts (as of last run, month 2026-06)
 
-_To be filled in at end of session — see final findings output._
+As of the 2026-07-20 top-up session: 44,966 `product_taxonomy_map` rows (all `source='LLM'`), spanning
+44,653 distinct `product_taxonomy` entries (`SKU-100346`–`SKU-107302`). Category GMV coverage: 99.34%.
+871 in-scope products remain unmapped (see Targeted QA Fix Brief above).
