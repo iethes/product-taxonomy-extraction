@@ -49,6 +49,18 @@ echo "PASS: build_prompt"
 [[ "$(decide_next_step '{"status":"complete","rows_created":0}')" == "NOOP" ]] || fail "complete with zero rows"
 [[ "$(decide_next_step 'not json at all')" == "MARK_FAILED" ]] || fail "malformed json"
 [[ "$(decide_next_step '{}')" == "MARK_FAILED" ]] || fail "empty json"
+
+# Live bug (2026-07-17, shopee_th_suncare targeted_qa_fix run): the model wrapped a valid
+# status='partial' JSON result in prose commentary despite being told to output ONLY JSON,
+# which silently fell through to MARK_FAILED and skipped the independent QA-gate-before-refresh
+# check. extract_json_object must recover the embedded object so decide_next_step still routes
+# it correctly.
+prose_wrapped='QA gates all pass. Final wrap-up.
+```json
+{"status":"partial","rows_created":6,"rows_mapped":8,"findings":["a {nested} note"]}
+```
+**Summary:** done.'
+[[ "$(decide_next_step "$prose_wrapped")" == "GATE_AND_REFRESH" ]] || fail "prose-wrapped JSON should still route to GATE_AND_REFRESH"
 echo "PASS: decide_next_step"
 
 echo "ALL TESTS PASSED"

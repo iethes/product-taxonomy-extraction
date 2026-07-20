@@ -32,6 +32,8 @@ resolve_category_file() {
 build_prompt() {
   local table="$1"
   local category_file="$2"
+  local block_size="${3:-200}"
+  local slot_offset=$((block_size - 1))
   cat <<PROMPT
 Targeted QA Fix session for ${table}.
 
@@ -41,18 +43,20 @@ If ${category_file} has no '## Targeted QA Fix Brief' section, or the section ha
 
 You perform every fix yourself, directly, using your own multimodal reading of product images and text where the brief calls for it. You do not invoke external scripts or subprocesses and do not need any API key beyond your own session auth — CLAUDE.md's ANTHROPIC_API_KEY note is about a different, external pipeline that does not exist in this repo.
 
+Known pitfalls from prior sessions, apply generally: (1) \`bq query\` silently truncates displayed results to 100 rows unless you pass --max_rows=100000 or --format=csv — always use one of those on any query where you need the complete result set, and sanity-check the row count against what you expect rather than assuming a short result means a short true set. (2) You are a one-shot, non-interactive process — do NOT use the Agent/Task tool, ScheduleWakeup, or any background/async dispatch mechanism; work through your list directly and sequentially, since nothing dispatched asynchronously will be waited for or reported back.
+
 STEP 1 — Sanity-check the brief's stated current-state numbers against a live query before trusting them:
 Run: SELECT source, COUNT(*) FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\` WHERE master_table = '${table}' GROUP BY source
 If the live counts disagree with what the brief claims, record the discrepancy in findings — do not silently proceed as if the brief were current.
 
-STEP 2 — Claim a 200-slot SKU block atomically (DECLARE before BEGIN TRANSACTION — reversing that order is a real BigQuery scripting syntax error):
+STEP 2 — Claim a ${block_size}-slot SKU block atomically (DECLARE before BEGIN TRANSACTION — reversing that order is a real BigQuery scripting syntax error):
 BEGIN
   DECLARE next_start INT64;
   BEGIN TRANSACTION;
   SET next_start = (SELECT COALESCE(MAX(block_end), 69000) + 1 FROM \`sincere-hearth-273704.magpie_reference.sku_block_registry\`);
   INSERT INTO \`sincere-hearth-273704.magpie_reference.sku_block_registry\`
     (block_start, block_end, master_table, scenario, claimed_at, status)
-  VALUES (next_start, next_start + 199, '${table}', 'targeted_qa_fix', CURRENT_TIMESTAMP(), 'ACTIVE');
+  VALUES (next_start, next_start + ${slot_offset}, '${table}', 'targeted_qa_fix', CURRENT_TIMESTAMP(), 'ACTIVE');
   COMMIT TRANSACTION;
 END;
 Never query MAX(taxonomy_id) directly and assume it's safe to use — this atomic claim against the registry table is what prevents two sessions colliding on the same ID range.
@@ -73,9 +77,26 @@ Output ONLY this JSON when done, nothing else:
 PROMPT
 }
 
+# The prompt instructs the model to output ONLY JSON, but sessions sometimes wrap it in prose
+# commentary anyway (observed live: "QA gates all pass. Final wrap-up.\n```json\n{...}\n```\n**Summary:** ...").
+# If result_json isn't valid JSON as-is, pull out the first-to-last-brace span before giving up on it —
+# that recovers a real status='partial' result that would otherwise silently fall through to MARK_FAILED
+# and skip the independent QA-gate-before-refresh check this script exists to run.
+extract_json_object() {
+  local text="$1"
+  printf '%s' "$text" | grep -Pzo '(?s)\{.*\}' | tr -d '\0'
+}
+
 decide_next_step() {
   local result_json="$1"
   local status rows_created
+  if ! echo "$result_json" | jq -e . >/dev/null 2>&1; then
+    local extracted
+    extracted=$(extract_json_object "$result_json")
+    if [[ -n "$extracted" ]] && echo "$extracted" | jq -e . >/dev/null 2>&1; then
+      result_json="$extracted"
+    fi
+  fi
   status=$(echo "$result_json" | jq -r '.status // empty' 2>/dev/null) || status=""
   case "$status" in
     blocked)
@@ -146,11 +167,14 @@ run_universe_refresh() {
 
 main() {
   if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <TABLE>" >&2
+    echo "Usage: $0 <TABLE> [BLOCK_SIZE] [MAX_TURNS]" >&2
     echo "  e.g. $0 shopee_th_detergent" >&2
+    echo "  e.g. $0 shopee_th_suncare 1200 400   (larger budget for a big-scope brief)" >&2
     exit 1
   fi
   local table="$1"
+  local block_size="${2:-200}"
+  local max_turns="${3:-30}"
 
   local category_file
   if ! category_file=$(resolve_category_file "$table"); then
@@ -160,14 +184,14 @@ main() {
   fi
 
   echo "${table}"
-  echo "TARGETED QA FIX STARTED (brief: ${category_file})"
+  echo "TARGETED QA FIX STARTED (brief: ${category_file}, block_size=${block_size}, max_turns=${max_turns})"
   echo "==========================="
 
   local prompt
-  prompt=$(build_prompt "$table" "$category_file")
+  prompt=$(build_prompt "$table" "$category_file" "$block_size")
 
   local claude_output
-  claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns 30 "$prompt")
+  claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt")
 
   local result_json
   result_json=$(echo "$claude_output" | jq -r '.result // empty')
@@ -177,6 +201,16 @@ main() {
     echo "$claude_output" >&2
     mark_failed_qa "$table"
     exit 1
+  fi
+
+  # Normalize once here so every downstream use (decide_next_step AND the BLOCKED branch's
+  # direct jq calls below) sees the same clean JSON, even if the model wrapped it in prose.
+  if ! echo "$result_json" | jq -e . >/dev/null 2>&1; then
+    local extracted
+    extracted=$(extract_json_object "$result_json")
+    if [[ -n "$extracted" ]] && echo "$extracted" | jq -e . >/dev/null 2>&1; then
+      result_json="$extracted"
+    fi
   fi
 
   local decision
