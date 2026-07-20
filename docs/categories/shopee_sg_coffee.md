@@ -8,11 +8,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD — measured after this session's writes |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 93.85% (2026-06, all products in table) |
 | Last run | 2026-07-20 |
-| Current MAX taxonomy_id | Query BQ live before first insert — see Step 3, never trust this file |
+| Current MAX taxonomy_id | SKU-102519 (query BQ live before any future insert — never trust this file) |
 
 ---
 
@@ -20,7 +20,15 @@
 
 | Block | Usage |
 |-------|-------|
-| TBD — claimed atomically in Step 3 (this session), 2,000-slot block | Pass 1 OFFICIAL + Pass 2 RESELLER |
+| SKU-098346–099399 (1,054 entries) | Pass 1 OFFICIAL — official store allowlist, 42 brands |
+| SKU-099400–100345 + SKU-102346–102519 (1,120 entries) | Pass 2 RESELLER — 1,033 head entries (nonzero-GMV) + 87 per-brand long-tail catch-alls (zero-GMV this month) |
+| SKU-102520–103845 | UNUSED — supplemental block claimed larger than needed, left ACTIVE/available for a future targeted QA fix on this category |
+
+Two blocks claimed this session: `SKU-098346–100345` (2,000 slots, scenario `full_rebuild`) and
+`SKU-102346–103845` (1,500 slots, scenario `full_rebuild_pass2_supplemental`, claimed when Pass 2's
+long-tail catch-all count exceeded the first block's remaining room). `SKU-100346–102345` belongs to a
+different, concurrently-running session's category (`shopee_id_makeup_face`) — confirmed via
+`sku_block_registry` timestamps, not a collision.
 
 ---
 
@@ -298,6 +306,9 @@ the refresh MERGE's `QUALIFY` dedup logic prefer the new LLM rows per product au
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-20 | Pre-run | 1,571 HUMAN rows, 0 LLM rows confirmed via live query | Not a blocker — genuine first LLM pass, proceed |
+| 2026-07-20 | Pass 1 | Real image reads (55 products, ~65% of official-store-pool GMV) confirmed sku_name_EN text is a reliable primary signal for this category; systematic text-based extraction applied to remaining 1,141 official-store products | Built 1,054 taxonomy entries, 1,122 map rows. Created new brand_dict entry `BRD-SG-13379` (Super) — well-known SEA coffee brand missing from brand_dict, discovered via high-GMV `Undefined`-brand products |
+| 2026-07-20 | Pass 2 | 7,786-product reseller pool for 96 in-scope brands; top 1,000 products = 99.9% of pool GMV, remainder genuinely zero-GMV this month | Head (1,046 nonzero-GMV products): 1,033 fine-grained taxonomy entries. Tail (6,740 zero-GMV products): 87 per-brand "Assorted Coffee Products" catch-alls (is_multi_variant=TRUE, confidence 0.65) to avoid taxonomy bloat on non-repeating long-tail listings — a QA/precision tradeoff explicitly deferred to a future Targeted QA Fix per this session's coverage-first mandate |
+| 2026-07-20 | QA gates | G1 dual-mapped=0, placeholder-leak=0, structured-fields-missing=0%. G2 HUMAN+LLM coexistence=614 (expected — no HUMAN-row cleanup delete was run this session; not in scope per task instructions, `--skip-coexistence` self-check semantics applied) | Shipped without the HUMAN-row delete step; a follow-up session should run the delete (HUMAN rows duplicating an LLM-mapped product_id) before this can show G2=0 |
 
 ---
 
@@ -318,6 +329,9 @@ Extraction performed directly by the Claude Code session (own multimodal reads),
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | TBD | This session's Pass 1 + Pass 2 |
-| HUMAN | 1,571 | Long-tail / pre-existing keyword seed, retained |
-| NULL (unmapped) | TBD | Below GMV scope or out-of-category |
+| LLM | 8,908 | 1,122 Pass 1 (official store) + 7,786 Pass 2 (reseller, 96 in-scope brands) |
+| HUMAN | 1,571 | Pre-existing keyword seed, not deleted this session (see QA History) |
+| NULL (unmapped) | 7,674 | Out-of-scope brands / below-threshold long tail / 74 official-store products with no identifiable brand (negligible GMV, ~SGD 38) |
+
+GMV coverage across the full table (2026-06): **93.85%** (10,450 / 18,124 products mapped by taxonomy_id,
+GMV-weighted). Exceeds the ≥85% Pass 2 target in `docs/quality-standards.md` §6.
