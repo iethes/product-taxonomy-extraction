@@ -1,6 +1,7 @@
 # AGENTS.md — Guide for AI Agents Collaborating on This Pipeline
 
 This document is for Claude Code sessions, Codex agents, or any AI agent picking up work on the Marketshare Universe pipeline.
+CLAUDE.md is a symbolic link to AGENTS.md
 
 ---
 
@@ -60,9 +61,7 @@ current_max = result[0].m  # e.g. 'SKU-058455'
 
 **Never use AGENTS.md or any static file as the source of truth for the current MAX SKU.** Those notes are written at session end and may be stale if a parallel session ran in between. Query BQ directly.
 
-**Current MAX: SKU-058455. Next safe block: SKU-059000+**
-
-See [`docs/categories/STATUS.md`](docs/categories/STATUS.md) for the full SKU allocation map.
+See [`docs/categories/STATUS.md`](docs/categories/STATUS.md) for the current SKU allocation map — never trust a static number here, always query BQ.
 
 ---
 
@@ -86,85 +85,54 @@ BigQuery has a ~90-minute streaming buffer. After inserting rows via the Streami
 
 ---
 
-## QA Gates (must pass before universe refresh)
+## QA Gates
 
-```sql
--- 1. Zero dual-mapped products
-SELECT product_id, COUNT(*) ct FROM `magpie_reference.product_taxonomy_map`
-WHERE master_table = '{table}' GROUP BY 1 HAVING ct > 1;
--- expect 0 rows
-
--- 2. Zero HUMAN+LLM co-existence
-SELECT product_id FROM `magpie_reference.product_taxonomy_map`
-WHERE master_table = '{table}'
-GROUP BY 1 HAVING COUNTIF(source='LLM') > 0 AND COUNTIF(source='HUMAN') > 0;
--- expect 0 rows
-
--- 3. Verify no NULL size where size is extractable
-SELECT COUNT(*) FROM `magpie_reference.product_taxonomy`
-WHERE taxonomy_id IN (
-    SELECT taxonomy_id FROM `magpie_reference.product_taxonomy_map`
-    WHERE master_table='{table}' AND source='LLM'
-  )
-  AND size IS NULL AND is_multi_size IS NOT TRUE;
--- expect 0 (or document why each NULL is legitimate)
-```
-
-See [`docs/quality-standards.md`](docs/quality-standards.md) for full QA checklist.
+See [`docs/quality-standards.md`](docs/quality-standards.md) §4 (Hard Gates) for the full checklist. The gates in `AGENTS.md` are a subset; `quality-standards.md` is the single source of truth.
 
 ---
 
 ## Universe Refresh Pattern
 
-After every category insertion, refresh both universes. Always include the NULLIFY step:
+After every category insertion, refresh the overlay table. Taxonomy state lives in a separate overlay table (`magpie_reference.universe_taxonomy_overlay`), not as columns on `marketshare_universe` — see Migration 003 and `docs/headless-runbook.md` § Universe refresh for the rationale.
 
-```python
-# Step 1: NULLIFY stale rows (products whose old map rows were deleted)
-nullify_sql = f"""
-UPDATE `sincere-hearth-273704.magpie.marketshare_universe` u
-SET taxonomy_id = NULL, sku_type_complete = NULL,
-    taxonomy_source = NULL, taxonomy_confidence = NULL, taxonomy_meta_agent = NULL
-WHERE master_table = '{table}'
-  AND ecommerce_platform = 'Shopee'
-  AND taxonomy_id IS NOT NULL
-  AND NOT EXISTS (
-    SELECT 1 FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m
-    WHERE m.product_id = u.product_id AND m.master_table = '{table}'
-  )
-"""
+One MERGE handles insert, update, and stale-row cleanup atomically:
 
-# Step 2: Update with current taxonomy
-update_sql = f"""
-UPDATE `sincere-hearth-273704.magpie.marketshare_universe` u
-SET taxonomy_id = src.taxonomy_id,
-    sku_type_complete = src.canonical_name,
-    taxonomy_source = src.source,
-    taxonomy_confidence = src.confidence,
-    taxonomy_meta_agent = src.meta_agent
-FROM (
-  SELECT m.product_id, nm.master_table, pt.taxonomy_id, pt.canonical_name,
-         m.source, m.confidence, m.meta_agent
+```sql
+MERGE `sincere-hearth-273704.magpie_reference.universe_taxonomy_overlay` t
+USING (
+  SELECT m.product_id, m.platform, m.country, m.master_table,
+         pt.taxonomy_id, pt.canonical_name, m.source, m.confidence, m.meta_agent
   FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m
   JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy` pt
     ON m.taxonomy_id = pt.taxonomy_id
-  JOIN `sincere-hearth-273704.magpie_reference.niq_category_mapping` nm
-    ON nm.master_table = m.master_table
-  WHERE nm.master_table = '{table}'
+  WHERE m.master_table = @table
   QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY m.product_id, nm.master_table
+    PARTITION BY m.product_id, m.platform, m.country
     ORDER BY CASE m.source WHEN 'LLM' THEN 0 ELSE 1 END, m.taxonomy_id
   ) = 1
 ) src
-WHERE u.product_id = src.product_id
-  AND u.master_table = src.master_table
-  AND u.ecommerce_platform = 'Shopee'
-"""
+ON t.product_id = src.product_id AND t.platform = src.platform AND t.country = src.country
+  AND t.master_table = @table
+WHEN MATCHED THEN UPDATE SET
+  taxonomy_id = src.taxonomy_id,
+  sku_type_complete = src.canonical_name,
+  taxonomy_source = src.source,
+  taxonomy_confidence = src.confidence,
+  taxonomy_meta_agent = src.meta_agent,
+  updated_at = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED BY SOURCE AND t.master_table = @table THEN DELETE
+WHEN NOT MATCHED BY TARGET THEN INSERT
+  (product_id, platform, country, master_table, taxonomy_id, sku_type_complete,
+   taxonomy_source, taxonomy_confidence, taxonomy_meta_agent, updated_at)
+  VALUES (src.product_id, src.platform, src.country, src.master_table, src.taxonomy_id, src.canonical_name,
+          src.source, src.confidence, src.meta_agent, CURRENT_TIMESTAMP());
 ```
 
-**Farsight variant:** same DML but with `magpie-farsight.universe.marketshare_universe`. For multi-model products, add `QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id, category_3, month ORDER BY taxonomy_id) = 1` to the src subquery to avoid "match at most one source row" error.
+Join key is `(product_id, platform, country)` — the ADR-006 composite key. The `AND t.master_table = @table` condition on `WHEN NOT MATCHED BY SOURCE` is load-bearing: without it BigQuery would delete every other category's rows too.
+
+**Farsight variant:** same MERGE targeting `magpie-farsight.universe.universe_taxonomy_overlay`. For multi-model products, add `QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id, category_3, month ORDER BY taxonomy_id) = 1` to the src subquery.
 
 **Tables with multi-category NIQ mapping** (e.g., `shopee_th_body_wash` maps to 6 NIQ category_3 values): Use the NIQ join in src subquery — do NOT hardcode `category_3 = '...'`.
-
 ---
 
 ## Common Pitfalls

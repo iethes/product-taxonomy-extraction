@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS `sincere-hearth-273704.magpie_reference.product_taxon
   is_bundle        BOOL,
   is_multi_variant BOOL,
   is_multi_size    BOOL,
-  meta_agent       STRING,   -- CLAUDE_CODE, CODEX, or a future agent identifier
+  meta_agent       STRING    NOT NULL,  -- 'CLAUDE_CODE', 'CODEX', or 'HUMAN'
   created_at       TIMESTAMP NOT NULL,
   updated_at       TIMESTAMP NOT NULL
 )

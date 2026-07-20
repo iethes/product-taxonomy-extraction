@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `sincere-hearth-273704.magpie_reference.universe_taxo
   taxonomy_id          STRING,
   sku_type_complete    STRING,
   taxonomy_source      STRING,
-  taxonomy_confidence  STRING,
+  taxonomy_confidence  FLOAT64,
   taxonomy_meta_agent  STRING,
   updated_at           TIMESTAMP NOT NULL
 )

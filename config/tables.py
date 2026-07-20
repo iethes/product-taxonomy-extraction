@@ -6,9 +6,9 @@ Used by all pipeline scripts to iterate over categories.
 BQ_PROJECT = 'sincere-hearth-273704'
 BQ_SOURCE_DATASET = 'master_clean_niq'
 BQ_REFERENCE_DATASET = 'magpie_reference'
-BQ_UNIVERSE_DATASET = 'magpie_universe'
+BQ_UNIVERSE_DATASET = 'magpie'
 
-SHEETS_ID = '1faNuuyFlYz4v-MdJO6lOaS_OZr6TZCSaIozRJl5kn3I'
+SHEETS_ID = '1MvJdpoccc63AMs8D0qShI7PhKZ2BrrJJP-kwvDbh40M'
 
 TABLES_SG = [
     'shopee_sg_baby_accessories',

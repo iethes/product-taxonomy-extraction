@@ -142,9 +142,9 @@ SHEETS_ID    = '1MvJdpoccc63AMs8D0qShI7PhKZ2BrrJJP-kwvDbh40M' # brand_audit work
 | `master_clean_niq.*` | ~200M+ | 43 source tables, model-level grain |
 | `brand_dict` | 19,714 | Canonical brands, global + SG + TH scopes |
 | `product_brand_map` | 1,229,806 | Every product → brand_id |
-| `marketshare_universe` | ~9.96M | Jun 2025–Apr 2026, 11 months |
-| `product_taxonomy` | ~15,000 | Canonical product entries (SKU-XXXXXX IDs) |
-| `product_taxonomy_map` | ~140,000 | Every product → taxonomy entry |
+| `marketshare_universe` | varies by month | Source-dependent; see `STATUS.md` for current |
+| `product_taxonomy` | growing | See `docs/categories/STATUS.md` for current SKU range |
+| `product_taxonomy_map` | growing | See `docs/categories/STATUS.md` for current counts |
 
 ---
 

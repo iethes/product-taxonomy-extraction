@@ -178,8 +178,11 @@ Canonical product entries. Each SKU represents one specific product (brand × li
 | Column | Type | Description |
 |--------|------|-------------|
 | `taxonomy_id` | STRING PK | Format: `SKU-{6digits}` e.g. `SKU-000001` |
-| `canonical_name` | STRING | Full product name: `{Brand} {Product Line} {Variant} {Size} [x{N}]` |
 | `brand_id` | STRING FK | → `brand_dict.brand_id` |
+| `product_line` | STRING | Product line name as shown on packaging e.g. `"Gluta-Hya"`. Never a generic category word. |
+| `sub_line` | STRING | Optional sub-line e.g. `"UV Serum"`. Populated only where a real signal exists. |
+| `variant` | STRING | Optional flavor/formula variant. Populated only where a genuine variant exists. |
+| `canonical_name` | STRING | Full product name: `{Brand} {Product Line} {Variant} {Size} [x{N}]` |
 | `size` | STRING | e.g. `200ml`, `400g`, `1L` — NULL only if genuinely multi-size |
 | `pack_count` | INT | Units per listing (1 = single, 2+ = multipack) |
 | `is_multi_size` | BOOL | TRUE if this entry covers multiple sizes legitimately |
@@ -187,6 +190,7 @@ Canonical product entries. Each SKU represents one specific product (brand × li
 | `is_bundle` | BOOL | TRUE if cross-brand bundle (e.g. Coke + Fanta pack) |
 | `meta_agent` | STRING | `CLAUDE_CODE`, `CODEX`, or `HUMAN` |
 | `created_at` | TIMESTAMP | |
+| `updated_at` | TIMESTAMP | |
 
 **Canonical name format:** `{Brand} {Product Line} {Sub-line} {Size} [x{N}]`  
 Examples:
@@ -226,7 +230,7 @@ The final output table. Analysts query this directly.
 | Column | Type | Description |
 |--------|------|-------------|
 | `product_id` | STRING | Shopee product ID |
-| `master_table` | STRING | Source table (used as composite key with product_id) |
+| `master_table` | STRING | Source table |
 | `month` | DATE | |
 | `ecommerce_platform` | STRING | `'Shopee'` (capital S) |
 | `country` | STRING | `'SG'` or `'TH'` (uppercase) |
@@ -236,13 +240,10 @@ The final output table. Analysts query this directly.
 | `brand` | STRING | Canonical brand name from brand_dict |
 | `gmv_monthly` | FLOAT | Product-level GMV (SUM of model-level, aggregated) |
 | `sold_monthly` | INT | Units sold |
-| `taxonomy_id` | STRING | From product_taxonomy_map (NULL if not yet extracted) |
-| `sku_type_complete` | STRING | = `product_taxonomy.canonical_name` |
-| `taxonomy_source` | STRING | `'LLM'` or `'HUMAN'` |
-| `taxonomy_confidence` | FLOAT | |
-| `taxonomy_meta_agent` | STRING | |
 | `merchant_name` | STRING | |
 | `merchant_badge` | STRING | `'Shopee Mall'` for official stores |
+
+**Taxonomy columns** (`taxonomy_id`, `sku_type_complete`, `taxonomy_source`, `taxonomy_confidence`, `taxonomy_meta_agent`) are NOT on this table. They live in `magpie_reference.universe_taxonomy_overlay` (see Migration 003), keyed by `(product_id, platform, country)`. Join at query time to get combined data.
 
 ---
 
