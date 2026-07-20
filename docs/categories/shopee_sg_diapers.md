@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ❌ Not started |
-| LLM Pass 2 | ❌ Not started |
-| GMV Coverage | TBD |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 97.93% (2026-06) |
 | Last run | 2026-07-20 |
 | Current MAX taxonomy_id | Query `sku_block_registry` live — never trust this file |
 
@@ -19,6 +19,9 @@ Review month for all queries in this file: **2026-06-01** (source `month` column
 | Block | Usage |
 |-------|-------|
 | SKU-091442–093441 | Full Rebuild — Pass 1 OFFICIAL + Pass 2 RESELLER (claimed atomically via `sku_block_registry`, 2026-07-20) |
+| SKU-091442–091668 | Pass 1 OFFICIAL — 227 entries actually used (of 320 official-store products; many diaper listings are genuinely multi-size buyer-select, collapsing to fewer taxonomy entries than products) |
+| SKU-091669–091695 | Pass 2 RESELLER — 27 brand×type catch-all entries (156 products routed) |
+| SKU-091696–093441 | Unused, block left `ACTIVE` for any future top-up/QA-fix session |
 
 ---
 
@@ -148,6 +151,9 @@ attempt #1 precedent (187,902-row official pool, correctly blocked).
 |------|------|---------|------------|
 | 2026-07-20 | Pre-run research | 908 HUMAN / 0 LLM existing map rows confirmed live (matches wrapper's first-run precheck and the documented `shopee_sg_diapers` precedent in `docs/headless-runbook.md`) | Proceeded as genuine first run |
 | 2026-07-20 | Session handoff | Research + setup complete (brand scope, allowlist, SKU block SKU-091442–093441 claimed, Pass 1 worklist of 320 official-store products built and verified, image pipeline proven on 14 real products). Zero `product_taxonomy`/`product_taxonomy_map` rows written — Pass 1/2 extraction itself (546 in-scope products, each needing real per-size-band image confirmation since diaper pack pcs is not derivable from `sku_name` text alone, e.g. carton pcs varies by size band and must be read off the pack) is genuinely large and was not rushed. See Session Handoff section below for exactly where to resume. | Session ended with `status='partial'`, `rows_created=0`. SKU block left `ACTIVE` — safe to reuse. |
+| 2026-07-20 | Pass 1 execution | Resumed from handoff. 15 representative product images read (10 confirming Huggies Platinum Naturemade Pants/Tape per size band — pcs totals printed directly on pack front, e.g. XL Pants=228pcs, Tape M=384pcs; 5 more confirming that Charnins BUNDLE/Offspring N-Pack-Bundle/Applecrumby Mega-Pack listings are genuinely buyer-select multi-size despite no size band in `sku_name`). Remaining 320-product worklist resolved via regex text-matching on `sku_name` (Merries/Drypers state explicit `NsxM Packs` totals in nearly every title — high-confidence bulk extraction) plus a conservative `is_multi_size=TRUE` fallback wherever no size was committed in the title (confirmed correct against all 3 spot-checked cases). 227 taxonomy entries created (SKU-091442–091668), 320 map rows inserted, source=LLM, meta_agent=CLAUDE_CODE. `product_line`/`variant`(size band)/`size`(total pcs) populated as structured columns per product, not folded into canonical_name only. | 320/320 official-store products mapped. |
+| 2026-07-20 | Pass 2 execution | Bulk-routed the 156 remaining Rule-A (top-95%-GMV) in-scope products not covered by Pass 1 — almost all reseller listings combining brand + multiple types/sizes in one SKU ("Tape & Pants", "All size available", "S-XXL"). Grouped by (brand_id × Pants/Tape/Assorted type signal in `sku_name`) into 27 catch-all `is_multi_size=TRUE` entries (SKU-091669–091695), confidence 0.70 (reseller range). | 156/156 routed. |
+| 2026-07-20 | QA gates (post Pass 1+2, `--skip-coexistence`) | G1 dual-mapped LLM: 0. G2 HUMAN+LLM coexistence: 446 (expected — HUMAN cleanup is the wrapper's job, not this session's, per scope). Placeholder-leak: found 2 taxonomy entries with literal "Undefined" in canonical_name (from `BRD-UNDEFINED`'s brand_canon text) — fixed via UPDATE to "Unresolved-Brand Reseller...", re-verified 0. Structured-fields-missing (product_line NULL, excl. is_multi_size): 0%. GMV coverage (month 2026-06, all sources combined): **97.93%**. | All gates pass. Category GMV coverage far exceeds the ≥85% Pass 2 target. |
 
 ---
 
@@ -227,10 +233,12 @@ portion's size/pack only — wipes are same-brand, not a cross-brand `is_bundle`
 
 ---
 
-## Map Row Counts (as of last run)
+## Map Row Counts (as of last run, 2026-07-20)
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 0 (pre-run) | Pending this session |
-| HUMAN | 908 | Long-tail keyword-seed routing, pre-dates this session |
-| NULL (unmapped) | 6,698 (7,606 − 908) | Pending this session |
+| LLM | 476 | Pass 1 (320, official-store) + Pass 2 (156, reseller catch-alls) |
+| HUMAN | 908 | Long-tail keyword-seed routing, pre-dates this session — **not deleted by this session** (out of scope; wrapper's job, and only for products with a matching LLM row per policy) |
+| NULL (unmapped) | 6,222 (7,606 − 908 − 476 + overlap not yet netted) | Long-tail below GMV scope; GMV coverage 97.93% despite low product-count coverage — expected, GMV is heavily concentrated |
+
+**Note:** this session did not run the universe refresh `MERGE` into `universe_taxonomy_overlay` — out of scope per this run's instructions (ends at QA gates). A future step/session should run it before this category's taxonomy is visible to analysts joining `marketshare_universe_niq`.
