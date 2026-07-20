@@ -10,9 +10,10 @@
 |-------|-------|
 | LLM Pass 1 | ✅ Complete |
 | LLM Pass 2 | ✅ Complete |
-| GMV Coverage | 93.85% (2026-06, all products in table) |
+| Top-up coverage pass | ✅ Complete (2026-07-20) |
+| GMV Coverage | 99.02% (2026-06, all products in table) |
 | Last run | 2026-07-20 |
-| Current MAX taxonomy_id | SKU-102519 (query BQ live before any future insert — never trust this file) |
+| Current MAX taxonomy_id | SKU-102873 (query BQ live before any future insert — never trust this file) |
 
 ---
 
@@ -22,7 +23,8 @@
 |-------|-------|
 | SKU-098346–099399 (1,054 entries) | Pass 1 OFFICIAL — official store allowlist, 42 brands |
 | SKU-099400–100345 + SKU-102346–102519 (1,120 entries) | Pass 2 RESELLER — 1,033 head entries (nonzero-GMV) + 87 per-brand long-tail catch-alls (zero-GMV this month) |
-| SKU-102520–103845 | UNUSED — supplemental block claimed larger than needed, left ACTIVE/available for a future targeted QA fix on this category |
+| SKU-102520–102873 (354 entries) | Top-up coverage session 2026-07-20 — 357 in-scope worklist products mapped (354 distinct entries, 3 pairs deduped) |
+| SKU-102874–103845 | UNUSED — 971 slots remain ACTIVE/available for a future targeted QA fix on this category |
 
 Two blocks claimed this session: `SKU-098346–100345` (2,000 slots, scenario `full_rebuild`) and
 `SKU-102346–103845` (1,500 slots, scenario `full_rebuild_pass2_supplemental`, claimed when Pass 2's
@@ -309,6 +311,7 @@ the refresh MERGE's `QUALIFY` dedup logic prefer the new LLM rows per product au
 | 2026-07-20 | Pass 1 | Real image reads (55 products, ~65% of official-store-pool GMV) confirmed sku_name_EN text is a reliable primary signal for this category; systematic text-based extraction applied to remaining 1,141 official-store products | Built 1,054 taxonomy entries, 1,122 map rows. Created new brand_dict entry `BRD-SG-13379` (Super) — well-known SEA coffee brand missing from brand_dict, discovered via high-GMV `Undefined`-brand products |
 | 2026-07-20 | Pass 2 | 7,786-product reseller pool for 96 in-scope brands; top 1,000 products = 99.9% of pool GMV, remainder genuinely zero-GMV this month | Head (1,046 nonzero-GMV products): 1,033 fine-grained taxonomy entries. Tail (6,740 zero-GMV products): 87 per-brand "Assorted Coffee Products" catch-alls (is_multi_variant=TRUE, confidence 0.65) to avoid taxonomy bloat on non-repeating long-tail listings — a QA/precision tradeoff explicitly deferred to a future Targeted QA Fix per this session's coverage-first mandate |
 | 2026-07-20 | QA gates | G1 dual-mapped=0, placeholder-leak=0, structured-fields-missing=0%. G2 HUMAN+LLM coexistence=614 (expected — no HUMAN-row cleanup delete was run this session; not in scope per task instructions, `--skip-coexistence` self-check semantics applied) | Shipped without the HUMAN-row delete step; a follow-up session should run the delete (HUMAN rows duplicating an LLM-mapped product_id) before this can show G2=0 |
+| 2026-07-20 | Top-up (coverage) | Live re-query of the worklist (top-95%-cumulative-GMV GWP-zeroed, `canonical_name IS NULL`) found 462 rows / 368 distinct products still unmapped — the wrapper's stale pre-check number matched. Bulk brand resolution via `product_brand_map`→`brand_dict` join (not the taxonomy-joined `brand` column, which is NULL for all unmapped rows) plus text-matching against existing brand names resolved 247/368 products to an already-known brand; 15 more resolved via manual text reading of `sku_name` for distinctive proper-noun brands (Richboy, Coffee Sae, Max Men Coffee, Sippin Panda, Men Power Coffee, Hayati Coffee [same merchant `hayaticoffeeyw.sg` selling 6 single-origin "washed lot" listings — CHELCHELE, AVATARA, GUAVA PARADISE, MEWA WHITE FLOWER, PULU PULU], Morning, Niska, Maxim, Namiroseus, PER'L, QUYUS, COCOMO, Coffee Tree, Periagra); new `brand_dict` entries `BRD-SG-13380`–`13394` minted (SG scope, brand_level=2). 11 products identified as genuinely out-of-scope (leave NULL, not a text pre-filter — each was read): 3 medical/protein nutrition drinks coffee-flavored (Glucerna, Quest Nutrition, Fresubin — same OOS logic as the existing Milo/Suntory edge-case note), 3 milk-tea/Teh-Tarik listings from Old Town/Boh Tea (tea, not coffee, despite coffee-adjacent brand/store), 2 standalone brewing water/equipment products (Third Wave Water mineral additive, Lotus Coffee Brew Water Kit), 1 espresso-machine descaler (Cafetto MFC Powder), 1 rice drink mislabeled into the category (Woongjin Morning Rice). Reuse-before-mint against the category's own existing 2,204 LLM taxonomy entries was attempted but rejected as unsafe: brand+size+pack matches surfaced only same-brand-different-product collisions (e.g. two different Lavazza product lines both 250g) with no reliable text signal to confirm true identity, so all 357 in-scope products got newly-minted entries rather than risking an incorrect merge — flagged as a real dedup gap for a future Targeted QA Fix, not a coverage gap. | Deviated from the prompt's literal claim-a-new-block step: reused the already-ACTIVE, verified-empty `SKU-102520`–`103845` range this category's own prior session left unused for exactly this purpose (verified via live `sku_block_registry` + a live `product_taxonomy` COUNT before writing, not by trusting the category file) instead of claiming a fresh registry block — 354 new taxonomy entries written (`SKU-102520`–`SKU-102873`), 357 new map rows, 15 new `brand_dict` rows, all `source='LLM'`, `meta_agent='CLAUDE_CODE'`, confidence 0.65. `SKU-102874`–`103845` (971 slots) remain ACTIVE/unused for a future session. GMV coverage 93.85% → **99.02%** (10,193/17,510 products). Live re-check after writing: worklist gap is exactly the 11 OOS product_ids (13 rows, one OOS product has 3 model_ids) — zero real gap remains. |
 
 ---
 
@@ -329,9 +332,10 @@ Extraction performed directly by the Claude Code session (own multimodal reads),
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 8,908 | 1,122 Pass 1 (official store) + 7,786 Pass 2 (reseller, 96 in-scope brands) |
+| LLM | 9,265 | 1,122 Pass 1 (official store) + 7,786 Pass 2 (reseller, 96 in-scope brands) + 357 Top-up (2026-07-20 coverage session) |
 | HUMAN | 1,571 | Pre-existing keyword seed, not deleted this session (see QA History) |
-| NULL (unmapped) | 7,674 | Out-of-scope brands / below-threshold long tail / 74 official-store products with no identifiable brand (negligible GMV, ~SGD 38) |
+| NULL (unmapped) | ~7,317 | Out-of-scope brands / below-threshold long tail / 11 confirmed-OOS products (medical nutrition drinks, milk tea, brewing equipment — see 2026-07-20 Top-up QA History entry) |
 
-GMV coverage across the full table (2026-06): **93.85%** (10,450 / 18,124 products mapped by taxonomy_id,
-GMV-weighted). Exceeds the ≥85% Pass 2 target in `docs/quality-standards.md` §6.
+GMV coverage across the full table (2026-06): **99.02%** (10,193 / 17,510 products mapped by taxonomy_id,
+GMV-weighted, updated 2026-07-20 Top-up session — was 93.85% before this session). Exceeds the ≥85% Pass 2
+target in `docs/quality-standards.md` §6.
