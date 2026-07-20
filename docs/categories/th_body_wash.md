@@ -6,9 +6,9 @@
 |-------|-------|
 | LLM Pass 1 | ✅ Complete (v3 rebuild) |
 | LLM Pass 2 | ✅ Complete (v3 rebuild) |
-| GMV Coverage | 75.5% LLM (Apr 2026) |
-| Last run | Jun 24 2026 |
-| Current MAX taxonomy_id | SKU-058455 |
+| GMV Coverage | 75.5% LLM (Apr 2026); top-up Jul 20 2026 closed 92.4% of the live 95%-GMV coverage gap (Jun 2026) |
+| Last run | Jul 20 2026 (top-up, Session 59) |
+| Current MAX taxonomy_id | SKU-109606 |
 
 **Version history:** v1 (Session 17, Jun 21) had NULL size everywhere. v2 (Session 48, Jun 23) had API auth errors → text fallback → generic names. v3 (Session 58, Jun 24) is the authoritative version using text-based smart extraction.
 
@@ -22,6 +22,7 @@
 | SKU-057000–057569 | Pass 2 RESELLER (570 entries, 80+ brands) |
 | SKU-036010–036015 | Bennett bar soap gap fill (6 entries, Session 41) |
 | SKU-041230 | Shokubutsu x12 body moisturizer cross-ref |
+| SKU-107746–109745 | Top-up coverage claim (Session 59, Jul 20 2026); 1,861 entries used (SKU-107746–109606), 139 slots unused |
 | SKU-006000–006999 | DELETED (v1) |
 | SKU-044000–044999 | DELETED (v2) |
 | SKU-049000–049383 | DELETED (v2 dedup recovery) |
@@ -125,6 +126,7 @@
 | Jun 23 | 48 (v2) | API auth error → text fallback → generic names | Full rebuild v3 required |
 | Jun 23 | 53 | Dedup script deleted 362 valid entries | Recovery: rebuild from orphaned map rows |
 | Jun 24 | 58 (v3) | Final rebuild with text-based smart extraction | ✅ Clean, 75.5% GMV coverage |
+| Jul 20 | 59 (top-up) | Live re-check (month 2026-06) found 3,286 in-scope-candidate rows (1,994 distinct products) with no taxonomy_id, despite category being marked complete — categories accumulate new listings over time. Bulk-first reuse-before-mint: grouped by (brand, size, pack_count, normalized product line text) rather than reading images per product. Only 18 products matched existing Pass 1/2 taxonomy entries (this gap is almost entirely new long-tail reseller listings, not variants of already-covered products) — 1,861 new taxonomy entries were minted, one per distinct group. 343 candidate rows (238 distinct products, ~2.39M THB) were confirmed out-of-scope (hand wash, standalone shampoo/conditioner, lice shampoo, scrub soap, bath bombs/onsen bath-salt powder — a distinct product type from body wash despite containing "bath" — and a body-lotion listing miscategorized into this table) and correctly left NULL. One Thai-Unicode variant (น้ํา using NIKHAHIT instead of the standard SARA AM in น้ำ) initially misrouted a genuine body-wash bundle to the OOS bucket; caught on manual review of the 347 OOS candidates and corrected. Brand resolution: 818 products had no product_brand_map brand at all (221 with zero row, 597 FALLBACK/Undefined); ~140 recovered via merchant-official-store-name cross-validated against sku_name text (e.g. "enfant.official" → Enfant), remainder minted under BRD-UNDEFINED with brand text left out of canonical_name rather than guessed. 628 of 1,861 new entries have no extractable size from text (bar soap sold by piece count, multi-size seller listings, etc.) — written as is_multi_size=TRUE, size=NULL per existing precedent rather than left unmapped. Per-row canonical_name wording precision (exact product_line phrasing, e.g. a few entries retain the brand name duplicated in product_line) intentionally not polished this session — deferred to `script/targeted_qa_fix.sh`, scoped by GMV impact. All hard gates (G1 dual-map, G2 HUMAN+LLM coexistence, G4 cross-category range, G5 provenance, placeholder-leak) verified 0 post-run. | ✅ Live worklist gap closed from 3,286→380 rows (~31.28M→~2.39M THB, 92.4% GMV reduction); remaining 380 rows all independently verified as correctly-classified out-of-scope, zero unexpected leftovers |
 
 ---
 
