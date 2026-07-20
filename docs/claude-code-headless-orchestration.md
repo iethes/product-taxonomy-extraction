@@ -32,7 +32,7 @@ Until measured, don't carry that doc's cost table over to `-p` runs — re-measu
 Headless `claude -p` is viable across the whole pipeline — occasional read-only category checks and the
 high-volume, write-capable extraction/routing workload alike, including the category-level session scenarios
 (full rebuild, targeted fix) covered in
-[`docs/plans/headless-taxonomy-runbook-design.md`](plans/headless-taxonomy-runbook-design.md). What differs
+[`docs/superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md`](superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md). What differs
 between workloads is invocation shape, not eligibility.
 
 **Occasional, read-only, judgment-heavy checks** — the clearest case, still worth calling out on its own:
@@ -66,7 +66,7 @@ exclude this workload from headless operation:
 **The pattern that resolves this**: a deterministic wrapper handles the mechanical, high-volume, or
 collision-prone steps (BQ lookups, ID allocation, QA gates, refresh DML) in plain code around the call, and
 `-p` is invoked narrowly for the judgment-only step, schema-forced output required.
-[`docs/plans/headless-taxonomy-runbook-design.md`](plans/headless-taxonomy-runbook-design.md) applies exactly
+[`docs/superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md`](superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md) applies exactly
 this pattern to category-level session scenarios (Full Rebuild, Assessment Only, Targeted QA Fix) — same shape,
 one level up from per-product extraction steps. This generalizes: `-p` is viable for any step in the pipeline
 as long as each invocation stays scoped to the judgment step, with deterministic/schema-checked scaffolding
@@ -115,7 +115,7 @@ Read-only enforcement is the service account's IAM role, not `bypassPermissions`
 This reference implementation is the **read-only audit** case specifically. For the write-capable case
 (category-level full rebuild and targeted fixes, judgment-only `-p` calls wrapped in deterministic
 claim/gate/refresh scaffolding), see
-[`docs/plans/headless-taxonomy-runbook-design.md`](plans/headless-taxonomy-runbook-design.md) — same pattern,
+[`docs/superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md`](superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md) — same pattern,
 different credential (write-capable), different wrapper (claim + QA gates + refresh instead of read-only
 sampling).
 

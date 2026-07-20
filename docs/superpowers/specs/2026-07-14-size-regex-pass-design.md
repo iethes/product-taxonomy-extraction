@@ -2,10 +2,10 @@
 
 > Status: approved design, not yet implemented.
 > Implements Recommendation 2 from
-> [`docs/traditional-ml-execution-model.md`](../traditional-ml-execution-model.md) ("Better size/pack regex —
+> [`docs/traditional-ml-execution-model.md`](../../traditional-ml-execution-model.md) ("Better size/pack regex —
 > fixes the reported bug directly") — the first, cheapest item in that doc's own suggested sequencing. Also
 > closes Root Cause 2/3/4 from
-> [`docs/taxonomy-pipeline-improvement-recommendations.md`](../taxonomy-pipeline-improvement-recommendations.md)
+> [`docs/taxonomy-pipeline-improvement-recommendations.md`](../../taxonomy-pipeline-improvement-recommendations.md)
 > for the `size` field specifically (pack_count is explicitly deferred — see Out of scope).
 
 ---
@@ -50,7 +50,7 @@ backfill, then on a recurring schedule for future NULLs) — not duplicated logi
 ```sql
 -- sql/functions/parse_size.sql — as actually deployed (BigQuery's RE2 engine has no lookahead
 -- support, and REGEXP_EXTRACT allows at most 1 capturing group per call — both required fixes
--- during implementation; see docs/plans/size-regex-pass-implementation-plan.md Task 2).
+-- during implementation; see docs/superpowers/plans/2026-07-14-size-regex-pass.md Task 2).
 CREATE OR REPLACE FUNCTION `sincere-hearth-273704.magpie_reference.parse_size`(sku_name STRING)
 RETURNS STRUCT<size_value FLOAT64, size_unit STRING, size_text STRING>
 AS ((
@@ -194,7 +194,7 @@ rewriting the sections above:
 ## Relationship to the headless runbook design
 
 Not a dependency in either direction, but a natural future integration point:
-[`docs/plans/headless-taxonomy-runbook-design.md`](headless-taxonomy-runbook-design.md)'s deterministic wrapper
+[`docs/superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md`](2026-07-14-headless-taxonomy-runbook-design.md)'s deterministic wrapper
 (claim → judgment-only `claude -p` call → QA gates → refresh) could run this fill query as an additional
 pre-step before invoking `claude -p`, so the LLM call never has to re-derive a size this pass already resolved
 for free. Not designed here — flagged for whoever implements the runbook next.

@@ -2,7 +2,7 @@
 
 > First LLM extraction for this category — SG was 0/23 categories LLM-extracted per `docs/categories/STATUS.md`
 > before this. Written as part of the headless-taxonomy-runbook worked example
-> (`docs/plans/headless-taxonomy-runbook-implementation-plan.md` Task 6). Two live headless attempts so far —
+> (`docs/superpowers/plans/2026-07-14-headless-taxonomy-runbook.md` Task 6). Two live headless attempts so far —
 > see QA History for what each found. Attempt #2 (2026-07-15) actually wrote to production: Pass 1 complete,
 > Pass 2 intentionally partial. Read the Brand Scope correction below before trusting the old "~20 brands"
 > framing — the true 95%-GMV universe is ~190 brands, not ~20.

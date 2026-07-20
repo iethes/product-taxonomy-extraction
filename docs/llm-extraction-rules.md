@@ -94,7 +94,7 @@ text-only pass may have already filled `size` — see `sql/functions/parse_size.
 `sql/queries/backfill_size_regex.sql`. It never overwrites an existing value (`size IS NULL AND is_multi_size
 IS NOT TRUE AND is_bundle IS NOT TRUE` guard) and covers **TH only** today — ID data is real (5.17M rows in
 `marketshare_universe`) but has zero rows in `product_taxonomy_map`, so no taxonomy exists yet for the regex
-pass to fill (see `docs/plans/size-regex-pass-findings.md`). If a TH product's `size` is already filled when a
+pass to fill (see `docs/superpowers/plans/2026-07-14-size-regex-pass.md (Appendix)`). If a TH product's `size` is already filled when a
 Phase 5 session starts, that came from either this pass or a prior LLM run — check `product_taxonomy.updated_at`
 if the source matters for a specific investigation; there is no separate provenance column. First backfill run
 filled 562 of 2,454 eligible TH rows.

@@ -24,7 +24,7 @@ the runbook), `claude -p` CLI invocation patterns. No new Python, no changes to 
   real toothpaste product is mis-tagged there as `Electronics > Small Appliances > Grooming`.
   `marketshare_universe_niq` (10.9M rows) has the real FMCG data (confirmed: TH `category_3` values are Face
   Moisturizer, Shampoo, Body Wash, Toothpaste, etc.) but has **no taxonomy columns at all** — Task 2 adds them.
-  Full detail: `docs/plans/headless-taxonomy-runbook-design.md` Addendum.
+  Full detail: `docs/superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md` Addendum.
 - **Farsight refresh is out of scope.** `magpie-farsight.universe.marketshare_universe` mirrors the *repurposed*
   table (same broken schema, no `_niq` equivalent exists in that project at all). Not fixed here — separate
   decision needed on whether farsight needs an `_niq` mirror.
@@ -220,7 +220,7 @@ git commit -m "Add universe_taxonomy_overlay table (overlay pattern, no ALTER TA
 Runnable procedure for Full Rebuild, Assessment Only, and Targeted QA Fix taxonomy sessions via headless
 `claude -p`, with no human checkpoint on writes. Companion to
 [`docs/claude-code-headless-orchestration.md`](claude-code-headless-orchestration.md) (general headless
-mechanics) and [`docs/plans/headless-taxonomy-runbook-design.md`](plans/headless-taxonomy-runbook-design.md)
+mechanics) and [`docs/superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md`](superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md)
 (the design this implements — read its Addendum before touching universe refresh, the target table isn't what
 `CLAUDE.md` says).
 
@@ -232,7 +232,7 @@ mechanics) and [`docs/plans/headless-taxonomy-runbook-design.md`](plans/headless
   2026-06-15 — see `docs/claude-code-headless-orchestration.md`).
 - `sql/migrations/002_add_sku_block_registry.sql` and
   `sql/migrations/003_add_universe_taxonomy_overlay.sql` have been run once
-  (`docs/plans/headless-taxonomy-runbook-implementation-plan.md` Tasks 1–2).
+  (`docs/superpowers/plans/2026-07-14-headless-taxonomy-runbook.md` Tasks 1–2).
 
 ## Shared mechanics
 
@@ -332,7 +332,7 @@ placeholder-leak check from `docs/taxonomy-pipeline-improvement-recommendations.
 ### Universe refresh
 
 **No `ALTER TABLE` on `marketshare_universe_niq`.** That table (the real FMCG output table — see
-`docs/plans/headless-taxonomy-runbook-design.md` Addendum for why it's this one, not
+`docs/superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md` Addendum for why it's this one, not
 `magpie.marketshare_universe`) is a shared, 10.9M-row production table. Instead of adding taxonomy columns to
 it directly, taxonomy state lives in a separate overlay table,
 `magpie_reference.universe_taxonomy_overlay` (`sql/migrations/003_add_universe_taxonomy_overlay.sql`), keyed
@@ -381,7 +381,7 @@ overlay table holds rows for every category, and without that condition BigQuery
 other category's rows too (they're also "not matched" by a `src` that's filtered to just `@table`).
 
 (Join key is `product_id + platform + country` — the real ADR-006 composite key, not `master_table` alone,
-matching the correction already proven in `docs/plans/size-regex-pass-implementation-plan.md`'s backfill query
+matching the correction already proven in `docs/superpowers/plans/2026-07-14-size-regex-pass.md`'s backfill query
 this same session.)
 ```
 

@@ -1,8 +1,8 @@
 # Design: Headless Taxonomy Runbook (Full Rebuild / Assessment / Targeted QA Fix)
 
 > Status: approved design, not yet implemented.
-> Companion to [`docs/claude-code-headless-orchestration.md`](../claude-code-headless-orchestration.md) and
-> [`docs/cheaper-reliable-execution-model.md`](../cheaper-reliable-execution-model.md). Those two docs establish
+> Companion to [`docs/claude-code-headless-orchestration.md`](../../claude-code-headless-orchestration.md) and
+> [`docs/cheaper-reliable-execution-model.md`](../../cheaper-reliable-execution-model.md). Those two docs establish
 > that headless `claude -p` is officially supported for unattended runs, and that it's viable across this whole
 > pipeline — not just for occasional read-only checks — provided each invocation stays scoped to a
 > judgment-only step with deterministic scaffolding around it. What those docs left as an interactive-only step
@@ -200,7 +200,7 @@ designed is broken against the real environment — corrected here before task-b
    universe-refresh step is a single `MERGE` into this table (insert/update/stale-delete in one statement,
    replacing `CLAUDE.md`'s two-step NULLIFY+UPDATE, which doesn't apply here — a stale row is removed outright,
    not nulled). Implemented in the plan, not re-litigated here — see
-   `docs/plans/headless-taxonomy-runbook-implementation-plan.md`.
+   `docs/superpowers/plans/2026-07-14-headless-taxonomy-runbook.md`.
 4. **Farsight mirror is affected the same way.** Checked live: `magpie-farsight.universe.marketshare_universe`
    has the exact same schema as the repurposed `sincere-hearth-273704.magpie.marketshare_universe` (no
    `master_table`/taxonomy columns), and there is **no `_niq` equivalent in the farsight project at all**. The

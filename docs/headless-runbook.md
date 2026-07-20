@@ -3,7 +3,7 @@
 Runnable procedure for Full Rebuild, Assessment Only, and Targeted QA Fix taxonomy sessions via headless
 `claude -p`, with no human checkpoint on writes. Companion to
 [`docs/claude-code-headless-orchestration.md`](claude-code-headless-orchestration.md) (general headless
-mechanics) and [`docs/plans/headless-taxonomy-runbook-design.md`](plans/headless-taxonomy-runbook-design.md)
+mechanics) and [`docs/superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md`](superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md)
 (the design this implements — read its Addendum before touching universe refresh, the target table isn't what
 `CLAUDE.md` says).
 
@@ -15,7 +15,7 @@ mechanics) and [`docs/plans/headless-taxonomy-runbook-design.md`](plans/headless
   2026-06-15 — see `docs/claude-code-headless-orchestration.md`).
 - `sql/migrations/002_add_sku_block_registry.sql` and
   `sql/migrations/003_add_universe_taxonomy_overlay.sql` have been run once
-  (`docs/plans/headless-taxonomy-runbook-implementation-plan.md` Tasks 1–2).
+  (`docs/superpowers/plans/2026-07-14-headless-taxonomy-runbook.md` Tasks 1–2).
 
 ## Shared mechanics
 
@@ -173,10 +173,22 @@ subprocess-based LLM calls, not applicable here. Every Full Rebuild / Targeted Q
 plainly: *you* read product images and text directly with your own multimodal capabilities; you do not invoke
 external scripts or need any API key beyond your own session auth.
 
+**How to actually fetch a product image.** This environment has no tool that reads a remote image URL directly
+for vision — `WebFetch` returns text, not pixels. `master_clean_niq.shopee_{country}_{category}` has an
+undocumented `image` column (a direct CDN URL, not listed in `ARCHITECTURE.md`/`data-dictionary.md`'s schema
+tables) that sometimes has literal embedded double-quotes corrupting naive parsing — strip those first. The
+working pattern, confirmed in the `sg_facial_moisturiser` session: `curl -sL -o /tmp/img.jpg "<url>"` then use
+the `Read` tool on the local file — reading a local file renders it for vision; reading a remote URL does not.
+Do this two-step curl-then-Read for every image check. If `master_clean_niq` genuinely lacks the `image` column
+for a given table, that is a real blocker — but check this table and this column before concluding images are
+unavailable; do not stop at `raw_niq_history` (which only ever carries `product_specification`/
+`product_description`, never an image URL) or at `intrepid_pipeline_clean_product_level` (a different, off-limits
+dataset per `CLAUDE.md`).
+
 ### Universe refresh
 
 **No `ALTER TABLE` on `marketshare_universe_niq`.** That table (the real FMCG output table — see
-`docs/plans/headless-taxonomy-runbook-design.md` Addendum for why it's this one, not
+`docs/superpowers/specs/2026-07-14-headless-taxonomy-runbook-design.md` Addendum for why it's this one, not
 `magpie.marketshare_universe`) is a shared, 10.9M-row production table. Instead of adding taxonomy columns to
 it directly, taxonomy state lives in a separate overlay table,
 `magpie_reference.universe_taxonomy_overlay` (`sql/migrations/003_add_universe_taxonomy_overlay.sql`), keyed
@@ -225,7 +237,7 @@ overlay table holds rows for every category, and without that condition BigQuery
 other category's rows too (they're also "not matched" by a `src` that's filtered to just `@table`).
 
 (Join key is `product_id + platform + country` — the real ADR-006 composite key, not `master_table` alone,
-matching the correction already proven in `docs/plans/size-regex-pass-implementation-plan.md`'s backfill query
+matching the correction already proven in `docs/superpowers/plans/2026-07-14-size-regex-pass.md`'s backfill query
 this same session.)
 
 ## Scenario: Assessment Only
