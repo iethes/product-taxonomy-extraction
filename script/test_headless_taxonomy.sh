@@ -25,11 +25,16 @@ echo "$q" | grep -q "SELECT COUNT(\*) FROM (" || fail "gap_count_query should wr
 echo "$q" | grep -q "canonical_name IS NULL" || fail "gap_count_query should still carry the worklist's NULL filter"
 echo "PASS: gap_count_query"
 
-# --- existing_rows_query ---
-q=$(existing_rows_query "shopee_th_suncare")
-echo "$q" | grep -q "product_taxonomy_map" || fail "existing_rows_query should hit product_taxonomy_map"
-echo "$q" | grep -q "master_table = 'shopee_th_suncare'" || fail "existing_rows_query should scope by master_table"
-echo "PASS: existing_rows_query"
+# --- existing_llm_rows_query ---
+# Bug caught live against shopee_sg_diapers (2026-07-20): 908 keyword-seed HUMAN rows existed with zero
+# LLM rows, but the unscoped COUNT(*) treated that as "existing coverage" and misrouted to top_up instead
+# of first_run. Almost every category has HUMAN keyword-seed rows before Phase 5 ever runs (see
+# docs/quality-standards.md's coverage table) — only source='LLM' rows are evidence of a genuine prior pass.
+q=$(existing_llm_rows_query "shopee_th_suncare")
+echo "$q" | grep -q "product_taxonomy_map" || fail "existing_llm_rows_query should hit product_taxonomy_map"
+echo "$q" | grep -q "master_table = 'shopee_th_suncare'" || fail "existing_llm_rows_query should scope by master_table"
+echo "$q" | grep -q "source = 'LLM'" || fail "existing_llm_rows_query must scope to source='LLM' — HUMAN keyword-seed rows don't count as prior LLM coverage"
+echo "PASS: existing_llm_rows_query"
 
 # --- default_month_query ---
 q=$(default_month_query "shopee_th_suncare")
@@ -57,6 +62,12 @@ echo "$prompt" | grep -q "2000" || fail "build_first_run_prompt should mention t
 echo "$prompt" | grep -q "CASE WHEN flag_GWP THEN 0 ELSE" || fail "build_first_run_prompt's brand-scope step must zero GWP gmv"
 echo "$prompt" | grep -q "never be used to decide whether an individual product gets extracted" || fail "build_first_run_prompt must forbid keyword pre-filtering of individual products"
 echo "$prompt" | grep -q "status='blocked'" || fail "build_first_run_prompt should document the blocked outcome"
+# Bug caught live against shopee_sg_diapers (2026-07-20): STEP 1 originally told the agent to treat ANY
+# existing product_taxonomy_map row as a discrepancy — but HUMAN keyword-seed rows are the normal, expected
+# starting state for a first LLM pass. Only existing LLM rows indicate the wrapper's scenario detection
+# was wrong.
+echo "$prompt" | grep -q "HUMAN rows.*normal and expected" || fail "build_first_run_prompt must say existing HUMAN keyword-seed rows are normal for a first run, not a discrepancy"
+echo "$prompt" | grep -q "existing LLM rows" || fail "build_first_run_prompt must call out existing LLM rows specifically as the real red flag"
 echo "PASS: build_first_run_prompt"
 
 # --- build_topup_prompt ---

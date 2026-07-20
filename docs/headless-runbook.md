@@ -284,13 +284,18 @@ close a live coverage gap.
 ## Scenario: Full Rebuild
 
 `script/headless_taxonomy.sh` implements two scenarios, auto-selected from live BigQuery state rather than
-chosen by the operator — the script itself checks whether any `product_taxonomy_map` rows exist for the
-target table and picks accordingly:
+chosen by the operator — the script itself checks whether any `source='LLM'` `product_taxonomy_map` rows
+exist for the target table and picks accordingly. **This check is scoped to `source='LLM'` specifically, not
+any row** — almost every category has `source='HUMAN'` keyword-seed rows before Phase 5 ever runs (see
+`docs/quality-standards.md`'s coverage table), and treating those as evidence of prior LLM coverage misroutes
+a genuine first pass into the top-up scenario (caught live against `shopee_sg_diapers`, which had 908 HUMAN
+rows and 0 LLM rows — the agent correctly detected the mismatch and returned `status='blocked'` rather than
+proceed):
 
-- **First run** (0 existing rows): full SKU block (~2,000 slots), rebuilds a category's taxonomy from
+- **First run** (0 existing LLM rows): full SKU block (~2,000 slots), rebuilds a category's taxonomy from
   scratch, re-extracts via Pass 1 (official stores) + Pass 2 (reseller routing), then QA gates. This is the
   procedure documented below.
-- **Top-up** (existing rows present): the script always re-checks whether the live 95%-cumulative-GMV
+- **Top-up** (existing LLM rows present): the script always re-checks whether the live 95%-cumulative-GMV
   (GWP-zeroed) worklist still has products with no `taxonomy_id`, regardless of `docs/categories/STATUS.md`
   marking the category "complete" — categories accumulate new listings over time. If the live gap is 0, the
   script exits immediately with no SKU claim and no `claude -p` call. If the gap is nonzero, it claims a

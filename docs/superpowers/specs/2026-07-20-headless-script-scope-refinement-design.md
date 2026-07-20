@@ -93,10 +93,11 @@ $ ./script/headless_taxonomy.sh <TABLE> [MONTH]
         │ no                 (no claude -p call, no SKU claim — this is what makes re-running against an
         │                     already-complete category cheap)
         ▼
-  existing_rows = bq query: COUNT(*) FROM product_taxonomy_map WHERE master_table = <table>
-        │
-   existing_rows == 0? ──yes──▶ SCENARIO = first_run
-        │ no                     SCENARIO = top_up
+  existing_llm_rows = bq query: COUNT(*) FROM product_taxonomy_map WHERE master_table = <table> AND source = 'LLM'
+        │  (scoped to source='LLM' — HUMAN keyword-seed rows exist for almost every category before Phase 5
+        │   ever runs and must not be mistaken for prior LLM coverage — see "Scenario: first_run" below)
+   existing_llm_rows == 0? ──yes──▶ SCENARIO = first_run
+        │ no                        SCENARIO = top_up
         ▼
   claude -p  (prompt varies by SCENARIO, see below)
         │
@@ -155,12 +156,15 @@ invocation computes brand scope the same way the gap-check does.
 ### Scenario: `first_run`
 
 Same as today's Full Rebuild (write `docs/categories/${TABLE}.md` from `_TEMPLATE.md`, Pass 1 + Pass 2,
-claim a 2,000-slot block) — this is what happens when a category has never been touched at all. One
-addition: the STEP 0 "verify table exists" and STEP 1 "check existing state" steps stay, but the framing
+claim a 2,000-slot block) — this is what happens when a category has never had a genuine Phase 5 LLM pass.
+One addition: the STEP 0 "verify table exists" and STEP 1 "check existing state" steps stay, but the framing
 sentence changes from "No category context file exists yet for this table" to "This is a first-run
-invocation — ${existing_rows} confirmed 0 existing `product_taxonomy_map` rows for this table" (still
-re-verified live by the agent, not trusted from the wrapper's earlier count, consistent with the "never
-trust a stale number" pattern already in this script and `targeted_qa_fix.sh`).
+invocation — the wrapper's live pre-check found 0 existing `source='LLM'` `product_taxonomy_map` rows for
+this table" (still re-verified live by the agent, not trusted from the wrapper's earlier count, consistent
+with the "never trust a stale number" pattern already in this script and `targeted_qa_fix.sh`). Existing
+`source='HUMAN'` keyword-seed rows are normal and expected at this point — most categories start with
+keyword-seed coverage before Phase 5 ever runs — and must not be treated as a discrepancy; only existing
+`source='LLM'` rows would mean the wrapper's scenario detection was wrong.
 
 ### Scenario: `top_up`
 

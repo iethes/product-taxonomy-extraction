@@ -20,9 +20,11 @@ for why.
 Auto-detects scenario from live state before invoking `claude -p`: if the live 95%-cumulative-GMV
 (GWP-zeroed) worklist for `<TABLE>` has 0 products with no `taxonomy_id`, the script exits immediately —
 no SKU claim, no LLM call, safe to re-run against any category regardless of `docs/categories/STATUS.md`.
-Otherwise it picks **first-run** (0 existing `product_taxonomy_map` rows — full Pass 1/Pass 2 rebuild, shown
-below) or **top-up** (existing rows present — closes just the live gap via reuse-before-mint, smaller SKU
-block sized to the gap).
+Otherwise it picks **first-run** (0 existing `source='LLM'` `product_taxonomy_map` rows — full Pass 1/Pass 2
+rebuild, shown below) or **top-up** (existing LLM rows present — closes just the live gap via
+reuse-before-mint, smaller SKU block sized to the gap). The check is scoped to `source='LLM'` specifically —
+pre-existing `source='HUMAN'` keyword-seed rows (the norm for most categories before Phase 5 ever runs) don't
+count as prior LLM coverage and must not misroute a genuine first pass into top-up.
 
 ```
 $ ./script/headless_taxonomy.sh <TABLE>

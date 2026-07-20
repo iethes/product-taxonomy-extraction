@@ -7,8 +7,10 @@ set -euo pipefail
 #
 # Auto-detects scenario from live BigQuery state:
 #   - gap_count == 0                    -> nothing to do, exit 0, no claude -p call
-#   - gap_count > 0, existing_rows == 0  -> scenario=first_run  (category never touched: Pass 1 + Pass 2 rebuild)
-#   - gap_count > 0, existing_rows > 0   -> scenario=top_up     (category already has coverage: close the live gap)
+#   - gap_count > 0, existing_llm_rows == 0  -> scenario=first_run  (no genuine Phase 5 LLM pass yet: Pass 1 + Pass 2 rebuild)
+#   - gap_count > 0, existing_llm_rows > 0   -> scenario=top_up     (category already has LLM coverage: close the live gap)
+# Note: existing_llm_rows counts source='LLM' rows only — HUMAN keyword-seed rows (present for almost every
+# category before Phase 5 ever runs) must not be mistaken for prior LLM coverage.
 # See docs/superpowers/specs/2026-07-20-headless-script-scope-refinement-design.md for the full design.
 
 PROJECT="sincere-hearth-273704"
@@ -49,9 +51,9 @@ gap_count_query() {
   echo "SELECT COUNT(*) FROM ($(worklist_query "$table" "$month"))"
 }
 
-existing_rows_query() {
+existing_llm_rows_query() {
   local table="$1"
-  echo "SELECT COUNT(*) FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\` WHERE master_table = '${table}'"
+  echo "SELECT COUNT(*) FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\` WHERE master_table = '${table}' AND source = 'LLM'"
 }
 
 default_month_query() {
@@ -60,8 +62,8 @@ default_month_query() {
 }
 
 decide_scenario() {
-  local existing_rows="$1"
-  if [[ "$existing_rows" =~ ^[0-9]+$ ]] && [[ "$existing_rows" -eq 0 ]]; then
+  local existing_llm_rows="$1"
+  if [[ "$existing_llm_rows" =~ ^[0-9]+$ ]] && [[ "$existing_llm_rows" -eq 0 ]]; then
     echo "first_run"
   else
     echo "top_up"
@@ -101,7 +103,7 @@ unconfirmed and was the source of real problems in an earlier session. Treat 'so
 STEP 1 — Re-verify existing state before assuming anything about it (the wrapper's pre-check is a hint, not a fact — re-query live):
 Run: SELECT source, COUNT(*) FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\`
 WHERE master_table = '${table}' GROUP BY source
-If this disagrees with "0 rows", stop and report the discrepancy in findings rather than silently proceeding as a first run.
+Existing HUMAN rows here are normal and expected for a first LLM pass — most categories start with keyword-seed coverage before Phase 5 ever runs; do not treat their presence alone as a blocker. If you find any existing LLM rows, however, that means the wrapper's scenario detection was wrong (a genuine Phase 5 pass already happened on this table) — stop and report the discrepancy in findings rather than silently proceeding as a first run.
 
 STEP 2 — Research and write docs/categories/${table}.md, following _TEMPLATE.md's structure:
 - Brand Scope: compute the REAL cumulative-GMV 95% threshold for month = '${month}' — ORDER BY brand GMV DESC, running SUM, find where cumulative/total >= 0.95. Zero out flag_GWP=TRUE products' GMV in this cumulative calculation (CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END) — GWP products still get extracted like any other in-scope product, they just must not inflate the brand-GMV ranking. Do NOT just list the top 15-20 brands by magnitude and call that the 95% scope — that undercounted a real category's true brand universe by roughly 6x in an earlier session (~20 claimed vs. ~190 actual). List every brand in the real threshold, not a fixed-size snapshot.
@@ -218,17 +220,17 @@ main() {
     exit 0
   fi
 
-  local existing_rows
-  existing_rows=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-    "$(existing_rows_query "$table")" | tail -1)
+  local existing_llm_rows
+  existing_llm_rows=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+    "$(existing_llm_rows_query "$table")" | tail -1)
 
   local scenario
-  scenario=$(decide_scenario "$existing_rows")
+  scenario=$(decide_scenario "$existing_llm_rows")
 
   local block_size
   block_size=$(compute_block_size "$scenario" "$gap_count")
 
-  echo "Scenario: ${scenario} (existing_rows=${existing_rows}, gap_count=${gap_count}, block_size=${block_size})"
+  echo "Scenario: ${scenario} (existing_llm_rows=${existing_llm_rows}, gap_count=${gap_count}, block_size=${block_size})"
   echo "TAXONOMY EXTRACTION STARTED"
   echo "==========================="
 
