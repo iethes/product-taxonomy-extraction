@@ -9,9 +9,9 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD — recorded at end of session |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete (text-match routing; long reseller tail left UNRESOLVED, see below) |
+| GMV Coverage | 91.93% (month 2026-06) |
 | Last run | 2026-07-20 |
 | Current MAX taxonomy_id (registry floor at session start) | SKU-093441 |
 
@@ -44,7 +44,9 @@ flagging this as a real follow-up item, not something this session can or should
 
 | Block | Usage |
 |-------|-------|
-| SKU-093462–095461 | Full Rebuild (Pass 1 OFFICIAL + Pass 2 RESELLER), claimed this session |
+| SKU-093462–094397 | Pass 1 OFFICIAL (936 entries, allowlist-scoped) — within the original 2000-slot claim |
+| SKU-094398–096475 | Pass 2 RESELLER (2078 entries, text-match routed/created) — spills into a supplemental 1500-slot claim (095462–096961) after the original block filled |
+| SKU-096476–096961 | Unused remainder of the supplemental block — still `ACTIVE`, safe to reuse for a future QA/gap-fill pass on this category |
 
 ---
 
@@ -216,6 +218,13 @@ genuine ambiguity, not for exhaustive per-row reads.
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-20 | Session start | First-ever ID category; `product_brand_map`/`marketshare_universe_niq` have zero rows for this table (Stage 03/04 never run) | Documented as a known gap, not a blocker — see Status section |
+| 2026-07-20 | Pass 1 | `Unicharm Pet Official Store`'s sole listing is a dog diaper (Unicharm MannerWear), confirmed via image | Excluded — the store is a genuine NIQ mis-categorization, not part of the Pass 1 allowlist |
+| 2026-07-20 | Pass 1 | `GIT Prime Official Shop` confirmed via image as a MAKUKU-exclusive authorized distributor | Kept in the allowlist as MAKUKU |
+| 2026-07-20 | Pass 1 | Discovered new brands not previously in `brand_dict`: FITTI (sold through Unicharm-family stores despite being unrelated), Baby Happy (Wings), Fluffy, MomBaby (sold through Pokana stores), Happy Nappy (sold through Sweety Official Shop), Goo.N (already existed as `BRD-GLOBAL-00093`, initially mis-created a duplicate then removed) | Created `BRD-ID-08592`–`08597` in `brand_dict` (Fluffy, Baby Happy, MomBaby, Happy Nappy, FITTI); reused existing `BRD-GLOBAL-00093` for Goo.N |
+| 2026-07-20 | Pass 1 | Regex bug: sku_names like `"Fluffy ... L96 - L32 x 3 Pack"` state the true total (96) then redundantly restate the per-bag breakdown (32 × 3) — naive parsing double-counted to 288 | Fixed with a redundant-total-restatement guard (8 Fluffy entries corrected) |
+| 2026-07-20 | Pass 1 | Fluffy and Baby Happy packaging/sku_names carry no distinguishable sub-line name beyond the brand itself (confirmed via image for Fluffy) | `product_line = NULL` by design for these two brands — Tier B per quality-standards.md §3 (D1), not a parsing gap |
+| 2026-07-20 | Pass 2 | 20,746 raw CREATE candidates collapsed to 2,078 distinct `(brand, line, variant, type, size, pack_count)` keys once deduplicated — the raw count would have been extreme over-fragmentation | Grouped before minting; 42% of the 2,078 are singleton-product entries but only ~8% of Pass-2-create GMV, consistent with genuine reseller long-tail variety |
+| 2026-07-20 | Pass 2 | Some multi-size reseller listings (e.g. `"Mamy Poko Pants X-tra Kering NB40 S38 M32 L28 XL26 XXL24"`, buyer picks one) were parsed to a single (first-matched) size rather than `is_multi_size=TRUE` | Known simplification — product_taxonomy_map is 1 row per product_id, GMV on these specific listings is negligible-to-zero in the sample checked; flagged here rather than fixed, since fixing would need a second full multi-size-detection pass for low expected GMV payoff |
 
 ---
 
@@ -233,10 +242,18 @@ not via `pipeline/05_product_taxonomy/llm_{table}/*.py` scripts.
 
 ---
 
-## Map Row Counts (as of last run)
+## Map Row Counts (as of last run, month 2026-06)
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | TBD | Recorded at end of session |
+| LLM | 34,185 (1,674 Pass 1 + 32,511 Pass 2) | 3,014 new `product_taxonomy` entries (936 Pass 1 + 2,078 Pass 2) |
 | HUMAN | 0 | No prior keyword seed existed for this table |
-| NULL (unmapped) | TBD | Below GMV scope or out-of-category |
+| NULL (unmapped) | 6,280 products / ~17.6B IDR GMV within the brand-identifiable pool, plus the long tail outside the 11-brand 95% scope | See breakdown below |
+
+**GMV coverage: 91.93%** (202.15B / 219.90B IDR, GWP-zeroed, month 2026-06) — exceeds the ≥85% LLM Pass 2 and ≥90% NULL-coverage-pass targets in `docs/quality-standards.md` §6.
+
+**Unmapped breakdown (Pass 2 candidate pool of 34,508 brand-identifiable products):**
+- 1,950 products (6.66B IDR) — brand identified but size/pack/type not confidently parseable from text; left `UNRESOLVED` per `docs/product-lifecycle.md` §5 rather than guessed.
+- 47 products (1.7M IDR) — brand keyword matched a false positive or ambiguous context; left `UNRESOLVED`.
+- The remaining unmapped pool (`master_clean_niq` products with no brand-family keyword match at all) is long-tail out-of-scope per `docs/quality-standards.md` §2 (outside both Rule A top-95%-GMV and Rule B official-store) and legitimately stays `UNRESOLVED` — dominated by the raw `(UNDEFINED/BLANK)`/`"-"` bucket documented in Brand Scope above.
+- 21 Pass-1 official-store listings were excluded as genuine out-of-category items (dog diapers, wipes, pantyliners, promotional non-diaper gimmicks, one adult-diaper cross-bundle) — see QA History.
