@@ -39,6 +39,8 @@ echo "$prompt" | grep -q "docs/categories/th_detergent.md" || fail "build_prompt
 echo "$prompt" | grep -q "'targeted_qa_fix'" || fail "build_prompt should claim a targeted_qa_fix block"
 echo "$prompt" | grep -q "status='blocked'" || fail "build_prompt should document the blocked outcome"
 echo "$prompt" | grep -q "Do NOT run the universe refresh yourself" || fail "build_prompt should forbid self-refresh"
+echo "$prompt" | grep -q "never creates coverage for products with" || fail "build_prompt must state this script never creates coverage for taxonomy_id IS NULL products"
+echo "$prompt" | grep -q "headless_taxonomy.sh" || fail "build_prompt should point NULL-coverage work at headless_taxonomy.sh instead"
 echo "PASS: build_prompt"
 
 # --- decide_next_step ---
