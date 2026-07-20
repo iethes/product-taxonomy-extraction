@@ -18,7 +18,7 @@ Review month for all queries in this file: **2026-06-01** (source `month` column
 
 | Block | Usage |
 |-------|-------|
-| (claimed in Step 3, recorded after claim) | Full Rebuild — Pass 1 OFFICIAL + Pass 2 RESELLER |
+| SKU-091442–093441 | Full Rebuild — Pass 1 OFFICIAL + Pass 2 RESELLER (claimed atomically via `sku_block_registry`, 2026-07-20) |
 
 ---
 
