@@ -285,24 +285,42 @@ Phase 5 enriches the universe with granular product-level taxonomy using Claude'
 
 ### Universe Refresh
 
-After each category, run targeted DML UPDATE:
+Taxonomy state is never written directly onto `marketshare_universe`/`marketshare_universe_niq` (see the
+**Taxonomy columns** note above). A `MERGE` upserts `product_taxonomy_map` × `product_taxonomy` into
+`magpie_reference.universe_taxonomy_overlay`, keyed on `(product_id, platform, country)`:
+
 ```sql
-UPDATE marketshare_universe u
-SET taxonomy_id = src.taxonomy_id, sku_type_complete = src.canonical_name, ...
-FROM (
-  SELECT m.product_id, m.master_table, pt.taxonomy_id, pt.canonical_name, ...
-  FROM product_taxonomy_map m
-  JOIN product_taxonomy pt ON m.taxonomy_id = pt.taxonomy_id
-  JOIN niq_category_mapping nm ON nm.master_table = m.master_table
-  WHERE nm.master_table = '{table}'
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY m.product_id, m.master_table ORDER BY 
-    CASE m.source WHEN 'LLM' THEN 0 ELSE 1 END, m.taxonomy_id) = 1
+MERGE `sincere-hearth-273704.magpie_reference.universe_taxonomy_overlay` t
+USING (
+  SELECT m.product_id, m.platform, m.country, m.master_table,
+         pt.taxonomy_id, pt.canonical_name, m.source, m.confidence, m.meta_agent
+  FROM `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m
+  JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy` pt ON m.taxonomy_id = pt.taxonomy_id
+  WHERE m.master_table = '{table}'
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY m.product_id, m.platform, m.country
+    ORDER BY CASE m.source WHEN 'LLM' THEN 0 ELSE 1 END, m.taxonomy_id
+  ) = 1
 ) src
-WHERE u.product_id = src.product_id AND u.master_table = src.master_table
-  AND u.ecommerce_platform = 'Shopee'
+ON t.product_id = src.product_id AND t.platform = src.platform AND t.country = src.country
+  AND t.master_table = '{table}'
+WHEN MATCHED THEN UPDATE SET
+  taxonomy_id = src.taxonomy_id, sku_type_complete = src.canonical_name,
+  taxonomy_source = src.source, taxonomy_confidence = src.confidence,
+  taxonomy_meta_agent = src.meta_agent, updated_at = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED BY SOURCE AND t.master_table = '{table}' THEN DELETE
+WHEN NOT MATCHED BY TARGET THEN INSERT
+  (product_id, platform, country, master_table, taxonomy_id, sku_type_complete,
+   taxonomy_source, taxonomy_confidence, taxonomy_meta_agent, updated_at)
+  VALUES (src.product_id, src.platform, src.country, src.master_table, src.taxonomy_id, src.canonical_name,
+          src.source, src.confidence, src.meta_agent, CURRENT_TIMESTAMP());
 ```
 
-See [`docs/runbook.md`](docs/runbook.md) for full refresh script.
+Analysts join the overlay to `marketshare_universe` at query time on `(product_id, platform, country)`; the
+production table's schema and rows are never altered. See [`docs/headless-runbook.md`](docs/headless-runbook.md)
+§ Universe refresh for the authoritative version of this statement (the `AND t.master_table = '{table}'`
+condition on the `WHEN NOT MATCHED BY SOURCE` branch is load-bearing — without it BigQuery deletes every
+other category's overlay rows too).
 
 ---
 

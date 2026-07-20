@@ -99,13 +99,16 @@ Both are finally stamped onto `marketshare_universe`, the table analysts query.
   │   brand_mismatch flag)                                             │   │
   └──────────────────────────────────────────────────────────────────┘   │
         │                                                                  │
-        ▼ UNIVERSE REFRESH (targeted DML UPDATE)                           │
+        ▼ UNIVERSE REFRESH (MERGE into overlay table)                      │
   ┌──────────────────────────────────────────────────────────────────┐   │
   │ Join product_taxonomy_map → product_taxonomy → niq_category_mapping │◄─┘
   │ → product_brand_map → brand_dict                                   │
-  │ Stamp onto marketshare_universe: taxonomy_id, sku_type_complete,   │
+  │ Upsert into universe_taxonomy_overlay: taxonomy_id, sku_type_complete, │
   │ brand, taxonomy_source/confidence/meta_agent                       │
   │ (LLM beats HUMAN; lower taxonomy_id breaks ties)                   │
+  │ Joined to marketshare_universe at query time by                    │
+  │ (product_id, platform, country) — no columns/rows on               │
+  │ marketshare_universe itself change                                 │
   └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -273,10 +276,13 @@ image          : <pack shot of two green Shokubutsu bottles>
    `source = LLM`, `brand_from_image = Shokubutsu`, `meta_agent = CLAUDE_CODE`.
 
 **Universe refresh:**
-- DML UPDATE stamps `marketshare_universe`:
+- A `MERGE` upserts a row into `universe_taxonomy_overlay`:
   `taxonomy_id = SKU-036021`,
   `sku_type_complete = "Shokubutsu Vacation Series Shower Cream 500ml x2"`,
-  `brand = "Shokubutsu"`, `taxonomy_source = LLM`.
+  `taxonomy_source = LLM`. (`brand` still comes from `product_brand_map`/`brand_dict`, unchanged by this
+  step — the overlay table only carries taxonomy columns.)
+- Analysts get the combined view by joining `universe_taxonomy_overlay` to `marketshare_universe` on
+  `(product_id, platform, country)` at query time; `marketshare_universe` itself is never altered.
 
 Analysts can now see this listing's true size and that it is a **2-pack** — which
 doubles its effective unit volume in any price-per-ml or units-sold analysis.
