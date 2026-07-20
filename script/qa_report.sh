@@ -2,9 +2,10 @@
 set -euo pipefail
 
 # Usage: ./script/qa_report.sh <master_table> [--skip-coexistence]
-# Runs all 4 QA gates from docs/headless-runbook.md § QA-gate-as-code and prints a full report —
+# Runs the QA gates from docs/headless-runbook.md § QA-gate-as-code plus the canonical_name /
+# duplicate-map checks from docs/llm-extraction-rules.md, and prints a full report —
 # unlike run_qa_gates() (which aborts on the first failure, for gating a pipeline step), this always
-# runs all 4 and reports every result, for standalone auditing of any table at any time.
+# runs every gate and reports every result, for standalone auditing of any table at any time.
 
 TABLE="${1:?Usage: $0 <master_table> [--skip-coexistence]}"
 SKIP_COEXISTENCE="${2:-}"
@@ -54,6 +55,61 @@ STRUCT_MISSING=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --for
 if [ -z "$STRUCT_MISSING" ]; then echo "[SKIP] structured-fields:        (no LLM entries for this table)"
 elif [ "$STRUCT_MISSING" -le 50 ]; then echo "[PASS] structured-fields NULL%:  ${STRUCT_MISSING}%"
 else echo "[FAIL] structured-fields NULL%:  ${STRUCT_MISSING}%"; FAIL=1; fi
+
+DUP_PID=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+  "SELECT COUNT(*) FROM (
+     SELECT product_id FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\`
+     WHERE master_table = '${TABLE}' GROUP BY product_id HAVING COUNT(*) > 1
+   )" | tail -1)
+if [ "$DUP_PID" = "0" ]; then echo "[PASS] duplicate product_id:     0"
+else echo "[FAIL] duplicate product_id:     ${DUP_PID}"; FAIL=1; fi
+
+DUP_PAIR=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+  "SELECT COUNT(*) FROM (
+     SELECT product_id, taxonomy_id FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\`
+     WHERE master_table = '${TABLE}' GROUP BY product_id, taxonomy_id HAVING COUNT(*) > 1
+   )" | tail -1)
+if [ "$DUP_PAIR" = "0" ]; then echo "[PASS] duplicate product+taxon:  0"
+else echo "[FAIL] duplicate product+taxon:  ${DUP_PAIR}"; FAIL=1; fi
+
+ALL_VARIANT=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+  "SELECT COUNT(*) FROM (
+     SELECT DISTINCT pt.taxonomy_id
+     FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
+     JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
+     WHERE m.master_table = '${TABLE}'
+       AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all[\s)]')
+   )" | tail -1)
+if [ "$ALL_VARIANT" = "0" ]; then echo "[PASS] 'all variant/size' name:   0"
+else echo "[FAIL] 'all variant/size' name:   ${ALL_VARIANT}"; FAIL=1; fi
+
+# canonical_name must contain product_line, sub_line, variant, size (when set), and xN (when pack_count>1)
+# per docs/llm-extraction-rules.md §2/§3 — per-word match (not whole-phrase substring), since a size or
+# variant clause is often inserted mid-name and splits product_line/sub_line into non-contiguous chunks
+# (e.g. product_line "Milk + Rice Bath Refill" vs canonical_name "...Milk + Rice Bath 400ml Refill").
+# Catch-all "(all ...)" entries are excluded here since they're already caught by the gate above and their
+# sub_line often holds a slash-separated candidate list ("Sensitive / Whitening") not meant to appear verbatim.
+CANON_FIELDS=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+  "SELECT COUNT(*) FROM (
+     SELECT DISTINCT pt.taxonomy_id, pt.canonical_name, pt.product_line, pt.sub_line,
+            pt.variant, pt.size, pt.pack_count
+     FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
+     JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
+     WHERE m.master_table = '${TABLE}'
+   )
+   WHERE (
+       (SELECT LOGICAL_OR(LOWER(canonical_name) NOT LIKE CONCAT('%', w, '%'))
+        FROM UNNEST(SPLIT(LOWER(product_line), ' ')) w WHERE w != '')
+    OR (sub_line IS NOT NULL AND (SELECT LOGICAL_OR(LOWER(canonical_name) NOT LIKE CONCAT('%', w, '%'))
+        FROM UNNEST(SPLIT(LOWER(sub_line), ' ')) w WHERE w != ''))
+    OR (variant IS NOT NULL AND (SELECT LOGICAL_OR(LOWER(canonical_name) NOT LIKE CONCAT('%', w, '%'))
+        FROM UNNEST(SPLIT(LOWER(variant), ' ')) w WHERE w != ''))
+    OR (size IS NOT NULL AND NOT LOWER(canonical_name) LIKE CONCAT('%', LOWER(size), '%'))
+    OR (pack_count > 1 AND NOT LOWER(canonical_name) LIKE CONCAT('%x', CAST(pack_count AS STRING), '%'))
+   )
+   AND NOT REGEXP_CONTAINS(LOWER(canonical_name), r'\(all[\s)]')" | tail -1)
+if [ "$CANON_FIELDS" = "0" ]; then echo "[PASS] canonical_name fields:    0"
+else echo "[FAIL] canonical_name fields:    ${CANON_FIELDS}"; FAIL=1; fi
 
 echo "==============================="
 if [ "$FAIL" = "0" ]; then echo "RESULT: all gates pass"; else echo "RESULT: one or more gates failed"; fi
