@@ -147,6 +147,68 @@ attempt #1 precedent (187,902-row official pool, correctly blocked).
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-20 | Pre-run research | 908 HUMAN / 0 LLM existing map rows confirmed live (matches wrapper's first-run precheck and the documented `shopee_sg_diapers` precedent in `docs/headless-runbook.md`) | Proceeded as genuine first run |
+| 2026-07-20 | Session handoff | Research + setup complete (brand scope, allowlist, SKU block SKU-091442–093441 claimed, Pass 1 worklist of 320 official-store products built and verified, image pipeline proven on 14 real products). Zero `product_taxonomy`/`product_taxonomy_map` rows written — Pass 1/2 extraction itself (546 in-scope products, each needing real per-size-band image confirmation since diaper pack pcs is not derivable from `sku_name` text alone, e.g. carton pcs varies by size band and must be read off the pack) is genuinely large and was not rushed. See Session Handoff section below for exactly where to resume. | Session ended with `status='partial'`, `rows_created=0`. SKU block left `ACTIVE` — safe to reuse. |
+
+---
+
+## Session Handoff (2026-07-20, stopped after setup + worklist, before extraction)
+
+**What's done and durable:** category file (this document), SKU block claim, Pass 1 worklist query (below).
+
+**Pass 1 worklist query** (regenerate the 320-product official-store list, product-grain, deduped):
+```sql
+WITH allowlist AS (
+  SELECT * FROM UNNEST([
+    STRUCT('Applecrumby® Official Store' AS merchant_name,'BRD-GLOBAL-00120' AS brand_id),
+    ('BIC OFFICIAL STORE','BRD-SG-00980'), ('Drypers Official Store','BRD-SG-00361'),
+    ('Huggies Official Store','BRD-GLOBAL-00211'), ('Kimberly-Clark Official Store','BRD-GLOBAL-00211'),
+    ('Mamypoko Official','BRD-SG-00001'), ('Mamypoko Official','BRD-SG-00760'),
+    ('Merries Official Store','BRD-GLOBAL-00021'), ('Nino Nana ','BRD-SG-00754'),
+    ('Offspring Official','BRD-SG-00762'), ('Pampers Official Store','BRD-SG-00823')
+  ])
+)
+SELECT s.product_id, ANY_VALUE(s.sku_name) sku_name, ANY_VALUE(s.image) image,
+  ANY_VALUE(s.merchant_name) merchant_name, ANY_VALUE(d.canonical_name) brand_canon,
+  ANY_VALUE(b.brand_id) brand_id, ROUND(SUM(CASE WHEN s.flag_GWP THEN 0 ELSE s.gmv_monthly END),2) gmv
+FROM `sincere-hearth-273704.master_clean_niq.shopee_sg_diapers` s
+JOIN `sincere-hearth-273704.magpie_reference.product_brand_map` b
+  ON b.product_id = s.product_id AND b.platform='Shopee' AND b.country='SG'
+JOIN allowlist a ON a.merchant_name = s.merchant_name AND a.brand_id = b.brand_id
+LEFT JOIN `sincere-hearth-273704.magpie_reference.brand_dict` d ON d.brand_id = b.brand_id
+WHERE s.month = DATE('2026-06-01') AND s.merchant_badge='Shopee Mall'
+GROUP BY s.product_id ORDER BY brand_canon, gmv DESC
+```
+`--max_rows` must be raised above `bq query`'s default 100-row cap for this and any full-worklist pull.
+
+**Image fetch mechanism (proven working):** `image` column has literal embedded `"` characters —
+strip with `tr -d '"'` before `curl -sL -o /tmp/img.jpg "<url>"`, then `Read` the local file.
+
+**Key finding that shapes remaining work:** diaper `sku_name` text states size **band** (NB/S/M/L/XL/XXL/XXXL)
+reliably but usually does **not** state total piece count for single-size-band listings — pcs count varies
+by size band even within one product line ("Bundle of 2 Cartons XL" ≠ same pcs as "...L"), so it must be read
+off the pack image per size band, not assumed constant across a cluster's sizes. "Assorted (N packs)" /
+"M-XXL" listings are multi-size-in-one-listing (buyer picks at checkout) → `is_multi_size=TRUE`, `size=NULL`,
+`pack_count=N` (packs), not per-size pcs.
+
+**Confirmed from images this session (reusable, do not re-fetch):**
+| Product line | Size band | Total pcs | Source |
+|---|---|---|---|
+| Huggies Platinum Naturemade Pants | XL (12-18kg) | 228 (Bundle of 2 Cartons) | product 8943145582 |
+| Huggies Naturemade Panda Pants | L (9-14kg) | 126 (single carton, 3×42) | product 26126446013 |
+| Huggies Naturemade Overnite Pants | M (6-11kg) | 116 (single carton, 2×58) | product 41103176948 |
+| Huggies Airsoft Pants | M (6-12kg) | 184 (1 carton = 4 packs × 46) | product 83478027 |
+| Huggies AirSoft Tape | S (4-8kg) | 174 (1 carton = 3 packs × 58) | product 1064516244 |
+
+**52 distinct HUGGIES sku_name clusters identified** (size/number-stripped pattern dedup) covering all 105
+HUGGIES official-store products — see git history of this file / re-run the clustering script if needed
+(strip `\b(NB|S|M|L|XL|XXL|XXXL|2XL|3XL|4XL)\b` and digits from `sku_name`, group by remainder).
+
+**Next session should:** work brand-by-brand in GMV order (HUGGIES → Merries → Mamypoko → Drypers cover
+~75% of category GMV), confirming pcs-per-size-band from one representative image per (product_line ×
+size-band) combination — not per product_id — then bulk-map same-cluster products via text match, writing
+batched DML (taxonomy inserts, then map inserts) rather than per-product single statements. Cross-product
+bundles (e.g. "Huggies Pants XL + Huggies Pure Clean Wipes") map to the base diaper entry using the diaper
+portion's size/pack only — wipes are same-brand, not a cross-brand `is_bundle` case.
 
 ---
 
