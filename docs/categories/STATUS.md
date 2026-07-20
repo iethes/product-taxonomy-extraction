@@ -33,6 +33,22 @@ Last updated: Jun 24 2026
 
 ---
 
+## ID Categories — Status
+
+First-ever ID (Indonesia) category, added 2026-07-20. Source table lives in `master_clean_niq`
+(`shopee_id_*`, 22 tables exist there — undocumented in `ARCHITECTURE.md`, which still says NIQ = SG+TH
+only) but `product_brand_map` and `magpie.marketshare_universe_niq` have zero rows for any of them —
+Stage 03/04 have never run for ID in this pipeline. See `docs/categories/shopee_id_baby_diapers.md`'s
+Status section for what this means for a session picking up the next ID category.
+
+| Category | Pass 1 | Pass 2 | GMV Coverage | SKU Range (Pass 1) | SKU Range (Pass 2) | Notes |
+|----------|--------|--------|-------------|--------------------|--------------------|-------|
+| shopee_id_baby_diapers | ✅ | ✅ | 91.93% (Jun 2026) | SKU-093462–094397 | SKU-094398–096475 | First ID category; created 5 new `brand_dict` entries (Fluffy, Baby Happy, MomBaby, Happy Nappy, FITTI); SKU-096476–096961 still ACTIVE/unused |
+
+**Total ID:** 1/22 (of the `master_clean_niq` ID tables) LLM complete
+
+---
+
 ## SG Categories — Status
 
 | Category | Status | Notes |
