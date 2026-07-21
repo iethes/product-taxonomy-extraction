@@ -43,6 +43,19 @@ production quality across multiple iterations.
 product mapped to a generic stub matters more than 200 long-tail rows. Fix the
 highest-GMV defects first; the long tail can remain `UNRESOLVED`.
 
+### Automated review loop (`targeted_qa_fix.sh` auto-discovery mode)
+
+Since 2026-07-21, `script/targeted_qa_fix.sh` can run this loop on its own for the FIX/RE-MEASURE half — see
+[docs/superpowers/specs/2026-07-21-taxonomy-review-loop-design.md](superpowers/specs/2026-07-21-taxonomy-review-loop-design.md).
+`product_taxonomy._meta` tracks review state per entry (`review_confidence`: `unreviewed` → `unconfident` →
+`confident`, reached by two consecutive reviews agreeing on the same verdict). Each run reviews only
+never-reviewed or `unconfident` entries (incremental scope, not a full re-scan) via a two-tier checklist: Tier
+1 SQL regex (duplicate brand tokens, placeholder/stub leaks, field-order violations, brand casing, excess
+content) flags cheaply; Tier 2 LLM judgment (checked against §3's D1-D5 dimensions and
+`llm-extraction-rules.md` in full, including §11's signal-provenance and size-cross-validation rules) covers
+what regex can't. A `## Targeted QA Fix Brief` written by a human still works and takes priority when present
+— auto-discovery is the default when one isn't.
+
 ---
 
 ## 2. The Review Scope (the denominator)
