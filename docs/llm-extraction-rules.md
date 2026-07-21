@@ -313,6 +313,21 @@ HAVING COUNTIF(source='LLM') > 0 AND COUNTIF(source='HUMAN') > 0;
 
 ---
 
+## 11. Signal Provenance & Cross-Validation
+
+**Never derive `brand`, `product_line`, or any part of `canonical_name` from `merchant_name`** (the seller's
+store display name). Only `sku_name` (product title) and the product image are valid naming signals. A
+reseller's shop name appearing anywhere in `canonical_name` is always a defect — re-derive from the product's
+own title and image, never the store name.
+
+**Cross-validate short or ambiguous size matches before accepting them.** A size extracted from `sku_name`
+that is 1-2 digits + unit, or that sits inside what reads as a brand/product-line token rather than being
+clearly delimited (e.g., a brand like "G2G"/"Glad2Glow" contains digits a naive scan could misread as a size
+"2g"), must be confirmed against `product_specification` or the image before being accepted. If the
+`sku_name`-derived size doesn't independently confirm, prefer the confirmed source over the naive text match.
+
+---
+
 ## Changelog
 
 | Date | Category | Rule added |
@@ -365,3 +380,4 @@ HAVING COUNTIF(source='LLM') > 0 AND COUNTIF(source='HUMAN') > 0;
 | Jun 23 2026 | th_drinking_water | **Welle freebie totals**: "(N ขวดฟรี M ขวด)" pattern = pack_count N+M (same product free bottles, not GWP). e.g. "(60 ขวดฟรี 15 ขวด)" = x75, "(108 ขวดฟรี 27 ขวด)" = x135. Do NOT use base_pack multiplier; use the explicit total stated in parentheses. |
 | Jun 23 2026 | th_drinking_water | **Cross-brand Namthip/Coca-Cola**: products mapped to BRD-GLOBAL-00145 (Coca-Cola) in product_brand_map may be น้ำทิพย์ (Namthip) water products. Create taxonomy entries under BRD-SG-00926 (Namthip) and map these products to the Namthip taxonomy — the product_taxonomy_map does not require brand_id agreement between taxonomy and product_brand_map. Universe brand column comes from product_brand_map regardless. |
 | Jun 24 2026 | universal | **Explicit extraction priority chains added to §1 and §2.** Size: `sku_name` text → image → `product_specification` → `product_description`; **text wins** over image (never override a stated size). Pack_count: `sku_name` text → image → spec → description; **image wins** over text (image is the tiebreaker — title can miscount, pack shot shows actual units). Previously the chain lived only in ARCHITECTURE.md/data-dictionary.md and was absent from the operative rulebook; the pack_count fallback order was undocumented. |
+| Jul 21 2026 | universal | **§11 added: signal provenance + size cross-validation.** Found via stakeholder review of `shopee_sg_diapers` (reseller/merchant name leaking into `product_line`) and `shopee_id_makeup_face` (product `52351401583`'s size read as "2g" from digits embedded in the brand name "G2G"/"Glad2Glow" rather than the real size in `product_specification`). Never use `merchant_name` as a naming signal; cross-validate short/ambiguous sku_name-derived sizes against `product_specification`/image before accepting. |
