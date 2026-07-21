@@ -128,7 +128,7 @@ sequentially.
 STEP 1 — Get your review worklist (incremental scope: never-reviewed or previously-unconfident entries only,
 never a full re-scan of the category):
 SELECT DISTINCT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand, pt.product_line, pt.size,
-       pt.pack_count, pt._meta
+       pt.pack_count
 FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
@@ -166,6 +166,9 @@ you change must have its _meta reset in the same session:
 UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\`
 SET _meta = JSON '{"is_reviewed": false}'
 WHERE taxonomy_id IN (/* the taxonomy_ids you just fixed */)
+Reminder: the actual content-fixing UPDATE (the one that changes canonical_name/product_line/size/pack_count —
+not shown as a template above since it varies per defect) must also set meta_agent='CLAUDE_CODE' in that same
+statement. Don't wait until STEP 7 to remember this.
 
 STEP 5 — For every worklist row you judged correct (no fix applied), update its _meta by comparing this
 review's verdict against the stored previous verdict — agreement promotes to confident; disagreement, or a
@@ -179,7 +182,10 @@ SET _meta = TO_JSON(STRUCT(
 ))
 WHERE taxonomy_id = '<SKU-XXXXXX>'
 (one UPDATE per taxonomy_id is fine here — this is metadata bookkeeping, not the expensive part of the
-session.)
+session.) Note last_verdict only ever records 'correct' in practice: rows you judge wrong either get fixed
+(STEP 4 resets their _meta to unreviewed so they're re-evaluated fresh next run) or, if not fixed this
+session, are simply left with their _meta untouched so the next run re-reviews them — nothing writes
+last_verdict='wrong' directly.
 
 STEP 6 — If, and only if, a fix genuinely requires minting a new taxonomy entry (e.g. splitting a bad
 multi-size stub into distinct real entries), claim a ${block_size}-slot SKU block atomically first (DECLARE
