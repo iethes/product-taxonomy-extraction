@@ -342,13 +342,13 @@ run_universe_refresh() {
 main() {
   if [[ $# -lt 1 ]]; then
     echo "Usage: $0 <TABLE> [BLOCK_SIZE] [MAX_TURNS]" >&2
-    echo "  e.g. $0 shopee_th_detergent" >&2
-    echo "  e.g. $0 shopee_th_suncare 1200 400   (larger budget for a big-scope brief)" >&2
+    echo "  e.g. $0 shopee_th_detergent            (defaults: BLOCK_SIZE=200, MAX_TURNS=300)" >&2
+    echo "  e.g. $0 shopee_th_suncare 200 600       (larger turn budget for a big-scope brief or category)" >&2
     exit 1
   fi
   local table="$1"
   local block_size="${2:-200}"
-  local max_turns="${3:-30}"
+  local max_turns="${3:-300}"
 
   local category_file
   if ! category_file=$(resolve_category_file "$table"); then
