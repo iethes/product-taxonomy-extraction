@@ -32,6 +32,40 @@ popd >/dev/null
 rm -rf "$tmpdir"
 echo "PASS: resolve_category_file"
 
+# --- has_real_brief ---
+tmpdir=$(mktemp -d)
+
+cat > "$tmpdir/no_brief.md" <<'EOF'
+# Category
+## QA History
+EOF
+[[ "$(has_real_brief "$tmpdir/no_brief.md")" == "false" ]] || fail "no Brief section -> false"
+
+cat > "$tmpdir/template_brief.md" <<'EOF'
+## Targeted QA Fix Brief
+
+> Scope note here.
+
+**Verdict:** {defect class, e.g. "D1 Tier-C generic stubs"}
+
+{Fix description}
+EOF
+[[ "$(has_real_brief "$tmpdir/template_brief.md")" == "false" ]] || fail "unfilled template Verdict -> false"
+
+cat > "$tmpdir/real_brief.md" <<'EOF'
+## Targeted QA Fix Brief
+
+> Scope note here.
+
+**Verdict:** D5 pack-count errors on 12 products
+
+Fix these specific pack-count mistakes...
+EOF
+[[ "$(has_real_brief "$tmpdir/real_brief.md")" == "true" ]] || fail "filled Verdict -> true"
+
+rm -rf "$tmpdir"
+echo "PASS: has_real_brief"
+
 # --- build_prompt ---
 prompt=$(build_prompt "shopee_th_detergent" "docs/categories/th_detergent.md")
 echo "$prompt" | grep -q "shopee_th_detergent" || fail "build_prompt should mention the table name"
@@ -42,6 +76,19 @@ echo "$prompt" | grep -q "Do NOT run the universe refresh yourself" || fail "bui
 echo "$prompt" | grep -q "never creates coverage for products with" || fail "build_prompt must state this script never creates coverage for taxonomy_id IS NULL products"
 echo "$prompt" | grep -q "headless_taxonomy.sh" || fail "build_prompt should point NULL-coverage work at headless_taxonomy.sh instead"
 echo "PASS: build_prompt"
+
+# --- build_auto_discovery_prompt ---
+prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "docs/categories/th_suncare.md" "200")
+echo "$prompt" | grep -q "shopee_th_suncare" || fail "build_auto_discovery_prompt should mention the table"
+echo "$prompt" | grep -q "docs/categories/th_suncare.md" || fail "build_auto_discovery_prompt should mention the category file"
+echo "$prompt" | grep -q "review_confidence" || fail "build_auto_discovery_prompt must reference the _meta review_confidence field"
+echo "$prompt" | grep -q "all variants?|all sizes?" || fail "build_auto_discovery_prompt's Tier 1 sweep must include the extended stub-leak regex"
+echo "$prompt" | grep -q "docs/llm-extraction-rules.md" || fail "build_auto_discovery_prompt must instruct reading the extraction rules (incl. new §11)"
+echo "$prompt" | grep -q "precision is this script's job, not headless_taxonomy.sh's" || fail "build_auto_discovery_prompt must state the precision-first priority"
+echo "$prompt" | grep -q "'targeted_qa_fix'" || fail "build_auto_discovery_prompt should claim a targeted_qa_fix-scenario SKU block when minting"
+echo "$prompt" | grep -q "status='blocked'" || fail "build_auto_discovery_prompt should document the blocked outcome"
+echo "$prompt" | grep -q "Do NOT run the universe refresh yourself" || fail "build_auto_discovery_prompt must forbid self-refresh"
+echo "PASS: build_auto_discovery_prompt"
 
 # --- decide_next_step ---
 [[ "$(decide_next_step '{"status":"blocked","blockers":["x"]}')" == "BLOCKED" ]] || fail "blocked status"
