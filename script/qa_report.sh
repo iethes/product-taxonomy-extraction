@@ -72,13 +72,16 @@ DUP_PAIR=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=cs
 if [ "$DUP_PAIR" = "0" ]; then echo "[PASS] duplicate product+taxon:  0"
 else echo "[FAIL] duplicate product+taxon:  ${DUP_PAIR}"; FAIL=1; fi
 
+# Requires "variant(s)"/"size(s)" to directly follow "(all" — not just any "(all ...)" parenthetical.
+# The looser r'\(all[\s)]' pattern (used until 2026-07-21) false-positived on real product descriptors
+# like "(All Skin Types)" or "(All Natural)", which are legitimate label text, not a generic-stub marker.
 ALL_VARIANT=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
   "SELECT COUNT(*) FROM (
      SELECT DISTINCT pt.taxonomy_id
      FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
      JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
      WHERE m.master_table = '${TABLE}'
-       AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all[\s)]')
+       AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b')
    )" | tail -1)
 if [ "$ALL_VARIANT" = "0" ]; then echo "[PASS] 'all variant/size' name:   0"
 else echo "[FAIL] 'all variant/size' name:   ${ALL_VARIANT}"; FAIL=1; fi
@@ -107,7 +110,7 @@ CANON_FIELDS=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --forma
     OR (size IS NOT NULL AND NOT LOWER(canonical_name) LIKE CONCAT('%', LOWER(size), '%'))
     OR (pack_count > 1 AND NOT LOWER(canonical_name) LIKE CONCAT('%x', CAST(pack_count AS STRING), '%'))
    )
-   AND NOT REGEXP_CONTAINS(LOWER(canonical_name), r'\(all[\s)]')" | tail -1)
+   AND NOT REGEXP_CONTAINS(LOWER(canonical_name), r'\(all\s+(variants?|sizes?)\b')" | tail -1)
 if [ "$CANON_FIELDS" = "0" ]; then echo "[PASS] canonical_name fields:    0"
 else echo "[FAIL] canonical_name fields:    ${CANON_FIELDS}"; FAIL=1; fi
 

@@ -154,7 +154,7 @@ SELECT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand,
         FROM UNNEST(SPLIT(LOWER(pt.variant), ' ')) w WHERE w != ''))
     OR (pt.size IS NOT NULL AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%', LOWER(pt.size), '%'))
     OR (pt.pack_count > 1 AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%x', CAST(pt.pack_count AS STRING), '%'))
-  ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all[\s)]') AS canonical_field_mismatch
+  ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b') AS canonical_field_mismatch
 FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
