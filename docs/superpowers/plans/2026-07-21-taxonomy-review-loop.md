@@ -510,7 +510,7 @@ FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
 WHERE m.master_table = '${table}'
-  AND (pt._meta IS NULL OR JSON_VALUE(pt._meta, '$.review_confidence') != 'confident')
+  AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
 
 STEP 2 — Tier 1: run this SQL sweep over that same worklist to flag mechanical defects cheaply, before
 spending any LLM judgment:
@@ -524,7 +524,7 @@ FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
 WHERE m.master_table = '${table}'
-  AND (pt._meta IS NULL OR JSON_VALUE(pt._meta, '$.review_confidence') != 'confident')
+  AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
 GROUP BY 1,2,3
 Every TRUE flag here is an automatic last_verdict='wrong' candidate — no LLM judgment needed to detect these,
 only to decide and apply the fix in STEP 4.
