@@ -162,9 +162,10 @@ is mechanical — e.g. a single REGEXP_REPLACE UPDATE can strip a duplicated bra
 affected row in one statement (this repo has precedent: docs/categories/th_moisturizer_for_face.md's
 "Brand-Brand naming bug" fix used exactly this pattern). Read an individual product's image only when the fix
 itself requires re-deriving a value (e.g. confirming the real size after a G2G-style false match). Every row
-you change must have its _meta reset in the same session:
+you change must have its _meta reset in the same session (_meta is STRING-typed, storing serialized JSON text —
+never use the JSON '...' literal prefix or TO_JSON(), always a plain string):
 UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\`
-SET _meta = JSON '{"is_reviewed": false}'
+SET _meta = '{"is_reviewed": false}'
 WHERE taxonomy_id IN (/* the taxonomy_ids you just fixed */)
 Reminder: the actual content-fixing UPDATE (the one that changes canonical_name/product_line/size/pack_count —
 not shown as a template above since it varies per defect) must also set meta_agent='CLAUDE_CODE' in that same
@@ -174,7 +175,7 @@ STEP 5 — For every worklist row you judged correct (no fix applied), update it
 review's verdict against the stored previous verdict — agreement promotes to confident; disagreement, or a
 first-ever review, lands on unconfident:
 UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\`
-SET _meta = TO_JSON(STRUCT(
+SET _meta = TO_JSON_STRING(STRUCT(
   true AS is_reviewed,
   CURRENT_TIMESTAMP() AS last_reviewed_at,
   IF(JSON_VALUE(_meta, '$.last_verdict') = 'correct', 'confident', 'unconfident') AS review_confidence,

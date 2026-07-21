@@ -38,8 +38,8 @@ available for genuinely custom, human-directed fixes.
 
 | File | Change |
 |------|--------|
-| `sql/migrations/004_add_taxonomy_meta_column.sql` | New: adds `_meta JSON` to `product_taxonomy` |
-| `sql/schema/product_taxonomy.sql` | Updated to include `_meta JSON` in the `CREATE TABLE` definition |
+| `sql/migrations/004_add_taxonomy_meta_column.sql` | New: adds `_meta STRING` to `product_taxonomy` |
+| `sql/schema/product_taxonomy.sql` | Updated to include `_meta STRING` in the `CREATE TABLE` definition |
 | `docs/data-dictionary.md` | `product_taxonomy` table row list gets the new `_meta` column documented |
 | `docs/llm-extraction-rules.md` | Two new rules: reseller-name-leak prohibition, size cross-validation |
 | `script/targeted_qa_fix.sh` | New auto-discovery mode (default when no Brief section exists); Brief mode preserved as override |
@@ -56,10 +56,15 @@ prompt edit needed there.
 
 ## 1. Data model: `product_taxonomy._meta`
 
+**Type: `STRING`, not BigQuery's native `JSON` type** (deliberate choice, made when this migration was
+actually applied) — `_meta` stores serialized JSON text. Read via `JSON_VALUE()` (which accepts `STRING`
+input directly, no cast needed) and write via `TO_JSON_STRING()` — never the `JSON '...'` literal or
+`TO_JSON()`, both of which produce a native `JSON`-typed value that a `STRING` column will reject.
+
 ```sql
 -- sql/migrations/004_add_taxonomy_meta_column.sql
 ALTER TABLE `sincere-hearth-273704.magpie_reference.product_taxonomy`
-ADD COLUMN IF NOT EXISTS _meta JSON;
+ADD COLUMN IF NOT EXISTS _meta STRING;
 ```
 
 Shape (all fields optional/nullable until first reviewed — `_meta IS NULL` means never reviewed):
@@ -146,7 +151,7 @@ clearly delimited (e.g., a brand like "G2G"/"Glad2Glow" contains digits a naive 
 
 ```sql
 UPDATE `sincere-hearth-273704.magpie_reference.product_taxonomy`
-SET _meta = TO_JSON(STRUCT(
+SET _meta = TO_JSON_STRING(STRUCT(
   true AS is_reviewed,
   CURRENT_TIMESTAMP() AS last_reviewed_at,
   IF(JSON_VALUE(_meta, '$.last_verdict') = @new_verdict, 'confident', 'unconfident') AS review_confidence,

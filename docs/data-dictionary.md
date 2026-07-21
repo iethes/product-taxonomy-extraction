@@ -215,7 +215,7 @@ WHERE brand_confidence IN ('HIGH', 'MEDIUM')
 | `meta_agent` | STRING | `CLAUDE_CODE`, `CODEX`, or `HUMAN` — never NULL |
 | `created_at` | TIMESTAMP | |
 | `updated_at` | TIMESTAMP | |
-| `_meta` | JSON | Review-loop state, written by `script/targeted_qa_fix.sh`'s auto-discovery mode. `NULL` = never reviewed. Shape: `{is_reviewed, last_reviewed_at, review_confidence: "unreviewed"\|"unconfident"\|"confident", last_verdict: "correct"\|"wrong"}`. Any session that changes `product_line`/`size`/`pack_count`/`canonical_name` must reset this to `{"is_reviewed": false}` on that row — see [docs/superpowers/specs/2026-07-21-taxonomy-review-loop-design.md](superpowers/specs/2026-07-21-taxonomy-review-loop-design.md). |
+| `_meta` | STRING | Review-loop state (serialized JSON text — STRING, not BigQuery's native JSON type; read/write via `JSON_VALUE()`/`TO_JSON_STRING()`, never the `JSON '...'` literal or `TO_JSON()`), written by `script/targeted_qa_fix.sh`'s auto-discovery mode. `NULL` = never reviewed. Shape: `{is_reviewed, last_reviewed_at, review_confidence: "unreviewed"\|"unconfident"\|"confident", last_verdict: "correct"\|"wrong"}`. Any session that changes `product_line`/`size`/`pack_count`/`canonical_name` must reset this to `{"is_reviewed": false}` on that row — see [docs/superpowers/specs/2026-07-21-taxonomy-review-loop-design.md](superpowers/specs/2026-07-21-taxonomy-review-loop-design.md). |
 
 **Canonical name format:** `{Brand} {Product Line} {Sub-line/Variant} {Size} [x{N}]`
 
