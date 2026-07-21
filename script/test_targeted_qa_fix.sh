@@ -88,6 +88,15 @@ echo "$prompt" | grep -q "precision is this script's job, not headless_taxonomy.
 echo "$prompt" | grep -q "'targeted_qa_fix'" || fail "build_auto_discovery_prompt should claim a targeted_qa_fix-scenario SKU block when minting"
 echo "$prompt" | grep -q "status='blocked'" || fail "build_auto_discovery_prompt should document the blocked outcome"
 echo "$prompt" | grep -q "Do NOT run the universe refresh yourself" || fail "build_auto_discovery_prompt must forbid self-refresh"
+# Found live (2026-07-21, shopee_th_suncare run): qa_report.sh's independent "canonical_name fields" gate
+# failed 81 rows post-run — a defect class (canonical_name missing a product_line/sub_line/variant/size/xN
+# word) that Tier 1's sweep never checked for, so auto-discovery marked things "reviewed" that still failed
+# the wrapper's own gate. Same run also only reviewed 133 of ~5,812 rows in one session (one UPDATE per
+# taxonomy_id for _meta bookkeeping was the bottleneck) - fixed by bulk-marking the whole clean set at once.
+echo "$prompt" | grep -q "canonical_field_mismatch" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the canonical_name/structured-field consistency check"
+echo "$prompt" | grep -q "not one UPDATE per row" || fail "build_auto_discovery_prompt's STEP 5 must bulk-mark Tier-2-judged rows in one UPDATE, not one per taxonomy_id"
+echo "$prompt" | grep -q "never bulk-mark a Tier-1-clean row you" || fail "build_auto_discovery_prompt must forbid fabricating a review for rows that were never actually judged"
+echo "$prompt" | grep -q "bounded, GMV-prioritized sample" || fail "build_auto_discovery_prompt's Tier 2 must be an explicitly bounded sample, not implicitly exhaustive"
 echo "PASS: build_auto_discovery_prompt"
 
 # --- decide_next_step ---

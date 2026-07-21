@@ -136,26 +136,46 @@ WHERE m.master_table = '${table}'
   AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
 
 STEP 2 — Tier 1: run this SQL sweep over that same worklist to flag mechanical defects cheaply, before
-spending any LLM judgment:
+spending any LLM judgment. The last flag (canonical_field_mismatch) mirrors script/qa_report.sh's independent
+"canonical_name fields" gate exactly — added after a live run passed its own Tier 1 sweep but still failed
+that wrapper-side gate on 81 rows, because this check wasn't in Tier 1 yet:
 SELECT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand,
   REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\b(undefined|null|n/a|tbd|all variants?|all sizes?)\b') AS stub_leak,
   (LENGTH(pt.canonical_name) - LENGTH(REPLACE(pt.canonical_name, bd.canonical_name, ''))) / GREATEST(LENGTH(bd.canonical_name),1) >= 2 AS duplicate_brand,
   NOT STARTS_WITH(LOWER(TRIM(pt.canonical_name)), LOWER(bd.canonical_name)) AS wrong_field_order,
   (STARTS_WITH(LOWER(pt.canonical_name), LOWER(bd.canonical_name)) AND NOT STARTS_WITH(pt.canonical_name, bd.canonical_name)) AS brand_casing_mismatch,
-  (ARRAY_LENGTH(REGEXP_EXTRACT_ALL(pt.canonical_name, r'\d+\s*(?:ml|g|kg|l|L)\b')) > 1 OR ARRAY_LENGTH(REGEXP_EXTRACT_ALL(pt.canonical_name, r'x\d+\b')) > 1) AS excess_content
+  (ARRAY_LENGTH(REGEXP_EXTRACT_ALL(pt.canonical_name, r'\d+\s*(?:ml|g|kg|l|L)\b')) > 1 OR ARRAY_LENGTH(REGEXP_EXTRACT_ALL(pt.canonical_name, r'x\d+\b')) > 1) AS excess_content,
+  (
+    (SELECT LOGICAL_OR(LOWER(pt.canonical_name) NOT LIKE CONCAT('%', w, '%'))
+     FROM UNNEST(SPLIT(LOWER(pt.product_line), ' ')) w WHERE w != '')
+    OR (pt.sub_line IS NOT NULL AND (SELECT LOGICAL_OR(LOWER(pt.canonical_name) NOT LIKE CONCAT('%', w, '%'))
+        FROM UNNEST(SPLIT(LOWER(pt.sub_line), ' ')) w WHERE w != ''))
+    OR (pt.variant IS NOT NULL AND (SELECT LOGICAL_OR(LOWER(pt.canonical_name) NOT LIKE CONCAT('%', w, '%'))
+        FROM UNNEST(SPLIT(LOWER(pt.variant), ' ')) w WHERE w != ''))
+    OR (pt.size IS NOT NULL AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%', LOWER(pt.size), '%'))
+    OR (pt.pack_count > 1 AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%x', CAST(pt.pack_count AS STRING), '%'))
+  ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all[\s)]') AS canonical_field_mismatch
 FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
 WHERE m.master_table = '${table}'
   AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
-GROUP BY 1,2,3
+GROUP BY 1,2,3,pt.product_line,pt.sub_line,pt.variant,pt.size,pt.pack_count
 Every TRUE flag here is an automatic last_verdict='wrong' candidate — no LLM judgment needed to detect these,
 only to decide and apply the fix in STEP 4.
 
-STEP 3 — Tier 2: for worklist rows Tier 1 didn't flag, judge a genuine sample against
-docs/llm-extraction-rules.md in full (product_line §3, size §2, the new §11 signal-provenance and
-size-cross-validation rules) and docs/quality-standards.md §3's D1-D5 dimensions. This is the one script in
+STEP 3 — Tier 2: a bounded, GMV-prioritized sample only, not every un-flagged row. Order the rows Tier 1
+didn't flag by GMV (join master_clean_niq for gmv_monthly) and judge the top slice your remaining turn budget
+allows against docs/llm-extraction-rules.md in full (product_line §3, size §2, the new §11 signal-provenance
+and size-cross-validation rules) and docs/quality-standards.md §3's D1-D5 dimensions. This is the one script in
 this pipeline where per-entry LLM judgment is the right tool, not a shortcut to avoid — precision is this script's job, not headless_taxonomy.sh's.
+But exhaustively re-judging every Tier-1-clean row one by one is
+what capped a prior session at 133 of ~5,812 rows in one run. A Tier-1-clean row you do NOT sample this
+session gets no _meta write at all — do not mark it reviewed just because Tier 1 found nothing; that would
+fabricate a review that never actually happened (only genuine Tier 2 judgment, or a Tier 1 flag + fix, earns a
+_meta write). It stays exactly as eligible next run as it is now — Tier 1's cheap SQL sweep re-checks it for
+free either way, and a future session's sample will eventually reach it. Do not use this to justify skipping
+Tier 2 broadly; sample as much as your GMV-prioritized budget genuinely allows.
 
 STEP 4 — Apply fixes. Prefer bulk SQL per defect class over one-row-at-a-time corrections wherever the fix
 is mechanical — e.g. a single REGEXP_REPLACE UPDATE can strip a duplicated brand substring across every
@@ -171,22 +191,25 @@ Reminder: the actual content-fixing UPDATE (the one that changes canonical_name/
 not shown as a template above since it varies per defect) must also set meta_agent='CLAUDE_CODE' in that same
 statement. Don't wait until STEP 7 to remember this.
 
-STEP 5 — For every worklist row you judged correct (no fix applied), update its _meta by comparing this
-review's verdict against the stored previous verdict — agreement promotes to confident; disagreement, or a
-first-ever review, lands on unconfident:
-UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\`
+STEP 5 — For every row you gave a real Tier 2 judgment this session and found correct (no fix needed), update
+its _meta by comparing this review's verdict against the stored previous verdict — agreement promotes to
+confident; disagreement, or a first-ever review, lands on unconfident. Do this in ONE bulk statement covering
+every such taxonomy_id, not one UPDATE per row — a prior session burned most of its turn budget on
+one-UPDATE-per-taxonomy_id bookkeeping alone and only reviewed 133 of ~5,812 rows as a result:
+UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 SET _meta = TO_JSON_STRING(STRUCT(
   true AS is_reviewed,
   CURRENT_TIMESTAMP() AS last_reviewed_at,
-  IF(JSON_VALUE(_meta, '$.last_verdict') = 'correct', 'confident', 'unconfident') AS review_confidence,
+  IF(JSON_VALUE(pt._meta, '$.last_verdict') = 'correct', 'confident', 'unconfident') AS review_confidence,
   'correct' AS last_verdict
 ))
-WHERE taxonomy_id = '<SKU-XXXXXX>'
-(one UPDATE per taxonomy_id is fine here — this is metadata bookkeeping, not the expensive part of the
-session.) Note last_verdict only ever records 'correct' in practice: rows you judge wrong either get fixed
-(STEP 4 resets their _meta to unreviewed so they're re-evaluated fresh next run) or, if not fixed this
-session, are simply left with their _meta untouched so the next run re-reviews them — nothing writes
-last_verdict='wrong' directly.
+WHERE pt.taxonomy_id IN ('SKU-XXXXXX', 'SKU-YYYYYY', /* every taxonomy_id you Tier-2-judged as correct this session — the IF() expression re-reads each row's own prior _meta, so one statement handles all of them correctly even though their prior states differ */)
+This is metadata bookkeeping for the rows you actually reviewed (Tier 2 sample size, not the whole worklist),
+so the taxonomy_id list stays small enough to write out literally — never bulk-mark a Tier-1-clean row you
+did NOT Tier-2-sample (see STEP 3). Note last_verdict only ever records 'correct' in practice: rows you judge
+wrong either get fixed (STEP 4 resets their _meta to unreviewed so they're re-evaluated fresh next run) or, if
+not fixed this session, are simply left with their _meta untouched so the next run re-reviews them — nothing
+writes last_verdict='wrong' directly.
 
 STEP 6 — If, and only if, a fix genuinely requires minting a new taxonomy entry (e.g. splitting a bad
 multi-size stub into distinct real entries), claim a ${block_size}-slot SKU block atomically first (DECLARE
