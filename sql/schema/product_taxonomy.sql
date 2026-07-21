@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS `sincere-hearth-273704.magpie_reference.product_taxon
   is_multi_size    BOOL,
   meta_agent       STRING    NOT NULL,  -- 'CLAUDE_CODE', 'CODEX', or 'HUMAN'
   created_at       TIMESTAMP NOT NULL,
-  updated_at       TIMESTAMP NOT NULL
+  updated_at       TIMESTAMP NOT NULL,
+  _meta            JSON                 -- review-loop state; see sql/migrations/004_add_taxonomy_meta_column.sql
 )
 OPTIONS (
   description = "Canonical product taxonomy. meta_agent records which agent created or curated each row."
