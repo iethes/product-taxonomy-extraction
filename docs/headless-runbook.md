@@ -268,6 +268,15 @@ Coverage gaps (products with `taxonomy_id IS NULL`) are explicitly out of scope 
 "Scenario: Full Rebuild" below, which now also covers re-running against an already-complete category to
 close a live coverage gap.
 
+**Since 2026-07-21, this scenario has two modes** (`script/targeted_qa_fix.sh` picks automatically):
+- **Brief mode** (unchanged): `docs/categories/<table>.md` has a filled-in `## Targeted QA Fix Brief` section
+  — executes exactly what it specifies.
+- **Auto-discovery mode** (new default when no real Brief exists): reviews `product_taxonomy` entries the
+  category hasn't confidently reviewed yet, tracked via `product_taxonomy._meta`, against a two-tier SQL +
+  LLM checklist, and fixes what it finds — no human-written Brief required. See
+  [docs/superpowers/specs/2026-07-21-taxonomy-review-loop-design.md](superpowers/specs/2026-07-21-taxonomy-review-loop-design.md)
+  for the full mechanics.
+
 1. Claim a ~200-slot block (Shared mechanics § Atomic SKU block claim, `@block_size = 200`, `@scenario =
    'targeted_qa_fix'`).
 2. Invoke `claude -p` with the claimed range and the specific fix list (pack-count corrections, wrong-size

@@ -108,6 +108,12 @@ Scope is existing-row quality defects only (`docs/quality-standards.md` D1–D5,
 `brand_mismatch` review). Coverage gaps (`taxonomy_id IS NULL`) are out of scope for this script — see
 `script/headless_taxonomy.sh`'s top-up scenario above.
 
+Two modes, chosen by `has_real_brief()`: **Brief mode** executes a human-written `## Targeted QA Fix Brief`
+section verbatim (original behavior). **Auto-discovery mode** (default when no real Brief exists) finds its
+own work — a live, incremental review of `product_taxonomy` entries not yet confidently reviewed
+(`product_taxonomy._meta`), via Tier 1 SQL regex checks (duplicate brand tokens, stub/placeholder leaks,
+field-order violations, brand casing, excess content) and Tier 2 LLM judgment for what regex can't catch.
+
 ```
 $ ./script/targeted_qa_fix.sh <TABLE>
         │
