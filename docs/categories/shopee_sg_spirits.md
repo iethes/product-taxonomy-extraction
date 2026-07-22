@@ -13,7 +13,7 @@
 | LLM Pass 2 | ⏳ In progress |
 | GMV Coverage | TBD — measured after this run |
 | Last run | 2026-07-22 |
-| Current MAX taxonomy_id (before this run) | SKU-110405 (per `sku_block_registry`, see Step 3) |
+| Current MAX taxonomy_id (before this run) | SKU-114605 (ceiling at claim time — had moved from SKU-110405 seen during earlier research to SKU-114605 by claim time; a parallel session claimed a block in between, confirming why the atomic claim exists) |
 
 ---
 
@@ -21,7 +21,7 @@
 
 | Block | Usage |
 |-------|-------|
-| See `sku_block_registry` for `master_table='shopee_sg_spirits'` — claimed atomically in Step 3, not hand-picked here. |
+| SKU-114606–SKU-116605 | Full Rebuild block (2,000 slots), `sku_block_registry` status ACTIVE, scenario `full_rebuild` |
 
 ---
 
