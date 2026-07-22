@@ -119,6 +119,24 @@ CANON_FIELDS=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --forma
 if [ "$CANON_FIELDS" = "0" ]; then echo "[PASS] canonical_name fields:    0"
 else echo "[FAIL] canonical_name fields:    ${CANON_FIELDS}"; FAIL=1; fi
 
+# Resolved brand (brand_dict.canonical_name via product_taxonomy.brand_id) contains no letters at all --
+# catches garbled/anomalous brand text (e.g. "12/+＝", found via product 7155345414) without
+# false-positiving on legitimate alphanumeric brands ("3M", "7-Eleven", "L'Oreal" all contain a letter).
+# \p{L} matches any Unicode letter (Latin, Thai, etc.) -- verify this is supported by BigQuery's RE2 engine
+# with a live test query before the first real run touches this gate; if it errors instead of returning a
+# boolean, fall back to an explicit range like r'[a-zA-Zก-ฮ]'.
+GARBAGE_BRAND=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+  "SELECT COUNT(*) FROM (
+     SELECT DISTINCT pt.taxonomy_id
+     FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
+     JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
+     JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
+     WHERE m.master_table = '${TABLE}'
+       AND NOT REGEXP_CONTAINS(bd.canonical_name, r'[\p{L}]')
+   )" | tail -1)
+if [ "$GARBAGE_BRAND" = "0" ]; then echo "[PASS] garbled brand text:       0"
+else echo "[FAIL] garbled brand text:       ${GARBAGE_BRAND}"; FAIL=1; fi
+
 echo "==============================="
 if [ "$FAIL" = "0" ]; then echo "RESULT: all gates pass"; else echo "RESULT: one or more gates failed"; fi
 exit "$FAIL"
