@@ -158,15 +158,21 @@ SELECT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand,
         FROM UNNEST(SPLIT(LOWER(pt.variant), ' ')) w WHERE w != ''))
     OR (pt.size IS NOT NULL AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%', LOWER(pt.size), '%'))
     OR (pt.pack_count > 1 AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%x', CAST(pt.pack_count AS STRING), '%'))
-  ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b') AS canonical_field_mismatch
+  ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b') AS canonical_field_mismatch,
+  (pt.size IS NULL AND pt.is_multi_size IS NOT TRUE) AS null_size,
+  NOT REGEXP_CONTAINS(bd.canonical_name, r'[\p{L}]') AS garbage_brand
 FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
 WHERE m.master_table = '${table}'
   AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
-GROUP BY 1,2,3,pt.product_line,pt.sub_line,pt.variant,pt.size,pt.pack_count
+GROUP BY 1,2,3,pt.product_line,pt.sub_line,pt.variant,pt.size,pt.pack_count,pt.is_multi_size
 Every TRUE flag here is an automatic last_verdict='wrong' candidate — no LLM judgment needed to detect these,
-only to decide and apply the fix in STEP 4.
+only to decide and apply the fix in STEP 4. null_size (D4, docs/quality-standards.md) was never wired into
+any automated check before now, same gap D5 had — found via product 16254994627's image-visible 400ml size
+that was never extracted. garbage_brand catches a resolved brand (brand_dict.canonical_name via
+product_taxonomy.brand_id) with no letters at all (e.g. "12/+＝") — see docs/llm-extraction-rules.md §11 for
+the root cause (a reseller's watermark/logo overlay misread as the product's brand) and STEP 4 for the fix.
 
 STEP 2b — Tier 1 also includes this product-grain sweep (docs/quality-standards.md §3 D5 — this exact query
 existed only as a manual snippet there before now, never wired into any automated check, which is why product
@@ -188,6 +194,17 @@ didn't flag by GMV (join master_clean_niq for gmv_monthly) and judge the top sli
 allows against docs/llm-extraction-rules.md in full (product_line §3, size §2, the new §11 signal-provenance
 and size-cross-validation rules) and docs/quality-standards.md §3's D1-D5 dimensions. This is the one script in
 this pipeline where per-entry LLM judgment is the right tool, not a shortcut to avoid — precision is this script's job, not headless_taxonomy.sh's.
+
+For every row you judge, explicitly check whether the matched/reused entry's product type genuinely matches
+sku_name and the image — not just whether the name/structure looks right. This is the same conflict class as
+hard gate G3 (docs/quality-standards.md §4 — wet vs dry, lotion vs oil, paste vs wash) and the TYPE GATE in
+docs/product-lifecycle.md §4.2's match-or-create decision tree, just for this category's own product types
+(e.g. shampoo vs body wash/shower gel, found via product 22501764599). Bulk text-matching (used during
+coverage runs for speed) can produce a superficially plausible but wrong-type match when a brand carries
+multiple product lines with overlapping vocabulary — a match that "sounds right" from a text diff is not
+verified until the type is confirmed against sku_name/image. A wrong-type match is never partial credit —
+reroute to the correct existing entry, or mint a new one; do not rename in place.
+
 But exhaustively re-judging every Tier-1-clean row one by one is
 what capped a prior session at 133 of ~5,812 rows in one run. A Tier-1-clean row you do NOT sample this
 session gets no _meta write at all — do not mark it reviewed just because Tier 1 found nothing; that would
@@ -203,6 +220,21 @@ affected row in one statement (this repo has precedent: docs/categories/th_moist
 itself requires re-deriving a value (e.g. confirming the real size after a G2G-style false match). Every row
 you change must have its _meta reset in the same session (_meta is STRING-typed, storing serialized JSON text —
 never use the JSON '...' literal prefix or TO_JSON(), always a plain string):
+
+wrong_field_order has two different root causes needing two different fixes — check which one before acting:
+(a) text is genuinely out of order (e.g. "Size Type Multiplier" instead of "Brand Product-Line Size xN"):
+reorder canonical_name to match the established template, brand_id itself is correct. (b) brand_id resolves to BRD-UNDEFINED/BRD-UNBRANDED while canonical_name clearly states a real, identifiable brand name (found
+via product 26143837772: brand_id resolved to "Undefined" but canonical_name correctly said "Enfant..."):
+canonical_name is already correct, do NOT touch it — the defect is brand_id. Look up the correct brand in
+brand_dict (exact or close name match against the brand already stated in canonical_name), or create a new
+brand_dict entry if it genuinely doesn't exist yet, and update product_taxonomy.brand_id to point there.
+
+garbage_brand's fix follows docs/llm-extraction-rules.md §11: re-read the image applying the seller-watermark
+discipline (a reseller's overlay/logo, however large in the frame, is never the brand — only text printed on
+the actual packaging counts), find or create the correct brand_dict entry, update product_taxonomy.brand_id,
+and correct canonical_name to start with the real brand — unlike case (b) above, both fields are wrong here
+and both need fixing.
+
 UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\`
 SET _meta = '{"is_reviewed": false}'
 WHERE taxonomy_id IN (/* the taxonomy_ids you just fixed */)

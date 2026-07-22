@@ -106,6 +106,18 @@ echo "$prompt" | grep -q "bounded, GMV-prioritized sample" || fail "build_auto_d
 echo "$prompt" | grep -q "multiple variants?|multiple sizes?" || fail "build_auto_discovery_prompt's stub_leak check must also catch 'multiple variants/sizes' text unconditionally"
 echo "$prompt" | grep -qF 'buy\s*\d+\s*get\s*\d+' || fail "build_auto_discovery_prompt must check for English 'buy N get M' pack-count promo phrasing"
 echo "$prompt" | grep -q "most .ฟรี./.free. hits are GWP" || fail "the pack-count-promo check must carry the GWP-confirmation caveat, not auto-assume wrong"
+# Round 3 (2026-07-22 stakeholder review): product 22501764599 was a shampoo mapped to a body-wash entry
+# (type-conflict routing, not a naming defect -- Tier 2 judgment must explicitly check this, no new SQL
+# heuristic per explicit direction, since a keyword filter risks silently dropping exactly what it should
+# catch). Product 16254994627 had an image-visible 400ml size never extracted (D4, never wired before now).
+# Product 7155345414 resolved to garbled brand text "12/+＝" (seller watermark misread as brand). Product
+# 26143837772 had canonical_name correctly saying "Enfant" while brand_id resolved to BRD-UNDEFINED --
+# already caught by wrong_field_order, but the existing fix guidance assumed the wrong root cause (reorder
+# text) instead of the real one (fix brand_id).
+echo "$prompt" | grep -q "null_size" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the D4 size-coverage check"
+echo "$prompt" | grep -qF "r'[\p{L}]'" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the garbage_brand check"
+echo "$prompt" | grep -q "product type genuinely matches" || fail "STEP 3 must require an explicit type-conflict check, not just naming/structure judgment"
+echo "$prompt" | grep -q "brand_id resolves to BRD-UNDEFINED/BRD-UNBRANDED while canonical_name clearly states a real" || fail "STEP 4 must branch wrong_field_order's fix between reordering text and correcting brand_id"
 echo "PASS: build_auto_discovery_prompt"
 
 # --- decide_next_step ---
