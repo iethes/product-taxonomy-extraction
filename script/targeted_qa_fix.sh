@@ -136,9 +136,13 @@ WHERE m.master_table = '${table}'
   AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
 
 STEP 2 — Tier 1: run this SQL sweep over that same worklist to flag mechanical defects cheaply, before
-spending any LLM judgment. The last flag (canonical_field_mismatch) mirrors script/qa_report.sh's independent
+spending any LLM judgment. canonical_field_mismatch mirrors script/qa_report.sh's independent
 "canonical_name fields" gate exactly — added after a live run passed its own Tier 1 sweep but still failed
-that wrapper-side gate on 81 rows, because this check wasn't in Tier 1 yet:
+that wrapper-side gate on 81 rows, because this check wasn't in Tier 1 yet. multi_text_flag_mismatch checks
+one specific thing: "Multiple Sizes"/"Multiple Variants" is the SANCTIONED phrasing for a genuine
+multi-size/multi-variant catch-all (docs/llm-extraction-rules.md's th_softdrink precedent) when paired with
+is_multi_size/is_multi_variant=TRUE — only the text WITHOUT the matching flag is a defect (same ungrounded-stub
+problem as "All variant"/"All size"). Never flag a genuinely-flagged entry using this phrasing:
 SELECT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand,
   REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\b(undefined|null|n/a|tbd|all variants?|all sizes?)\b') AS stub_leak,
   (LENGTH(pt.canonical_name) - LENGTH(REPLACE(pt.canonical_name, bd.canonical_name, ''))) / GREATEST(LENGTH(bd.canonical_name),1) >= 2 AS duplicate_brand,
@@ -154,15 +158,34 @@ SELECT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand,
         FROM UNNEST(SPLIT(LOWER(pt.variant), ' ')) w WHERE w != ''))
     OR (pt.size IS NOT NULL AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%', LOWER(pt.size), '%'))
     OR (pt.pack_count > 1 AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%x', CAST(pt.pack_count AS STRING), '%'))
-  ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b') AS canonical_field_mismatch
+  ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b') AS canonical_field_mismatch,
+  (
+    (REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\bmultiple variants?\b') AND pt.is_multi_variant IS NOT TRUE)
+    OR (REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\bmultiple sizes?\b') AND pt.is_multi_size IS NOT TRUE)
+  ) AS multi_text_flag_mismatch
 FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
 WHERE m.master_table = '${table}'
   AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
-GROUP BY 1,2,3,pt.product_line,pt.sub_line,pt.variant,pt.size,pt.pack_count
+GROUP BY 1,2,3,pt.product_line,pt.sub_line,pt.variant,pt.size,pt.pack_count,pt.is_multi_variant,pt.is_multi_size
 Every TRUE flag here is an automatic last_verdict='wrong' candidate — no LLM judgment needed to detect these,
 only to decide and apply the fix in STEP 4.
+
+STEP 2b — Tier 1 also includes this product-grain sweep (docs/quality-standards.md §3 D5 — this exact query
+existed only as a manual snippet there before now, never wired into any automated check, which is why product
+16254994627's "Buy 1 Get 1" sku_name text was never caught): pack_count=1 but promo/multiplier language
+present in sku_name. Unlike the flags above, this is NOT an automatic wrong verdict — most "ฟรี"/"free" hits are GWP (correctly pack=1); confirm against the product image before treating a hit as a real miss.
+Feed every hit into your Tier 2 judgment budget alongside the GMV-prioritized sample from STEP 3, not as a
+separate exhaustive pass:
+SELECT m.product_id, s.sku_name, pt.taxonomy_id, pt.canonical_name, pt.pack_count
+FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\` m
+JOIN \`${PROJECT}.magpie_reference.product_taxonomy\` pt ON pt.taxonomy_id = m.taxonomy_id
+JOIN \`${PROJECT}.master_clean_niq.${table}\` s ON s.product_id = m.product_id
+WHERE m.master_table = '${table}'
+  AND pt.pack_count = 1
+  AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
+  AND REGEXP_CONTAINS(LOWER(s.sku_name), r'แถม|1\+1|ฟรี|ซื้อ \d+ แถม|แพ็คคู่|ยกลัง|x\s*\d|buy\s*\d+\s*get\s*\d+|free')
 
 STEP 3 — Tier 2: a bounded, GMV-prioritized sample only, not every un-flagged row. Order the rows Tier 1
 didn't flag by GMV (join master_clean_niq for gmv_monthly) and judge the top slice your remaining turn budget

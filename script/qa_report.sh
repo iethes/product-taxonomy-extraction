@@ -114,6 +114,25 @@ CANON_FIELDS=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --forma
 if [ "$CANON_FIELDS" = "0" ]; then echo "[PASS] canonical_name fields:    0"
 else echo "[FAIL] canonical_name fields:    ${CANON_FIELDS}"; FAIL=1; fi
 
+# "Multiple Sizes"/"Multiple Variants" is the sanctioned phrasing for a genuine multi-size/multi-variant
+# catch-all (docs/llm-extraction-rules.md's th_softdrink precedent) -- but only when paired with
+# is_multi_size/is_multi_variant=TRUE. The text alone, without the matching flag, is the same
+# ungrounded-stub defect as "All variant"/"All size". A genuinely-flagged entry using this phrasing
+# must not be flagged here -- that's exactly why this checks the flag, not just the text.
+MULTI_TEXT_MISMATCH=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+  "SELECT COUNT(*) FROM (
+     SELECT DISTINCT pt.taxonomy_id
+     FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
+     JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
+     WHERE m.master_table = '${TABLE}'
+       AND (
+         (REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\bmultiple variants?\b') AND pt.is_multi_variant IS NOT TRUE)
+         OR (REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\bmultiple sizes?\b') AND pt.is_multi_size IS NOT TRUE)
+       )
+   )" | tail -1)
+if [ "$MULTI_TEXT_MISMATCH" = "0" ]; then echo "[PASS] multi-text/flag match:    0"
+else echo "[FAIL] multi-text/flag match:    ${MULTI_TEXT_MISMATCH}"; FAIL=1; fi
+
 echo "==============================="
 if [ "$FAIL" = "0" ]; then echo "RESULT: all gates pass"; else echo "RESULT: one or more gates failed"; fi
 exit "$FAIL"

@@ -97,6 +97,15 @@ echo "$prompt" | grep -q "canonical_field_mismatch" || fail "build_auto_discover
 echo "$prompt" | grep -q "not one UPDATE per row" || fail "build_auto_discovery_prompt's STEP 5 must bulk-mark Tier-2-judged rows in one UPDATE, not one per taxonomy_id"
 echo "$prompt" | grep -q "never bulk-mark a Tier-1-clean row you" || fail "build_auto_discovery_prompt must forbid fabricating a review for rows that were never actually judged"
 echo "$prompt" | grep -q "bounded, GMV-prioritized sample" || fail "build_auto_discovery_prompt's Tier 2 must be an explicitly bounded sample, not implicitly exhaustive"
+# Found live (2026-07-22): "Multiple Sizes"/"Multiple Variants" is a sanctioned pattern (th_softdrink
+# precedent, llm-extraction-rules.md) when paired with is_multi_size/is_multi_variant=TRUE -- must only
+# flag the text/flag MISMATCH, never the text alone (that would break legitimate softdrink-style entries).
+# Also product 16254994627's "Buy 1 Get 1" sku_name was missed by the pack-count-promo check because that
+# check (quality-standards.md D5) was never actually wired into any automated gate before now.
+echo "$prompt" | grep -q "multi_text_flag_mismatch" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the multiple-sizes/variants text-vs-flag check"
+echo "$prompt" | grep -q "is_multi_variant IS NOT TRUE" || fail "the multi-text check must require the flag to be unset, not just match the text alone"
+echo "$prompt" | grep -qF 'buy\s*\d+\s*get\s*\d+' || fail "build_auto_discovery_prompt must check for English 'buy N get M' pack-count promo phrasing"
+echo "$prompt" | grep -q "most .ฟรี./.free. hits are GWP" || fail "the pack-count-promo check must carry the GWP-confirmation caveat, not auto-assume wrong"
 echo "PASS: build_auto_discovery_prompt"
 
 # --- decide_next_step ---

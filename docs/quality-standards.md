@@ -163,6 +163,13 @@ ORDER BY gmv DESC;        -- highest-GMV stubs first → fix these first
   into a variant-less entry — e.g. all Singha Soda flavors collapsed to one entry, or
   Pepsi Zero Sugar silently routed to Pepsi Cola. Detect by scanning sku_names within one
   taxonomy entry for distinct variant keywords.
+- **D3 also fails the other direction:** `canonical_name` containing "Multiple Sizes" or
+  "Multiple Variants" (the sanctioned phrasing for a genuine multi-size/multi-variant
+  seller listing — `llm-extraction-rules.md`'s th_softdrink changelog) without the matching
+  `is_multi_size`/`is_multi_variant` flag actually set to `TRUE` is an ungrounded catch-all
+  claim, same defect class as an unflagged "All variant"/"All size" stub. Never flag the
+  text alone — a genuinely-flagged multi-size/multi-variant entry using this exact phrasing
+  is correct and must not be treated as a violation.
 
 ### D4 — Size Coverage
 
@@ -183,6 +190,10 @@ multiplier); (b) wrong arithmetic on nested patterns (`[แพ็ก12] ยก�
 
 ```sql
 -- pack_count=1 but promo/multiplier language present in sku_name → review each
+-- LOWER(s.sku_name) matters: sku_name casing varies ("FREE", "Free", "free") and the pattern is
+-- case-sensitive without it. buy\s*\d+\s*get\s*\d+ added 2026-07-22 after product 16254994627's
+-- "Buy 1 Get 1" English phrasing was missed by the Thai/digit-only patterns (แถม, 1\+1) — this rule's
+-- own table already documented "buy 1 get 1" as pack_count=2, but no SQL ever actually checked for it.
 SELECT m.product_id, s.sku_name, pt.canonical_name, SUM(s.gmv_monthly) gmv
 FROM in_scope sc
 JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy_map` m USING (product_id, master_table)
@@ -190,9 +201,9 @@ JOIN `sincere-hearth-273704.magpie_reference.product_taxonomy` pt ON m.taxonomy_
 JOIN `sincere-hearth-273704.master_clean_niq.{table}` s
   ON s.product_id = m.product_id AND s.month = '2026-04-01'
 WHERE pt.pack_count = 1
-  AND REGEXP_CONTAINS(s.sku_name, r'แถม|1\+1|free|ฟรี|ซื้อ \d+ แถม|แพ็คคู่|ยกลัง|x\s*\d')
+  AND REGEXP_CONTAINS(LOWER(s.sku_name), r'แถม|1\+1|free|ฟรี|ซื้อ \d+ แถม|แพ็คคู่|ยกลัง|x\s*\d|buy\s*\d+\s*get\s*\d+')
 GROUP BY 1,2,3 ORDER BY gmv DESC;
--- Most "ฟรี" hits are GWP (correct pack=1); confirm against image before changing.
+-- Most "ฟรี"/"free" hits are GWP (correct pack=1); confirm against image before changing.
 ```
 
 ### D6 — In-Scope NULL Coverage
