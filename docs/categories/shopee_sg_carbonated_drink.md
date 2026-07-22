@@ -10,8 +10,8 @@
 |-------|-------|
 | LLM Pass 1 | ✅ Complete |
 | LLM Pass 2 | ✅ Complete |
-| GMV Coverage | 94.4% (2026-06) |
-| Last run | 2026-07-22 |
+| GMV Coverage | 95.05% (2026-06, after 2026-07-22 top-up) |
+| Last run | 2026-07-22 (top-up coverage session) |
 | Current MAX taxonomy_id | Query BQ live before every write — do not trust any number in this file |
 
 ---
@@ -20,10 +20,12 @@
 
 | Block | Usage |
 |-------|-------|
-| SKU-110406–112405 | Claimed block (2000 slots, full_rebuild), `sku_block_registry` status ACTIVE |
+| SKU-110406–112405 | Claimed block (2000 slots, full_rebuild), `sku_block_registry` status COMPLETE |
 | SKU-110406–110490 | Pass 1 OFFICIAL (85 entries, 8 brands via 4 store fronts, 86 products mapped) |
 | SKU-110491–110728 | Pass 2 RESELLER (238 new entries; 92 products reused a Pass-1 entry; 398 products mapped total) |
 | SKU-110729–112405 | Unused remainder of claimed block |
+| SKU-116806–117005 | Claimed block (200 slots, taxonomy_topup, 2026-07-22), `sku_block_registry` status ACTIVE |
+| SKU-116806–116824 | Top-up coverage session: 19 new entries minted; 174 slots (116825-117005) unused remainder |
 
 ---
 
@@ -231,6 +233,9 @@ sodastream (also has own store), MUG, "Soda" (not a real brand — see above).
 | 2026-07-22 | Pass 1 (Official) | Image check on Coca-Cola "Classic" vs "Original Taste" listings revealed genuinely different products (11% vs 5% sugar, different Nutri-Grade) despite similar naming — would have been wrongly merged from text alone | Kept as separate taxonomy entries |
 | 2026-07-22 | Pass 2 (Reseller) | `bq query` CLI defaults to a 100-row output cap (`--max_rows`) — first worklist pull silently truncated 410 rows to 100 | Re-ran with explicit `--max_rows=2000`; always set this flag for any query expected to return >100 rows |
 | 2026-07-22 | Pass 2 (Reseller) | 6 genuine alcoholic beer listings (Heineken, Tiger, Hite, Wusu) present in source table despite category being "Carbonated Drinks & Tonics" — same-brand soda (Chang/Singha) vs beer required per-listing text judgment, not a brand-level filter | Left NULL; documented in Scope section |
+| 2026-07-22 | Top-up coverage | Live re-run of the worklist query found 46 in-scope NULL rows (matches wrapper's live pre-check of 46). Bulk brand+line+size+pack text-matching against the existing Pass1/Pass2 taxonomy resolved 16 via reuse and required 19 new entries (SKU-116806–116824) for previously-unseen flavors/sizes/brands (Fever-Tree Light Aromatic Tonic, Barbican x6, Remedy Peach Kombucha, MUG Root Beer 1.5L, F&N Cherryade 1.5L, DemiSoda Peach, Old Jamaica Ginger Beer, Lo Bros Raspberry & Blackcurrant, Bundaberg Passionfruit, POKKA Natsbee Honey Yuzu, Karma Drinks Lemmy Lemonade, 2x Vitami flavors, Antipodes multi-size Sparkling Water, Vida 3-bottle Assortment, Coca-Cola Classic/Zero Sugar cans Assortment, QiuLin Kvass, Remedy Sodaly). GMV coverage moved 94.4%→95.05% (884→919/4260 products). | 35 new `product_taxonomy_map` rows written (16 reuse + 19 mint); all 4 QA gates (G1, G2, placeholder-leak, G5) re-ran at 0 |
+| 2026-07-22 | Top-up coverage | 11 of the 46 worklist rows correctly left NULL, not force-mapped: 6 genuine alcoholic beer (Heineken/Tiger/Hite/Wusu, consistent with prior Scope finding), 1 Sting Strawberry (verified via image: still/non-carbonated energy drink, not in scope), 2 rows for one "Tropic Farmers Assorted Drinks Can" product + 1 "Tropic Farmers ... Calamansi Sour Plum" product (verified via image: the Tropic Farmers line is entirely non-carbonated juices/tea/soy milk — Young Coconut Juice, Soy Bean, Pineapple Juice, Chrysanthemum Tea, Calamansi & Sour Plum — none carbonated, out of scope for this category despite appearing in the source table) | Left NULL; new scope-exclusion precedent for "Tropic Farmers" and "Sting" documented below |
+| 2026-07-22 | Top-up coverage | **Pre-existing scope contamination found, not fixed this session**: `SKU-110643`/`SKU-110644` ("F&N Seasons Ice Lemon Tea"/"Barley") already exist in this category's taxonomy from the original Full Rebuild with real GMV mapped — but F&N Seasons is a non-carbonated RTD tea/barley line, out of scope per this category's own Scope section. A new NULL row for the same product line (F&N Season Ice Lemon Tea 1.5L x12, product `5608313935`) was correctly left NULL this session rather than compounding the error by reusing/extending the contaminated entries. Fixing the existing SKU-110643/110644 mappings is out of scope for a top-up session — flagged for `script/targeted_qa_fix.sh`. | Left NULL this session; existing SKU-110643/110644 contamination NOT remediated — needs a future targeted QA fix pass |
 
 ---
 
@@ -251,8 +256,8 @@ are needed for this run.
 
 ## Map Row Counts
 
-| Source | Before this run | After this run | Notes |
-|--------|-----------------|-----------------|-------|
-| LLM | 0 | 484 | 86 Pass 1 (official store) + 398 Pass 2 (reseller bulk routing) |
-| HUMAN | 758 | 403 | 355 deleted (duplicated a product now covered by an LLM row); remaining 403 are long-tail products with no LLM row, correctly retained |
-| NULL (unmapped) | ~3,502 | ~3,376 of 4,260 distinct products | Below GMV scope, or genuinely OOS (beer, unidentifiable multi-brand listings) |
+| Source | Before Full Rebuild | After Full Rebuild | After 2026-07-22 top-up | Notes |
+|--------|-----------------|-----------------|-----------------|-------|
+| LLM | 0 | 484 | 519 | 86 Pass 1 + 398 Pass 2 + 35 top-up (16 reuse + 19 new-entry) |
+| HUMAN | 758 | 403 | 403 | Untouched this session — top-up scenario only adds LLM rows |
+| NULL (unmapped) | ~3,502 | ~3,376 of 4,260 distinct products | ~3,341 of 4,260 | GMV coverage 95.05% (2026-06). Remaining NULLs below GMV scope, or genuinely OOS (beer, Tropic Farmers non-carbonated line, Sting, unidentifiable multi-brand listings) |
