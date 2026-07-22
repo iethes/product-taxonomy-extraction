@@ -92,7 +92,7 @@ run_qa_gates() {
     "SELECT COUNT(*) FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy\` pt
      JOIN \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
      WHERE m.master_table = '${table}'
-       AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\\b(undefined|null|n/a|tbd|all variants?|all sizes?)\\b')" | tail -1)
+       AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\\b(undefined|null|n/a|tbd|all variants?|all sizes?|multiple variants?|multiple sizes?)\\b')" | tail -1)
   if [ "$placeholder_leak" != "0" ]; then
     echo "QA GATE FAILED: ${placeholder_leak} placeholder-leak canonical names for ${table}"; return 1
   fi

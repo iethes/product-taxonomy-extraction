@@ -72,16 +72,21 @@ DUP_PAIR=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=cs
 if [ "$DUP_PAIR" = "0" ]; then echo "[PASS] duplicate product+taxon:  0"
 else echo "[FAIL] duplicate product+taxon:  ${DUP_PAIR}"; FAIL=1; fi
 
-# Requires "variant(s)"/"size(s)" to directly follow "(all" — not just any "(all ...)" parenthetical.
-# The looser r'\(all[\s)]' pattern (used until 2026-07-21) false-positived on real product descriptors
-# like "(All Skin Types)" or "(All Natural)", which are legitimate label text, not a generic-stub marker.
+# Requires "variant(s)"/"size(s)" to directly follow "(all" or "multiple" — not just any "(all ...)"
+# parenthetical. The looser r'\(all[\s)]' pattern (used until 2026-07-21) false-positived on real product
+# descriptors like "(All Skin Types)" or "(All Natural)", which are legitimate label text, not a
+# generic-stub marker. "Multiple Sizes"/"Multiple Variants" added 2026-07-22: despite being sanctioned in
+# an earlier th_softdrink precedent (paired with is_multi_size/is_multi_variant=TRUE), it's banned here
+# unconditionally, flag or no flag — the is_multi_size/is_multi_variant column already conveys that
+# semantic; redundantly restating it as generic text in canonical_name is the same ungrounded-stub problem
+# as "All variant"/"All size". Existing entries using this text must be corrected to drop it, not exempted.
 ALL_VARIANT=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
   "SELECT COUNT(*) FROM (
      SELECT DISTINCT pt.taxonomy_id
      FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
      JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
      WHERE m.master_table = '${TABLE}'
-       AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b')
+       AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b')
    )" | tail -1)
 if [ "$ALL_VARIANT" = "0" ]; then echo "[PASS] 'all variant/size' name:   0"
 else echo "[FAIL] 'all variant/size' name:   ${ALL_VARIANT}"; FAIL=1; fi
@@ -110,28 +115,9 @@ CANON_FIELDS=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --forma
     OR (size IS NOT NULL AND NOT LOWER(canonical_name) LIKE CONCAT('%', LOWER(size), '%'))
     OR (pack_count > 1 AND NOT LOWER(canonical_name) LIKE CONCAT('%x', CAST(pack_count AS STRING), '%'))
    )
-   AND NOT REGEXP_CONTAINS(LOWER(canonical_name), r'\(all\s+(variants?|sizes?)\b')" | tail -1)
+   AND NOT REGEXP_CONTAINS(LOWER(canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b')" | tail -1)
 if [ "$CANON_FIELDS" = "0" ]; then echo "[PASS] canonical_name fields:    0"
 else echo "[FAIL] canonical_name fields:    ${CANON_FIELDS}"; FAIL=1; fi
-
-# "Multiple Sizes"/"Multiple Variants" is the sanctioned phrasing for a genuine multi-size/multi-variant
-# catch-all (docs/llm-extraction-rules.md's th_softdrink precedent) -- but only when paired with
-# is_multi_size/is_multi_variant=TRUE. The text alone, without the matching flag, is the same
-# ungrounded-stub defect as "All variant"/"All size". A genuinely-flagged entry using this phrasing
-# must not be flagged here -- that's exactly why this checks the flag, not just the text.
-MULTI_TEXT_MISMATCH=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-  "SELECT COUNT(*) FROM (
-     SELECT DISTINCT pt.taxonomy_id
-     FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
-     JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
-     WHERE m.master_table = '${TABLE}'
-       AND (
-         (REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\bmultiple variants?\b') AND pt.is_multi_variant IS NOT TRUE)
-         OR (REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\bmultiple sizes?\b') AND pt.is_multi_size IS NOT TRUE)
-       )
-   )" | tail -1)
-if [ "$MULTI_TEXT_MISMATCH" = "0" ]; then echo "[PASS] multi-text/flag match:    0"
-else echo "[FAIL] multi-text/flag match:    ${MULTI_TEXT_MISMATCH}"; FAIL=1; fi
 
 echo "==============================="
 if [ "$FAIL" = "0" ]; then echo "RESULT: all gates pass"; else echo "RESULT: one or more gates failed"; fi

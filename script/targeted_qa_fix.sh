@@ -138,13 +138,13 @@ WHERE m.master_table = '${table}'
 STEP 2 — Tier 1: run this SQL sweep over that same worklist to flag mechanical defects cheaply, before
 spending any LLM judgment. canonical_field_mismatch mirrors script/qa_report.sh's independent
 "canonical_name fields" gate exactly — added after a live run passed its own Tier 1 sweep but still failed
-that wrapper-side gate on 81 rows, because this check wasn't in Tier 1 yet. multi_text_flag_mismatch checks
-one specific thing: "Multiple Sizes"/"Multiple Variants" is the SANCTIONED phrasing for a genuine
-multi-size/multi-variant catch-all (docs/llm-extraction-rules.md's th_softdrink precedent) when paired with
-is_multi_size/is_multi_variant=TRUE — only the text WITHOUT the matching flag is a defect (same ungrounded-stub
-problem as "All variant"/"All size"). Never flag a genuinely-flagged entry using this phrasing:
+that wrapper-side gate on 81 rows, because this check wasn't in Tier 1 yet. stub_leak also catches "Multiple
+Sizes"/"Multiple Variants" — an earlier th_softdrink precedent sanctioned this phrasing when paired with
+is_multi_size/is_multi_variant=TRUE, but it's banned unconditionally now: the is_multi_size/is_multi_variant
+column already conveys that semantic, so restating it as generic text in canonical_name is the same
+ungrounded-stub problem as "All variant"/"All size" — flag or no flag, the text itself is the defect:
 SELECT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand,
-  REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\b(undefined|null|n/a|tbd|all variants?|all sizes?)\b') AS stub_leak,
+  REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\b(undefined|null|n/a|tbd|all variants?|all sizes?|multiple variants?|multiple sizes?)\b') AS stub_leak,
   (LENGTH(pt.canonical_name) - LENGTH(REPLACE(pt.canonical_name, bd.canonical_name, ''))) / GREATEST(LENGTH(bd.canonical_name),1) >= 2 AS duplicate_brand,
   NOT STARTS_WITH(LOWER(TRIM(pt.canonical_name)), LOWER(bd.canonical_name)) AS wrong_field_order,
   (STARTS_WITH(LOWER(pt.canonical_name), LOWER(bd.canonical_name)) AND NOT STARTS_WITH(pt.canonical_name, bd.canonical_name)) AS brand_casing_mismatch,
@@ -158,17 +158,13 @@ SELECT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand,
         FROM UNNEST(SPLIT(LOWER(pt.variant), ' ')) w WHERE w != ''))
     OR (pt.size IS NOT NULL AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%', LOWER(pt.size), '%'))
     OR (pt.pack_count > 1 AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%x', CAST(pt.pack_count AS STRING), '%'))
-  ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b') AS canonical_field_mismatch,
-  (
-    (REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\bmultiple variants?\b') AND pt.is_multi_variant IS NOT TRUE)
-    OR (REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\bmultiple sizes?\b') AND pt.is_multi_size IS NOT TRUE)
-  ) AS multi_text_flag_mismatch
+  ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b') AS canonical_field_mismatch
 FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
 WHERE m.master_table = '${table}'
   AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
-GROUP BY 1,2,3,pt.product_line,pt.sub_line,pt.variant,pt.size,pt.pack_count,pt.is_multi_variant,pt.is_multi_size
+GROUP BY 1,2,3,pt.product_line,pt.sub_line,pt.variant,pt.size,pt.pack_count
 Every TRUE flag here is an automatic last_verdict='wrong' candidate — no LLM judgment needed to detect these,
 only to decide and apply the fix in STEP 4.
 

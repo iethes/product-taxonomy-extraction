@@ -164,12 +164,12 @@ ORDER BY gmv DESC;        -- highest-GMV stubs first → fix these first
   Pepsi Zero Sugar silently routed to Pepsi Cola. Detect by scanning sku_names within one
   taxonomy entry for distinct variant keywords.
 - **D3 also fails the other direction:** `canonical_name` containing "Multiple Sizes" or
-  "Multiple Variants" (the sanctioned phrasing for a genuine multi-size/multi-variant
-  seller listing — `llm-extraction-rules.md`'s th_softdrink changelog) without the matching
-  `is_multi_size`/`is_multi_variant` flag actually set to `TRUE` is an ungrounded catch-all
-  claim, same defect class as an unflagged "All variant"/"All size" stub. Never flag the
-  text alone — a genuinely-flagged multi-size/multi-variant entry using this exact phrasing
-  is correct and must not be treated as a violation.
+  "Multiple Variants" is a D1 Tier-C-style generic stub, same defect class as "All variant"/"All size" —
+  banned unconditionally, even when `is_multi_size`/`is_multi_variant` is correctly set to `TRUE`
+  (superseding an earlier th_softdrink precedent that sanctioned this phrasing). The flag column
+  already conveys the multi-size/multi-variant semantic; restating it as generic text in
+  `canonical_name` adds nothing and is exactly the kind of ungrounded catch-all naming D1 exists to
+  catch.
 
 ### D4 — Size Coverage
 
