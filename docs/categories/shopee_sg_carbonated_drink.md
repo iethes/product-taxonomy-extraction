@@ -8,9 +8,9 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress |
-| LLM Pass 2 | ⏳ In progress |
-| GMV Coverage | TBD — filled after run |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 94.4% (2026-06) |
 | Last run | 2026-07-22 |
 | Current MAX taxonomy_id | Query BQ live before every write — do not trust any number in this file |
 
@@ -20,7 +20,38 @@
 
 | Block | Usage |
 |-------|-------|
-| (filled in Step 3 — atomic claim, 2000 slots) | Pass 1 OFFICIAL + Pass 2 RESELLER, first-run full_rebuild |
+| SKU-110406–112405 | Claimed block (2000 slots, full_rebuild), `sku_block_registry` status ACTIVE |
+| SKU-110406–110490 | Pass 1 OFFICIAL (85 entries, 8 brands via 4 store fronts, 86 products mapped) |
+| SKU-110491–110728 | Pass 2 RESELLER (238 new entries; 92 products reused a Pass-1 entry; 398 products mapped total) |
+| SKU-110729–112405 | Unused remainder of claimed block |
+
+---
+
+## Scorecard (2026-07-22, first Full Rebuild)
+
+```
+In-scope products: 495 (Rule A top-95% GMV: 440 · Rule B official-store: 88)
+GMV coverage (all products, 2026-06): 94.4% (884 / 4,260 products mapped)
+
+QUALITY (GMV-weighted, LLM entries)          GATES (post HUMAN-dedup delete)
+  D1 Tier-A completeness ... 97.7%           G1 dual-mapped ........ 0  ✅
+  D4 NULL size ............. 0.0%            G2 HUMAN+LLM coexist .. 0  ✅
+  D2 NULL product_line ..... 0.0%            G5 provenance ......... 0  ✅
+                                              placeholder-leak (LLM only) . 0  ✅
+
+Map rows: LLM 484 (86 Pass1 + 398 Pass2) · HUMAN 403 (untouched long-tail, no LLM row exists) ·
+355 duplicate HUMAN rows deleted post-QA (superseded by LLM row for same product)
+
+D6 in-scope NULL coverage: 11 remaining, all legitimately excluded —
+  6 genuine alcoholic beer (Heineken, Tiger, Hite, Wusu — real beer, out of scope per category Scope section)
+  2 multi-brand buyer-choice assortments (different actual brands in one listing, can't determine what buyer receives)
+  2 "[Not For Sale]" listings (not genuinely purchasable, 0 GMV)
+  1 unbranded "Taiwan Root Beer Vegan Drink" (no identifiable brand entity, GMV 149.4)
+```
+
+**Decision: SHIP.** All gates pass, D1 Tier-A 97.7% ≥ 90% target, D4/D2 both 0% NULL (target ≥95%
+size coverage exceeded). No universe refresh run this session (out of scope for this prompt —
+next session should run the `universe_taxonomy_overlay` MERGE per docs/headless-runbook.md).
 
 ---
 
@@ -197,6 +228,9 @@ sodastream (also has own store), MUG, "Soda" (not a real brand — see above).
 |------|------|---------|------------|
 | 2026-07-22 | Category-file research | 758 existing HUMAN keyword-seed rows found (0 LLM) — confirms genuine first LLM pass, matches wrapper's live pre-check | None needed — proceed with Full Rebuild per headless-runbook.md |
 | 2026-07-22 | Category-file research | Naive top-15/20-brand snapshot would have undercounted brand scope — real 95% threshold is 40 brands, not ~15-20 | Used full cumulative-GMV ranking, listed all 40 |
+| 2026-07-22 | Pass 1 (Official) | Image check on Coca-Cola "Classic" vs "Original Taste" listings revealed genuinely different products (11% vs 5% sugar, different Nutri-Grade) despite similar naming — would have been wrongly merged from text alone | Kept as separate taxonomy entries |
+| 2026-07-22 | Pass 2 (Reseller) | `bq query` CLI defaults to a 100-row output cap (`--max_rows`) — first worklist pull silently truncated 410 rows to 100 | Re-ran with explicit `--max_rows=2000`; always set this flag for any query expected to return >100 rows |
+| 2026-07-22 | Pass 2 (Reseller) | 6 genuine alcoholic beer listings (Heineken, Tiger, Hite, Wusu) present in source table despite category being "Carbonated Drinks & Tonics" — same-brand soda (Chang/Singha) vs beer required per-listing text judgment, not a brand-level filter | Left NULL; documented in Scope section |
 
 ---
 
@@ -215,10 +249,10 @@ are needed for this run.
 
 ---
 
-## Map Row Counts (as of session start, before this run)
+## Map Row Counts
 
-| Source | Count | Notes |
-|--------|-------|-------|
-| LLM | 0 | Confirms genuine first-run |
-| HUMAN | 758 | Keyword-seed rows, coarse "(all variants and pack sizes)" catch-alls per brand |
-| NULL (unmapped) | ~3,502 of 4,260 distinct products | Below GMV scope or awaiting this run |
+| Source | Before this run | After this run | Notes |
+|--------|-----------------|-----------------|-------|
+| LLM | 0 | 484 | 86 Pass 1 (official store) + 398 Pass 2 (reseller bulk routing) |
+| HUMAN | 758 | 403 | 355 deleted (duplicated a product now covered by an LLM row); remaining 403 are long-tail products with no LLM row, correctly retained |
+| NULL (unmapped) | ~3,502 | ~3,376 of 4,260 distinct products | Below GMV scope, or genuinely OOS (beer, unidentifiable multi-brand listings) |

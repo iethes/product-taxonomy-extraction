@@ -67,7 +67,7 @@ Status section for what this means for a session picking up the next ID category
 | sg_infant_milk | ⏳ Keyword only | |
 | sg_health_food_drink | ⏳ Keyword only | |
 | sg_coffee | ✅ Complete | LLM Pass 1+2 complete Jul 20, 93.85% GMV coverage, SKU-098346–100345 + SKU-102346–102519; created brand_dict entry BRD-SG-13379 (Super) |
-| sg_carbonated_drink | ⏳ Keyword only | |
+| sg_carbonated_drink | ✅ Complete | LLM Pass 1+2 complete Jul 22, 94.4% GMV coverage, SKU-110406–110728; 6 real alcoholic beer listings correctly left out of scope despite category-table presence |
 | sg_beverages | ⏳ Keyword only | |
 | sg_beer_and_lager | ⏳ Keyword only | |
 | sg_breakfast_cereals | ⏳ LLM Pass 1 complete, Pass 2 partial (83.9% GMV) | SKU-080151–080422; see sg_breakfast_cereals.md for NULL-coverage follow-up scope |
@@ -77,7 +77,7 @@ Status section for what this means for a session picking up the next ID category
 | sg_baby_accessories | ⏳ Keyword only | |
 | sg_vitamin_mineral_health_supplements | ⏳ Keyword only | |
 
-| **Total SG:** 2/23 LLM complete (sg_toothpaste, sg_coffee) — keyword seed provides ~50–70% GMV coverage for the rest
+| **Total SG:** 3/23 LLM complete (sg_toothpaste, sg_coffee, sg_carbonated_drink) — keyword seed provides ~50–70% GMV coverage for the rest
 
 ---
 
@@ -151,3 +151,5 @@ Status section for what this means for a session picking up the next ID category
 | SKU-100346–102345 | shopee_id_makeup_face (concurrent session, not this run) | ACTIVE |
 | SKU-102346–102519 | shopee_sg_coffee LLM P2 tail catch-alls | ACTIVE |
 | SKU-102520–103845 | shopee_sg_coffee supplemental block, unused remainder | ACTIVE |
+| SKU-110406–110728 | shopee_sg_carbonated_drink LLM P1 (110406–110490) + P2 (110491–110728) | ACTIVE |
+| SKU-110729–112405 | shopee_sg_carbonated_drink supplemental block, unused remainder | ACTIVE |
