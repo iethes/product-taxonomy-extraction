@@ -173,6 +173,10 @@ ORDER BY gmv DESC;        -- highest-GMV stubs first → fix these first
 
 ### D4 — Size Coverage
 
+Since 2026-07-22, `script/targeted_qa_fix.sh`'s Tier 1 sweep runs this check automatically (`null_size` flag)
+— found via product `16254994627`, whose image-visible 400ml size was never extracted; this query previously
+existed only as a manual snippet here, the same gap D5's pack-count check had before the prior round.
+
 ```sql
 -- In-scope LLM entries with NULL size that are NOT legitimately multi-size
 SELECT pt.taxonomy_id, pt.canonical_name, SUM(u.gmv_monthly) gmv
