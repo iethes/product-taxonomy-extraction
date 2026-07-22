@@ -9,9 +9,9 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress |
-| LLM Pass 2 | ⏳ In progress |
-| GMV Coverage | TBD — measured after this run |
+| LLM Pass 1 | ✅ Complete — 373 entries, 382 official-store products (SKU-114606–114978) |
+| LLM Pass 2 | ✅ Complete — 664 new entries + 1,049 reused, 4,970 products (SKU-114979–115642) |
+| GMV Coverage | 90.99% (month 2026-06) |
 | Last run | 2026-07-22 |
 | Current MAX taxonomy_id (before this run) | SKU-114605 (ceiling at claim time — had moved from SKU-110405 seen during earlier research to SKU-114605 by claim time; a parallel session claimed a block in between, confirming why the atomic claim exists) |
 
@@ -186,6 +186,10 @@ NIQ category by mislabeling; non-alcoholic 0.0 "mocktail" mixers unless they are
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-22 | Initial (this run) | First LLM pass; 111-brand 95% scope (vs. a naive top-20 snapshot that would only cover ~26% GMV) | Full brand list computed via canonical brand_id ranking, GWP-zeroed |
+| 2026-07-22 | Pass 1 | Official-store allowlist (5 parent-conglomerate stores, 382 products) vision/text-extracted | 373 taxonomy entries created SKU-114606–114978; 2 new brand_dict entries (Camino Real BRD-SG-13396, Toki BRD-SG-13397) for real brands missing from brand_dict |
+| 2026-07-22 | Pass 2 | Bulk SQL brand-name regex matching found 2 garbage `brand_dict` entries causing false-positive matches: `BRD-TH-00448` "Deal" matched any sku_name containing the word "deal" (~28 unrelated products); `BRD-SG-09857` "Famous" was a truncated duplicate of the real `BRD-SG-04373` "The Famous Grouse" | Excluded "Deal" from matching (28 products left unmapped, ~$2.1K GMV, real brand unclear from text alone); relabeled "Famous" matches to `BRD-SG-04373` (41 products, all genuinely Famous Grouse) |
+| 2026-07-22 | Pass 2 | Bulk-routed 4,970 unmapped products: 1,040 matched into existing Pass 1 entries via product_line keyword overlap; 3,930 grouped into 664 new brand+size catch-all entries (product_line intentionally NULL — bulk/coverage-first routing per headless-runbook.md, not a per-product line-text extraction) | SKU-114979–115642 minted; GMV coverage 74.37% (Pass 1 only) → 90.99% (post Pass 2) |
+| 2026-07-22 | QA gate self-check | `structured_fields_missing_pct` = 63% (603/951 non-multi-size LLM entries have NULL `product_line`), exceeding the 50% gate threshold — driven entirely by Pass 2's 664 bulk brand+size catch-alls (by design; Pass 1's 373 entries are only 22/373 ≈ 6% NULL). Placeholder-leak gate showed 485 hits but all trace to 17 pre-existing `HUMAN`-source SKU-002xxx legacy keyword-seed entries with "(all variants)" naming predating this session — 0 when scoped to this session's `source='LLM'` rows. | Not fixed this session — per headless-runbook.md's explicit Full Rebuild design ("priority is coverage, not precision... per-row quality... belongs to targeted_qa_fix.sh, scoped by GMV impact"), decomposing the 664 catch-alls into real product lines is left as follow-up work, prioritized by GMV. |
 
 ---
 
@@ -210,6 +214,6 @@ future `targeted_qa_fix.sh` runs against this category.)_
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | TBD — this run | Pass 1 + Pass 2 |
-| HUMAN | 945 | Retained; not deleted by this session per headless-runbook.md (wrapper's job, not this session's) |
-| NULL (unmapped) | TBD | Below GMV scope or out-of-category |
+| LLM | 5,352 | Pass 1 (382) + Pass 2 (4,970) |
+| HUMAN | 945 | Retained; not deleted by this session per headless-runbook.md (wrapper's job, not this session's); 152 products now have both a HUMAN and LLM row (expected pre-cleanup coexistence, not yet swept) |
+| NULL (unmapped) | 7,269 | Below GMV scope or out-of-category; GMV coverage 90.99% |
