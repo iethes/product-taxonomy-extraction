@@ -111,6 +111,7 @@ build_auto_discovery_prompt() {
   local table="$1"
   local category_file="$2"
   local block_size="${3:-200}"
+  local gate_report="${4:-}"
   local slot_offset=$((block_size - 1))
   cat <<PROMPT
 Automated Taxonomy Review session for ${table}. No '## Targeted QA Fix Brief' section with real content
@@ -142,6 +143,26 @@ JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = p
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
 WHERE m.master_table = '${table}'
   AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
+
+STEP 1B — Pre-fix QA gate report (already run before this session):
+${gate_report}
+
+The gates above split into two classes. For any FAILing gate in this list — placeholder-leak,
+structured-fields NULL%, 'all variant/size' name, canonical_name fields, garbled brand text — treat every row
+it flags as an automatic candidate needing a fix, the same way a Tier 1 SQL hit below does:
+no LLM judgment needed to detect it, only to decide and apply the correct fix (a gate can still
+false-positive — e.g. the 'all variant/size' gate flagging legitimate text like "All Skin Types" —
+sanity-check before applying, don't blind-apply). Get the actual affected rows by adapting that gate's own
+query from docs/headless-runbook.md's QA-gate-as-code section (drop the outer COUNT(*), select the
+underlying columns instead) — do not guess which rows failed from the count alone.
+
+For any FAILing gate in this list instead — dual-mapped (LLM), HUMAN+LLM coexistence, duplicate product_id,
+duplicate product+taxon — do NOT attempt a fix: every one of these can only be resolved by deleting or
+re-mapping a product_taxonomy_map row, and this session never deletes an existing row (STEP 7). Record the
+gate name and count in findings instead, flagged as needing a deletion-authorized session. Note also: the
+post-fix independent qa_report.sh re-check (STEP 10) re-runs these same gates — if one is failing here, it
+will fail there too regardless of how well this session's fixes go, so a FAILED_QA outcome driven by a gate
+this session was never able to touch is expected, not a sign the session did anything wrong.
 
 STEP 2 — Tier 1: run this SQL sweep over that same worklist to flag mechanical defects cheaply, before
 spending any LLM judgment. canonical_field_mismatch mirrors script/qa_report.sh's independent

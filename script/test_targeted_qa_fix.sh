@@ -128,6 +128,21 @@ echo "$prompt" | grep -q "product type genuinely matches" || fail "STEP 3 must r
 echo "$prompt" | grep -q "brand_id resolves to BRD-UNDEFINED/BRD-UNBRANDED while canonical_name clearly states a real" || fail "STEP 4 must branch wrong_field_order's fix between reordering text and correcting brand_id"
 echo "PASS: build_auto_discovery_prompt"
 
+# --- build_auto_discovery_prompt: gate_report parameter (STEP 1B, fix-direction) ---
+prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "docs/categories/th_suncare.md" "200" "[FAIL] garbled brand text:       4")
+echo "$prompt" | grep -q "STEP 1B" || fail "build_auto_discovery_prompt should insert a STEP 1B pre-fix gate report block"
+echo "$prompt" | grep -qF "[FAIL] garbled brand text:       4" || fail "build_auto_discovery_prompt must interpolate the passed gate_report verbatim"
+for gate in "placeholder-leak" "structured-fields NULL%" "'all variant/size' name" "canonical_name fields" "garbled brand text"; do
+  echo "$prompt" | grep -qF "$gate" || fail "build_auto_discovery_prompt STEP 1B must name entry-level gate: $gate"
+done
+echo "$prompt" | grep -q "no LLM judgment needed to detect it, only to decide and apply the correct fix" || fail "STEP 1B must give entry-level gates fix-direction language"
+for gate in "dual-mapped (LLM)" "HUMAN+LLM coexistence" "duplicate product_id" "duplicate product+taxon"; do
+  echo "$prompt" | grep -qF "$gate" || fail "build_auto_discovery_prompt STEP 1B must name map-level gate: $gate"
+done
+echo "$prompt" | grep -q "do NOT attempt a fix" || fail "STEP 1B must mark map-level gates report-only"
+echo "$prompt" | grep -q "flagged as needing a deletion-authorized session" || fail "STEP 1B must flag map-level failures for a deletion-authorized session"
+echo "PASS: build_auto_discovery_prompt gate_report (STEP 1B)"
+
 # --- decide_next_step ---
 [[ "$(decide_next_step '{"status":"blocked","blockers":["x"]}')" == "BLOCKED" ]] || fail "blocked status"
 [[ "$(decide_next_step '{"status":"failed"}')" == "MARK_FAILED" ]] || fail "failed status"
