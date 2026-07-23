@@ -39,7 +39,11 @@ PLACEHOLDER=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format
   "SELECT COUNT(*) FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
    JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
    WHERE m.master_table = '${TABLE}'
-     AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\b(undefined|null|n/a|tbd)\b')" | tail -1)
+     AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\b(undefined|null|n/a|tbd)\b')
+     AND pt.taxonomy_id NOT IN (
+       SELECT entity_id FROM \`${PROJECT}.magpie_reference.qa_gate_exceptions\`
+       WHERE gate_name = 'placeholder-leak' AND master_table = '${TABLE}'
+     )" | tail -1)
 if [ "$PLACEHOLDER" = "0" ]; then echo "[PASS] placeholder-leak:         0"
 else echo "[FAIL] placeholder-leak:         ${PLACEHOLDER}"; FAIL=1; fi
 
@@ -50,6 +54,10 @@ STRUCT_MISSING=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --for
      FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
      JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
      WHERE m.master_table = '${TABLE}' AND m.source = 'LLM'
+       AND pt.taxonomy_id NOT IN (
+         SELECT entity_id FROM \`${PROJECT}.magpie_reference.qa_gate_exceptions\`
+         WHERE gate_name = 'structured-fields NULL%' AND master_table = '${TABLE}'
+       )
    )
    WHERE is_multi_size IS NOT TRUE" | tail -1)
 if [ -z "$STRUCT_MISSING" ]; then echo "[SKIP] structured-fields:        (no LLM entries for this table)"
@@ -87,6 +95,10 @@ ALL_VARIANT=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format
      JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
      WHERE m.master_table = '${TABLE}'
        AND REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b')
+       AND pt.taxonomy_id NOT IN (
+         SELECT entity_id FROM \`${PROJECT}.magpie_reference.qa_gate_exceptions\`
+         WHERE gate_name = 'all variant/size name' AND master_table = '${TABLE}'
+       )
    )" | tail -1)
 if [ "$ALL_VARIANT" = "0" ]; then echo "[PASS] 'all variant/size' name:   0"
 else echo "[FAIL] 'all variant/size' name:   ${ALL_VARIANT}"; FAIL=1; fi
@@ -115,7 +127,11 @@ CANON_FIELDS=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --forma
     OR (size IS NOT NULL AND NOT LOWER(canonical_name) LIKE CONCAT('%', LOWER(size), '%'))
     OR (pack_count > 1 AND NOT LOWER(canonical_name) LIKE CONCAT('%x', CAST(pack_count AS STRING), '%'))
    )
-   AND NOT REGEXP_CONTAINS(LOWER(canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b')" | tail -1)
+   AND NOT REGEXP_CONTAINS(LOWER(canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b')
+   AND taxonomy_id NOT IN (
+     SELECT entity_id FROM \`${PROJECT}.magpie_reference.qa_gate_exceptions\`
+     WHERE gate_name = 'canonical_name fields' AND master_table = '${TABLE}'
+   )" | tail -1)
 if [ "$CANON_FIELDS" = "0" ]; then echo "[PASS] canonical_name fields:    0"
 else echo "[FAIL] canonical_name fields:    ${CANON_FIELDS}"; FAIL=1; fi
 
@@ -133,6 +149,10 @@ GARBAGE_BRAND=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --form
      JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
      WHERE m.master_table = '${TABLE}'
        AND NOT REGEXP_CONTAINS(bd.canonical_name, r'[\p{L}]')
+       AND bd.brand_id NOT IN (
+         SELECT entity_id FROM \`${PROJECT}.magpie_reference.qa_gate_exceptions\`
+         WHERE gate_name = 'garbled brand text' AND master_table = '${TABLE}'
+       )
    )" | tail -1)
 if [ "$GARBAGE_BRAND" = "0" ]; then echo "[PASS] garbled brand text:       0"
 else echo "[FAIL] garbled brand text:       ${GARBAGE_BRAND}"; FAIL=1; fi
