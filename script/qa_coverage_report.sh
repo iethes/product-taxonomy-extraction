@@ -7,6 +7,9 @@ set -euo pipefail
 # 'confident'). Standalone-runnable for any table at any time; also called by targeted_qa_fix.sh at the end
 # of every run via an EXIT trap, regardless of that run's outcome. See
 # docs/superpowers/specs/2026-07-23-qa-fix-gate-direction-and-coverage-design.md.
+# A freshly-fixed row's _meta has no review_confidence key at all (just {"is_reviewed": false}), distinct
+# from a row that has been genuinely reviewed at least once (always has a review_confidence key per STEP 5) —
+# reported as its own "fixed pending recheck" bucket so real fix throughput isn't hidden inside "unconfident".
 
 TABLE="${1:?Usage: $0 <master_table>}"
 PROJECT="sincere-hearth-273704"
@@ -23,15 +26,17 @@ bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
    SELECT
      COUNT(*) AS total,
      COUNTIF(_meta IS NULL) AS never_reviewed,
-     COUNTIF(_meta IS NOT NULL AND IFNULL(JSON_VALUE(_meta, '\$.review_confidence'), 'unreviewed') != 'confident') AS unconfident,
-     COUNTIF(_meta IS NOT NULL AND JSON_VALUE(_meta, '\$.review_confidence') = 'confident') AS confident
+     COUNTIF(_meta IS NOT NULL AND JSON_VALUE(_meta, '\$.review_confidence') IS NULL) AS fixed_pending_recheck,
+     COUNTIF(JSON_VALUE(_meta, '\$.review_confidence') = 'unconfident') AS unconfident,
+     COUNTIF(JSON_VALUE(_meta, '\$.review_confidence') = 'confident') AS confident
    FROM distinct_entries" | tail -1 | \
-while IFS=',' read -r total never_reviewed unconfident confident; do
-  pending=$((never_reviewed + unconfident))
+while IFS=',' read -r total never_reviewed fixed_pending_recheck unconfident confident; do
+  pending=$((never_reviewed + fixed_pending_recheck + unconfident))
   pct=0
   [ "$total" -gt 0 ] && pct=$(( 100 * pending / total ))
-  echo "Pending QA (never-reviewed or unconfident): ${pending} / ${total} (${pct}%)"
-  echo "  never reviewed: ${never_reviewed}"
-  echo "  unconfident:    ${unconfident}"
-  echo "  confident:      ${confident}"
+  echo "Pending QA (never-reviewed, fixed-pending-recheck, or unconfident): ${pending} / ${total} (${pct}%)"
+  echo "  never reviewed:        ${never_reviewed}"
+  echo "  fixed pending recheck: ${fixed_pending_recheck}"
+  echo "  unconfident:           ${unconfident}"
+  echo "  confident:              ${confident}"
 done
