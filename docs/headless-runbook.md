@@ -285,7 +285,11 @@ close a live coverage gap.
    failures (dual-mapped, HUMAN+LLM coexistence, duplicate product_id, duplicate product+taxon) are
    report-only, since this scenario never deletes a `product_taxonomy_map` row. See
    [docs/superpowers/specs/2026-07-23-qa-fix-gate-direction-and-coverage-design.md](superpowers/specs/2026-07-23-qa-fix-gate-direction-and-coverage-design.md)
-   for the full mechanics.
+   for the full mechanics. Since
+   [docs/superpowers/specs/2026-07-23-qa-fix-throughput-diagnosis-design.md](superpowers/specs/2026-07-23-qa-fix-throughput-diagnosis-design.md),
+   a confirmed permanent false positive on an entry-level gate (e.g. an all-numeral brand tripping the
+   letters-only `garbled brand text` check) can be recorded once in `magpie_reference.qa_gate_exceptions` so
+   later sessions stop re-verifying it every run.
 3. Invoke `claude -p` with the claimed range and the specific fix list (pack-count corrections, wrong-size
    reroutes, bundle tagging — see the Notion doc's Example C pattern), `--max-turns 30`.
 4. Run QA gates (Shared mechanics § QA-gate-as-code) scoped to `master_table = @table` — the gate queries
@@ -298,7 +302,12 @@ close a live coverage gap.
    ```
 7. Regardless of outcome (blocked, failed, noop, or refreshed), run `qa_coverage_report.sh @table` and report
    the pending-review count — this always fires, via an `EXIT` trap in `script/targeted_qa_fix.sh`, not a
-   conditional step an operator has to remember to run.
+   conditional step an operator has to remember to run. Since
+   [docs/superpowers/specs/2026-07-23-qa-fix-throughput-diagnosis-design.md](superpowers/specs/2026-07-23-qa-fix-throughput-diagnosis-design.md),
+   this report splits into four buckets, not three — a freshly-fixed row awaiting its next re-review
+   ("fixed pending recheck") is reported separately from a row that has been genuinely reviewed and still
+   isn't confident, so real fix throughput within a session is visible instead of hidden inside a single
+   "unconfident" number.
 
 ## Scenario: Full Rebuild
 
