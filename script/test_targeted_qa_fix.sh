@@ -109,54 +109,54 @@ echo "PASS: append_qa_history_row missing heading"
 
 # --- build_prompt ---
 prompt=$(build_prompt "shopee_th_detergent" "docs/categories/th_detergent.md")
-echo "$prompt" | grep -q "shopee_th_detergent" || fail "build_prompt should mention the table name"
-echo "$prompt" | grep -q "docs/categories/th_detergent.md" || fail "build_prompt should mention the category file path"
-echo "$prompt" | grep -q "'targeted_qa_fix'" || fail "build_prompt should claim a targeted_qa_fix block"
-echo "$prompt" | grep -q "status='blocked'" || fail "build_prompt should document the blocked outcome"
-echo "$prompt" | grep -q "Do NOT run the universe refresh yourself" || fail "build_prompt should forbid self-refresh"
-echo "$prompt" | grep -q "never creates coverage for products with" || fail "build_prompt must state this script never creates coverage for taxonomy_id IS NULL products"
-echo "$prompt" | grep -q "headless_taxonomy.sh" || fail "build_prompt should point NULL-coverage work at headless_taxonomy.sh instead"
-echo "$prompt" | grep -q "qa_history_entry" || fail "build_prompt output schema must include qa_history_entry"
-echo "$prompt" | grep -q "Do not edit docs/categories/th_detergent.md or run git yourself" || fail "build_prompt STEP 6 must not have the agent edit the file or commit directly"
+grep -q "shopee_th_detergent" <<< "$prompt" || fail "build_prompt should mention the table name"
+grep -q "docs/categories/th_detergent.md" <<< "$prompt" || fail "build_prompt should mention the category file path"
+grep -q "'targeted_qa_fix'" <<< "$prompt" || fail "build_prompt should claim a targeted_qa_fix block"
+grep -q "status='blocked'" <<< "$prompt" || fail "build_prompt should document the blocked outcome"
+grep -q "Do NOT run the universe refresh yourself" <<< "$prompt" || fail "build_prompt should forbid self-refresh"
+grep -q "never creates coverage for products with" <<< "$prompt" || fail "build_prompt must state this script never creates coverage for taxonomy_id IS NULL products"
+grep -q "headless_taxonomy.sh" <<< "$prompt" || fail "build_prompt should point NULL-coverage work at headless_taxonomy.sh instead"
+grep -q "qa_history_entry" <<< "$prompt" || fail "build_prompt output schema must include qa_history_entry"
+grep -q "Do not edit docs/categories/th_detergent.md or run git yourself" <<< "$prompt" || fail "build_prompt STEP 6 must not have the agent edit the file or commit directly"
 echo "PASS: build_prompt"
 
 # --- build_prompt: gate_report parameter (STEP 1B) ---
 prompt=$(build_prompt "shopee_th_detergent" "docs/categories/th_detergent.md" "200" "[FAIL] canonical_name fields:    5")
-echo "$prompt" | grep -q "STEP 1B" || fail "build_prompt should insert a STEP 1B pre-fix gate report block"
-echo "$prompt" | grep -qF "[FAIL] canonical_name fields:    5" || fail "build_prompt must interpolate the passed gate_report verbatim"
-echo "$prompt" | grep -q "informational only" || fail "build_prompt's STEP 1B must frame the gate report as informational, not scope-expanding"
-echo "$prompt" | grep -q "this session does exactly what the Brief says, nothing more" || fail "build_prompt's STEP 1B must not let gate failures expand Brief-mode scope"
+grep -q "STEP 1B" <<< "$prompt" || fail "build_prompt should insert a STEP 1B pre-fix gate report block"
+grep -qF "[FAIL] canonical_name fields:    5" <<< "$prompt" || fail "build_prompt must interpolate the passed gate_report verbatim"
+grep -q "informational only" <<< "$prompt" || fail "build_prompt's STEP 1B must frame the gate report as informational, not scope-expanding"
+grep -q "this session does exactly what the Brief says, nothing more" <<< "$prompt" || fail "build_prompt's STEP 1B must not let gate failures expand Brief-mode scope"
 echo "PASS: build_prompt gate_report (STEP 1B)"
 
 # --- build_auto_discovery_prompt ---
 prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "docs/categories/th_suncare.md" "200")
-echo "$prompt" | grep -q "shopee_th_suncare" || fail "build_auto_discovery_prompt should mention the table"
-echo "$prompt" | grep -q "docs/categories/th_suncare.md" || fail "build_auto_discovery_prompt should mention the category file"
-echo "$prompt" | grep -q "review_confidence" || fail "build_auto_discovery_prompt must reference the _meta review_confidence field"
-echo "$prompt" | grep -q "all variants?|all sizes?" || fail "build_auto_discovery_prompt's Tier 1 sweep must include the extended stub-leak regex"
-echo "$prompt" | grep -q "docs/llm-extraction-rules.md" || fail "build_auto_discovery_prompt must instruct reading the extraction rules (incl. new §11)"
-echo "$prompt" | grep -q "precision is this script's job, not headless_taxonomy.sh's" || fail "build_auto_discovery_prompt must state the precision-first priority"
-echo "$prompt" | grep -q "'targeted_qa_fix'" || fail "build_auto_discovery_prompt should claim a targeted_qa_fix-scenario SKU block when minting"
-echo "$prompt" | grep -q "status='blocked'" || fail "build_auto_discovery_prompt should document the blocked outcome"
-echo "$prompt" | grep -q "Do NOT run the universe refresh yourself" || fail "build_auto_discovery_prompt must forbid self-refresh"
+grep -q "shopee_th_suncare" <<< "$prompt" || fail "build_auto_discovery_prompt should mention the table"
+grep -q "docs/categories/th_suncare.md" <<< "$prompt" || fail "build_auto_discovery_prompt should mention the category file"
+grep -q "review_confidence" <<< "$prompt" || fail "build_auto_discovery_prompt must reference the _meta review_confidence field"
+grep -q "all variants?|all sizes?" <<< "$prompt" || fail "build_auto_discovery_prompt's Tier 1 sweep must include the extended stub-leak regex"
+grep -q "docs/llm-extraction-rules.md" <<< "$prompt" || fail "build_auto_discovery_prompt must instruct reading the extraction rules (incl. new §11)"
+grep -q "precision is this script's job, not headless_taxonomy.sh's" <<< "$prompt" || fail "build_auto_discovery_prompt must state the precision-first priority"
+grep -q "'targeted_qa_fix'" <<< "$prompt" || fail "build_auto_discovery_prompt should claim a targeted_qa_fix-scenario SKU block when minting"
+grep -q "status='blocked'" <<< "$prompt" || fail "build_auto_discovery_prompt should document the blocked outcome"
+grep -q "Do NOT run the universe refresh yourself" <<< "$prompt" || fail "build_auto_discovery_prompt must forbid self-refresh"
 # Found live (2026-07-21, shopee_th_suncare run): qa_report.sh's independent "canonical_name fields" gate
 # failed 81 rows post-run — a defect class (canonical_name missing a product_line/sub_line/variant/size/xN
 # word) that Tier 1's sweep never checked for, so auto-discovery marked things "reviewed" that still failed
 # the wrapper's own gate. Same run also only reviewed 133 of ~5,812 rows in one session (one UPDATE per
 # taxonomy_id for _meta bookkeeping was the bottleneck) - fixed by bulk-marking the whole clean set at once.
-echo "$prompt" | grep -q "canonical_field_mismatch" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the canonical_name/structured-field consistency check"
-echo "$prompt" | grep -q "not one UPDATE per row" || fail "build_auto_discovery_prompt's STEP 5 must bulk-mark Tier-2-judged rows in one UPDATE, not one per taxonomy_id"
-echo "$prompt" | grep -q "never bulk-mark a Tier-1-clean row you" || fail "build_auto_discovery_prompt must forbid fabricating a review for rows that were never actually judged"
-echo "$prompt" | grep -q "bounded, GMV-prioritized sample" || fail "build_auto_discovery_prompt's Tier 2 must be an explicitly bounded sample, not implicitly exhaustive"
+grep -q "canonical_field_mismatch" <<< "$prompt" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the canonical_name/structured-field consistency check"
+grep -q "not one UPDATE per row" <<< "$prompt" || fail "build_auto_discovery_prompt's STEP 5 must bulk-mark Tier-2-judged rows in one UPDATE, not one per taxonomy_id"
+grep -q "never bulk-mark a Tier-1-clean row you" <<< "$prompt" || fail "build_auto_discovery_prompt must forbid fabricating a review for rows that were never actually judged"
+grep -q "bounded, GMV-prioritized sample" <<< "$prompt" || fail "build_auto_discovery_prompt's Tier 2 must be an explicitly bounded sample, not implicitly exhaustive"
 # Found live (2026-07-22): "Multiple Sizes"/"Multiple Variants" was an earlier th_softdrink precedent
 # (paired with is_multi_size/is_multi_variant=TRUE) but is now banned unconditionally, same as
 # "All variant"/"All size" -- the is_multi_size/is_multi_variant column already conveys that semantic,
 # so the text itself is the defect regardless of the flag. Also product 16254994627's "Buy 1 Get 1"
 # sku_name was missed by the pack-count-promo check because that check (quality-standards.md D5) was
 # never actually wired into any automated gate before now.
-echo "$prompt" | grep -q "multiple variants?|multiple sizes?" || fail "build_auto_discovery_prompt's stub_leak check must also catch 'multiple variants/sizes' text unconditionally"
-echo "$prompt" | grep -qF 'buy\s*\d+\s*get\s*\d+' || fail "build_auto_discovery_prompt must check for English 'buy N get M' pack-count promo phrasing"
-echo "$prompt" | grep -q "most .ฟรี./.free. hits are GWP" || fail "the pack-count-promo check must carry the GWP-confirmation caveat, not auto-assume wrong"
+grep -q "multiple variants?|multiple sizes?" <<< "$prompt" || fail "build_auto_discovery_prompt's stub_leak check must also catch 'multiple variants/sizes' text unconditionally"
+grep -qF 'buy\s*\d+\s*get\s*\d+' <<< "$prompt" || fail "build_auto_discovery_prompt must check for English 'buy N get M' pack-count promo phrasing"
+grep -q "most .ฟรี./.free. hits are GWP" <<< "$prompt" || fail "the pack-count-promo check must carry the GWP-confirmation caveat, not auto-assume wrong"
 # Round 3 (2026-07-22 stakeholder review): product 22501764599 was a shampoo mapped to a body-wash entry
 # (type-conflict routing, not a naming defect -- Tier 2 judgment must explicitly check this, no new SQL
 # heuristic per explicit direction, since a keyword filter risks silently dropping exactly what it should
@@ -165,30 +165,30 @@ echo "$prompt" | grep -q "most .ฟรี./.free. hits are GWP" || fail "the pac
 # 26143837772 had canonical_name correctly saying "Enfant" while brand_id resolved to BRD-UNDEFINED --
 # already caught by wrong_field_order, but the existing fix guidance assumed the wrong root cause (reorder
 # text) instead of the real one (fix brand_id).
-echo "$prompt" | grep -q "null_size" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the D4 size-coverage check"
-echo "$prompt" | grep -qF "r'[\p{L}]'" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the garbage_brand check"
-echo "$prompt" | grep -q "product type genuinely matches" || fail "STEP 3 must require an explicit type-conflict check, not just naming/structure judgment"
-echo "$prompt" | grep -q "brand_id resolves to BRD-UNDEFINED/BRD-UNBRANDED while canonical_name clearly states a real" || fail "STEP 4 must branch wrong_field_order's fix between reordering text and correcting brand_id"
-echo "$prompt" | grep -q "qa_history_entry" || fail "build_auto_discovery_prompt output schema must include qa_history_entry"
-echo "$prompt" | grep -q "Do not edit docs/categories/th_suncare.md or run git yourself" || fail "build_auto_discovery_prompt STEP 9 must not have the agent edit the file or commit directly"
+grep -q "null_size" <<< "$prompt" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the D4 size-coverage check"
+grep -qF "r'[\p{L}]'" <<< "$prompt" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the garbage_brand check"
+grep -q "product type genuinely matches" <<< "$prompt" || fail "STEP 3 must require an explicit type-conflict check, not just naming/structure judgment"
+grep -q "brand_id resolves to BRD-UNDEFINED/BRD-UNBRANDED while canonical_name clearly states a real" <<< "$prompt" || fail "STEP 4 must branch wrong_field_order's fix between reordering text and correcting brand_id"
+grep -q "qa_history_entry" <<< "$prompt" || fail "build_auto_discovery_prompt output schema must include qa_history_entry"
+grep -q "Do not edit docs/categories/th_suncare.md or run git yourself" <<< "$prompt" || fail "build_auto_discovery_prompt STEP 9 must not have the agent edit the file or commit directly"
 echo "PASS: build_auto_discovery_prompt"
 
 # --- build_auto_discovery_prompt: gate_report parameter (STEP 1B, fix-direction) ---
 prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "docs/categories/th_suncare.md" "200" "[FAIL] garbled brand text:       4")
-echo "$prompt" | grep -q "STEP 1B" || fail "build_auto_discovery_prompt should insert a STEP 1B pre-fix gate report block"
-echo "$prompt" | grep -qF "[FAIL] garbled brand text:       4" || fail "build_auto_discovery_prompt must interpolate the passed gate_report verbatim"
+grep -q "STEP 1B" <<< "$prompt" || fail "build_auto_discovery_prompt should insert a STEP 1B pre-fix gate report block"
+grep -qF "[FAIL] garbled brand text:       4" <<< "$prompt" || fail "build_auto_discovery_prompt must interpolate the passed gate_report verbatim"
 for gate in "placeholder-leak" "structured-fields NULL%" "'all variant/size' name" "canonical_name fields" "garbled brand text"; do
-  echo "$prompt" | grep -qF "$gate" || fail "build_auto_discovery_prompt STEP 1B must name entry-level gate: $gate"
+  grep -qF "$gate" <<< "$prompt" || fail "build_auto_discovery_prompt STEP 1B must name entry-level gate: $gate"
 done
-echo "$prompt" | grep -q "no LLM judgment needed to detect it, only to decide and apply the correct fix" || fail "STEP 1B must give entry-level gates fix-direction language"
+grep -q "no LLM judgment needed to detect it, only to decide and apply the correct fix" <<< "$prompt" || fail "STEP 1B must give entry-level gates fix-direction language"
 for gate in "dual-mapped (LLM)" "HUMAN+LLM coexistence" "duplicate product_id" "duplicate product+taxon"; do
-  echo "$prompt" | grep -qF "$gate" || fail "build_auto_discovery_prompt STEP 1B must name map-level gate: $gate"
+  grep -qF "$gate" <<< "$prompt" || fail "build_auto_discovery_prompt STEP 1B must name map-level gate: $gate"
 done
-echo "$prompt" | grep -q "do NOT attempt a fix" || fail "STEP 1B must mark map-level gates report-only"
-echo "$prompt" | grep -q "flagged as needing a deletion-authorized session" || fail "STEP 1B must flag map-level failures for a deletion-authorized session"
-echo "$prompt" | grep -q "qa_gate_exceptions" || fail "STEP 1B must have the agent check qa_gate_exceptions before re-verifying a gate"
-echo "$prompt" | grep -q "skip re-verifying it entirely" || fail "STEP 1B must tell the agent to skip rows already covered by a confirmed exception"
-echo "$prompt" | grep -q "not enough to close it permanently" || fail "STEP 1B must require more than one confirmation before writing a new exception"
+grep -q "do NOT attempt a fix" <<< "$prompt" || fail "STEP 1B must mark map-level gates report-only"
+grep -q "flagged as needing a deletion-authorized session" <<< "$prompt" || fail "STEP 1B must flag map-level failures for a deletion-authorized session"
+grep -q "qa_gate_exceptions" <<< "$prompt" || fail "STEP 1B must have the agent check qa_gate_exceptions before re-verifying a gate"
+grep -q "skip re-verifying it entirely" <<< "$prompt" || fail "STEP 1B must tell the agent to skip rows already covered by a confirmed exception"
+grep -q "not enough to close it permanently" <<< "$prompt" || fail "STEP 1B must require more than one confirmation before writing a new exception"
 echo "PASS: build_auto_discovery_prompt gate_report (STEP 1B)"
 
 # --- decide_next_step ---
@@ -215,13 +215,13 @@ echo "PASS: decide_next_step"
 
 # --- main(): pre-fix gate capture + coverage EXIT trap wiring ---
 script_src=$(cat script/targeted_qa_fix.sh)
-echo "$script_src" | grep -qF 'gate_report=$(./script/qa_report.sh "$table")' || fail "main() must capture qa_report.sh output before building the prompt"
-echo "$script_src" | grep -qF 'QA_FIX_TABLE="$table"' || fail "main() must set QA_FIX_TABLE as a global for the EXIT trap to see"
-echo "$script_src" | grep -q 'trap.*qa_coverage_report\.sh.*EXIT' || fail "main() must set an EXIT trap invoking qa_coverage_report.sh"
-echo "$script_src" | grep -qF 'build_prompt "$table" "$category_file" "$block_size" "$gate_report"' || fail "brief-mode call site must pass gate_report to build_prompt"
-echo "$script_src" | grep -qF 'build_auto_discovery_prompt "$table" "$category_file" "$block_size" "$gate_report"' || fail "auto-discovery call site must pass gate_report to build_auto_discovery_prompt"
-echo "$script_src" | grep -qF 'qa_history_entry' || fail "main() must read qa_history_entry from result_json"
-echo "$script_src" | grep -q 'append_qa_history_row' || fail "main() must call append_qa_history_row"
+grep -qF 'gate_report=$(./script/qa_report.sh "$table")' <<< "$script_src" || fail "main() must capture qa_report.sh output before building the prompt"
+grep -qF 'QA_FIX_TABLE="$table"' <<< "$script_src" || fail "main() must set QA_FIX_TABLE as a global for the EXIT trap to see"
+grep -q 'trap.*qa_coverage_report\.sh.*EXIT' <<< "$script_src" || fail "main() must set an EXIT trap invoking qa_coverage_report.sh"
+grep -qF 'build_prompt "$table" "$category_file" "$block_size" "$gate_report"' <<< "$script_src" || fail "brief-mode call site must pass gate_report to build_prompt"
+grep -qF 'build_auto_discovery_prompt "$table" "$category_file" "$block_size" "$gate_report"' <<< "$script_src" || fail "auto-discovery call site must pass gate_report to build_auto_discovery_prompt"
+grep -qF 'qa_history_entry' <<< "$script_src" || fail "main() must read qa_history_entry from result_json"
+grep -q 'append_qa_history_row' <<< "$script_src" || fail "main() must call append_qa_history_row"
 echo "PASS: main() gate report capture + coverage trap wiring"
 
 echo "ALL TESTS PASSED"
