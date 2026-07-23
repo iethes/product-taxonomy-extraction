@@ -8,11 +8,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD — measured after this session's writes |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 92.6% (2026-06, 28,860 of 39,343 products mapped, LLM only — no prior HUMAN rows existed) |
 | Last run | 2026-07-23 |
-| Current MAX taxonomy_id (pre-session) | SKU-058455 (per STATUS.md; block claimed atomically below, never trusted from this static number) |
+| Current MAX taxonomy_id | SKU-149173 (149174–149585 unused remainder, available for QA follow-up) |
 
 ---
 
@@ -20,7 +20,10 @@
 
 | Block | Usage |
 |-------|-------|
-| *filled in after atomic claim (STEP 3)* | Full Rebuild, 2,000 slots |
+| SKU-147586–148514 | Pass 1 OFFICIAL (929 entries, text-first extraction from the 1,045-product allowlist) |
+| SKU-148515–149172 | Pass 2 RESELLER — per-(brand, species, food-type) catch-alls (658 entries) |
+| SKU-149173 | Single QA fix (species-mixing split, see QA History) |
+| SKU-149174–149585 | Unused remainder (412 slots) — available for QA follow-up |
 
 ---
 
@@ -361,6 +364,35 @@ miscategorized listing turns up.
 |------|------|---------|------------|
 | 2026-07-23 | Pre-extraction research | 0 existing product_taxonomy_map rows (any source) — genuine first run; STATUS.md's "Keyword only" label was stale | Documented above, not a blocker |
 | 2026-07-23 | Brand scope | `BRD-SG-08876` ("12/+＝") is a known watermark-misread artifact (llm-extraction-rules.md §11 Jul 22 entry), not a real brand | Excluded from Pass 1 allowlist; flagged for Pass 2 routing to product's real brand |
+| 2026-07-23 | Pass 1 build | Live BQ schema for `product_taxonomy_map` differs from `docs/data-dictionary.md`: `confidence` is STRING not FLOAT, and undocumented `source_listing`/`llm_raw` columns exist with an established convention (`pass1_official_store_text_match`, `pass2_bulk_text_match`, `pass2_reseller_bulk_text_match`, etc., verified against `shopee_sg_carbonated_drink`) | Followed live schema + existing `source_listing` convention, not the stale doc |
+| 2026-07-23 | Pass 1 build | ~29 official-store products resolved to `BRD-UNDEFINED` in `product_brand_map` despite selling through a known single/parent-company store with the real brand stated in `sku_name` (e.g. SHEBA products at `CESAR and SHEBA Official Store`) | Brand reassigned via merchant-context + sku_name text detection before taxonomy build, not left as a literal "Undefined" canonical name |
+| 2026-07-23 | QA gate self-check | 1 taxonomy entry (`SKU-147755`, Taste Of The Wild) mixed a genuine "Cat & Dog" dual-species dry-food line with a separate Feline-only recipe product — found via an extra species-mixing check beyond the required gate set (root cause: Pass 2's bulk-match re-derived species from `canonical_name` text via regex, and the Dog-food entry's own line name literally contained the word "Cat") | Split into a new entry `SKU-149173` for the cat-only product; re-pointed its map row |
+| 2026-07-23 | QA gate self-check | ~20 Pass 2 catch-all entries (grouped by brand+species+food-type) mix wet and dry products where `food_form` couldn't be confidently text-detected at grouping time (mostly multi-choice/assortment reseller listings, e.g. "Cat Dry Food \| Cat Wet Food \| Cat Treat" promo bundles) — a real G3-class imprecision, not caught by the required 4-check gate set (headless-runbook's `run_qa_gates()` doesn't implement a G3 check) | Left as-is per Full Rebuild's coverage-over-precision mandate; flagged here as a concrete worklist for `targeted_qa_fix.sh`'s next pass — query: catch-all entries (`is_multi_size=TRUE`, NULL `product_line`) whose mapped products' `sku_name` contains both wet- and dry-type keywords |
+
+**Final scorecard (2026-07-23, month 2026-06):**
+```
+In-scope worklist: 1,045 Pass 1 (official-store allowlist) + 30,342 Pass 2 (remaining 156-scoped-brand products)
+Taxonomy entries created: 1,588 (SKU-147586–149173)
+Map rows written: 28,860 (1,043 pass1_official_store_text_match + 3,389 pass2_bulk_text_match +
+                           24,428 pass2_reseller_bulk_text_match)
+GMV coverage (June 2026): 92.6% (28,860 / 39,343 products) — exceeds §6's "Total ≥85%" Pass 2 target
+
+GATES (required 4-check set, docs/headless-runbook.md QA-gate-as-code)
+  G1 dual-mapped (source=LLM) ... 0  ✅
+  G2 HUMAN+LLM coexistence ...... 0  ✅ (no HUMAN rows exist for this table)
+  Placeholder-leak canonical .... 0  ✅
+  Structured-fields NULL% ....... 1% ✅ (well under 50% threshold; 5 genuine no-line-text P1 entries)
+
+ADDITIONAL CHECKS (not in the required set, run for extra diligence)
+  G5 provenance (meta_agent/source NULL) ... 0  ✅
+  Species-mixing within one taxonomy_id .... 0  ✅ (1 found and fixed: SKU-147755 → SKU-149173 split)
+  Wet/dry-mixing within one taxonomy_id .... ~20 catch-all entries flagged, NOT fixed this session — see QA History
+```
+
+Decision: shipped as `partial` — coverage and required gates are clean, but the wet/dry catch-all imprecision
+above is a known, documented gap for the next `targeted_qa_fix.sh` pass. No universe refresh was run this
+session (not in scope for this task — see `docs/headless-runbook.md`'s Full Rebuild steps 7–8, which this
+session's instructions did not include).
 
 ---
 
@@ -372,10 +404,10 @@ miscategorized listing turns up.
 
 ---
 
-## Map Row Counts (as of last run)
+## Map Row Counts (as of last run, 2026-07-23)
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | TBD | Filled in after this session's Pass 1 + Pass 2 |
+| LLM | 28,860 | Pass 1 (1,043) + Pass 2 (3,389 bulk-matched to Pass 1 entries + 24,428 per-brand catch-all routed) |
 | HUMAN | 0 | No pre-existing keyword seed for this category |
-| NULL (unmapped) | TBD | Below GMV scope or out-of-category |
+| NULL (unmapped) | 10,483 | 39,343 June-2026 products total; remainder is below the 156-brand GMV scope, `BRD-UNDEFINED` products with no text-detectable brand, or genuinely out-of-category listings |
