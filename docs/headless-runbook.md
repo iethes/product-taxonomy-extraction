@@ -279,16 +279,26 @@ close a live coverage gap.
 
 1. Claim a ~200-slot block (Shared mechanics § Atomic SKU block claim, `@block_size = 200`, `@scenario =
    'targeted_qa_fix'`).
-2. Invoke `claude -p` with the claimed range and the specific fix list (pack-count corrections, wrong-size
+2. Run `qa_report.sh @table` *before* invoking `claude -p` and pass its output into the prompt as
+   gate-directed scope: entry-level gate failures (placeholder-leak, structured-fields NULL%, 'all
+   variant/size' name, canonical_name fields, garbled brand text) become explicit fix targets; map-level
+   failures (dual-mapped, HUMAN+LLM coexistence, duplicate product_id, duplicate product+taxon) are
+   report-only, since this scenario never deletes a `product_taxonomy_map` row. See
+   [docs/superpowers/specs/2026-07-23-qa-fix-gate-direction-and-coverage-design.md](superpowers/specs/2026-07-23-qa-fix-gate-direction-and-coverage-design.md)
+   for the full mechanics.
+3. Invoke `claude -p` with the claimed range and the specific fix list (pack-count corrections, wrong-size
    reroutes, bundle tagging — see the Notion doc's Example C pattern), `--max-turns 30`.
-3. Run QA gates (Shared mechanics § QA-gate-as-code) scoped to `master_table = @table` — the gate queries
+4. Run QA gates (Shared mechanics § QA-gate-as-code) scoped to `master_table = @table` — the gate queries
    already scope by `master_table`, no change needed for the narrower fix scope.
-4. If gates pass, run universe refresh (Shared mechanics § Universe refresh) for `@table`.
-5. If `claude -p` fails or gates fail, mark the claimed block `FAILED_QA` in `sku_block_registry`:
+5. If gates pass, run universe refresh (Shared mechanics § Universe refresh) for `@table`.
+6. If `claude -p` fails or gates fail, mark the claimed block `FAILED_QA` in `sku_block_registry`:
    ```sql
    UPDATE `sincere-hearth-273704.magpie_reference.sku_block_registry`
    SET status = 'FAILED_QA' WHERE block_start = @claimed_block_start AND master_table = @table;
    ```
+7. Regardless of outcome (blocked, failed, noop, or refreshed), run `qa_coverage_report.sh @table` and report
+   the pending-review count — this always fires, via an `EXIT` trap in `script/targeted_qa_fix.sh`, not a
+   conditional step an operator has to remember to run.
 
 ## Scenario: Full Rebuild
 
