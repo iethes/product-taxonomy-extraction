@@ -165,4 +165,13 @@ prose_wrapped='QA gates all pass. Final wrap-up.
 [[ "$(decide_next_step "$prose_wrapped")" == "GATE_AND_REFRESH" ]] || fail "prose-wrapped JSON should still route to GATE_AND_REFRESH"
 echo "PASS: decide_next_step"
 
+# --- main(): pre-fix gate capture + coverage EXIT trap wiring ---
+script_src=$(cat script/targeted_qa_fix.sh)
+echo "$script_src" | grep -qF 'gate_report=$(./script/qa_report.sh "$table")' || fail "main() must capture qa_report.sh output before building the prompt"
+echo "$script_src" | grep -qF 'QA_FIX_TABLE="$table"' || fail "main() must set QA_FIX_TABLE as a global for the EXIT trap to see"
+echo "$script_src" | grep -q 'trap.*qa_coverage_report\.sh.*EXIT' || fail "main() must set an EXIT trap invoking qa_coverage_report.sh"
+echo "$script_src" | grep -qF 'build_prompt "$table" "$category_file" "$block_size" "$gate_report"' || fail "brief-mode call site must pass gate_report to build_prompt"
+echo "$script_src" | grep -qF 'build_auto_discovery_prompt "$table" "$category_file" "$block_size" "$gate_report"' || fail "auto-discovery call site must pass gate_report to build_auto_discovery_prompt"
+echo "PASS: main() gate report capture + coverage trap wiring"
+
 echo "ALL TESTS PASSED"

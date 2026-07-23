@@ -437,17 +437,26 @@ main() {
     exit 1
   fi
 
+  # Global, not local: this EXIT trap fires after main() itself may have returned, when a `local` would
+  # already be out of scope. Every exit from here on (blocked/failed/noop/success) reports coverage.
+  QA_FIX_TABLE="$table"
+  trap './script/qa_coverage_report.sh "$QA_FIX_TABLE" || true' EXIT
+
   echo "${table}"
+
+  echo "Running pre-fix QA gate report..."
+  local gate_report
+  gate_report=$(./script/qa_report.sh "$table") || true
 
   local prompt
   if [[ "$(has_real_brief "$category_file")" == "true" ]]; then
     echo "TARGETED QA FIX STARTED (brief mode: ${category_file}, block_size=${block_size}, max_turns=${max_turns})"
     echo "==========================="
-    prompt=$(build_prompt "$table" "$category_file" "$block_size")
+    prompt=$(build_prompt "$table" "$category_file" "$block_size" "$gate_report")
   else
     echo "TARGETED QA FIX STARTED (auto-discovery mode: ${category_file}, block_size=${block_size}, max_turns=${max_turns})"
     echo "==========================="
-    prompt=$(build_auto_discovery_prompt "$table" "$category_file" "$block_size")
+    prompt=$(build_auto_discovery_prompt "$table" "$category_file" "$block_size" "$gate_report")
   fi
 
   local claude_output
