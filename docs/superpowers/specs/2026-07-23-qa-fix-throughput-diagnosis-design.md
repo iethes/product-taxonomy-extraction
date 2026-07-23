@@ -126,9 +126,12 @@ Applied identically to the other 4 entry-level gates (map-level gates — dual-m
 product_id, duplicate product+taxon — are never a "confirmed false positive" by nature; they're real
 duplicates or they aren't, so no exception clause is added to those 4).
 
-### STEP 1B prompt change (both `build_prompt` and `build_auto_discovery_prompt`)
+### STEP 1B prompt change (`build_auto_discovery_prompt` only)
 
-Replace "treat every row it flags as an automatic candidate needing a fix" with:
+`build_prompt`'s (Brief mode) STEP 1B is already informational-only ("treat it as corroborating signal") and
+never instructs re-verifying a gate as an automatic-fix candidate, so there's nothing to replace there. Only
+`build_auto_discovery_prompt`'s STEP 1B says "treat every row it flags as an automatic candidate needing a
+fix" — replace that with:
 
 > For any FAILing entry-level gate, first check whether its rows already carry a confirmed exception
 > (`SELECT * FROM qa_gate_exceptions WHERE gate_name = '<gate>' AND master_table = '${table}'`) — if so, skip
