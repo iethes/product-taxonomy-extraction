@@ -389,10 +389,11 @@ ADDITIONAL CHECKS (not in the required set, run for extra diligence)
   Wet/dry-mixing within one taxonomy_id .... ~20 catch-all entries flagged, NOT fixed this session — see QA History
 ```
 
-Decision: shipped as `partial` — coverage and required gates are clean, but the wet/dry catch-all imprecision
-above is a known, documented gap for the next `targeted_qa_fix.sh` pass. No universe refresh was run this
-session (not in scope for this task — see `docs/headless-runbook.md`'s Full Rebuild steps 7–8, which this
-session's instructions did not include).
+Decision: session `complete` — coverage target exceeded, all 4 required gates clean. The wet/dry catch-all
+imprecision above is a known, documented gap, explicitly scoped as follow-up work for the next
+`targeted_qa_fix.sh` pass (that scenario's own charter is exactly this class of existing-row precision defect),
+not unfinished work in this session. No universe refresh was run this session (not in scope for this task —
+see `docs/headless-runbook.md`'s Full Rebuild steps 7–8, which this session's instructions did not include).
 
 ---
 
