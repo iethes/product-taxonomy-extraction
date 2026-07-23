@@ -57,7 +57,7 @@ Status section for what this means for a session picking up the next ID category
 | sg_facial_cleanser | ⏳ Keyword only | |
 | sg_facial_moisturiser | ⏳ Keyword only | |
 | sg_hand_and_body_moisturiser | ⏳ Keyword only | |
-| sg_liquid_soap | ⏳ Keyword only | |
+| sg_liquid_soap | ✅ Complete | LLM Pass 1+2 complete Jul 23, 94.5% GMV coverage (89.9% of in-scope set), SKU-129756–131369; found & excluded bar-soap-format scope contamination (Goat Soap Australia, Dettol/Lifebuoy/Cow Brand bar-soap SKUs, Lush's bath-bomb/bubble-bar catalog) |
 | sg_hair_conditioner_or_treatment | ⏳ Keyword only | |
 | sg_laundry_detergent | ⏳ Keyword only | |
 | sg_fabric_softener | ⏳ Keyword only | |
@@ -77,7 +77,7 @@ Status section for what this means for a session picking up the next ID category
 | sg_baby_accessories | ⏳ Keyword only | |
 | sg_vitamin_mineral_health_supplements | ⏳ Keyword only | |
 
-| **Total SG:** 3/23 LLM complete (sg_toothpaste, sg_coffee, sg_carbonated_drink) — keyword seed provides ~50–70% GMV coverage for the rest
+| **Total SG:** 4/23 LLM complete (sg_toothpaste, sg_coffee, sg_carbonated_drink, sg_liquid_soap) — keyword seed provides ~50–70% GMV coverage for the rest
 
 ---
 
@@ -153,3 +153,4 @@ Status section for what this means for a session picking up the next ID category
 | SKU-102520–103845 | shopee_sg_coffee supplemental block, unused remainder | ACTIVE |
 | SKU-110406–110728 | shopee_sg_carbonated_drink LLM P1 (110406–110490) + P2 (110491–110728) | ACTIVE |
 | SKU-110729–112405 | shopee_sg_carbonated_drink supplemental block, unused remainder | ACTIVE |
+| SKU-129756–131755 | shopee_sg_liquid_soap LLM P1 (129756–130324) + P2 (130325–131369) | ACTIVE (131370–131755 unused remainder) |
