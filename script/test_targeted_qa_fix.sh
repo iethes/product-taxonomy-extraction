@@ -77,6 +77,14 @@ echo "$prompt" | grep -q "never creates coverage for products with" || fail "bui
 echo "$prompt" | grep -q "headless_taxonomy.sh" || fail "build_prompt should point NULL-coverage work at headless_taxonomy.sh instead"
 echo "PASS: build_prompt"
 
+# --- build_prompt: gate_report parameter (STEP 1B) ---
+prompt=$(build_prompt "shopee_th_detergent" "docs/categories/th_detergent.md" "200" "[FAIL] canonical_name fields:    5")
+echo "$prompt" | grep -q "STEP 1B" || fail "build_prompt should insert a STEP 1B pre-fix gate report block"
+echo "$prompt" | grep -qF "[FAIL] canonical_name fields:    5" || fail "build_prompt must interpolate the passed gate_report verbatim"
+echo "$prompt" | grep -q "informational only" || fail "build_prompt's STEP 1B must frame the gate report as informational, not scope-expanding"
+echo "$prompt" | grep -q "this session does exactly what the Brief says, nothing more" || fail "build_prompt's STEP 1B must not let gate failures expand Brief-mode scope"
+echo "PASS: build_prompt gate_report (STEP 1B)"
+
 # --- build_auto_discovery_prompt ---
 prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "docs/categories/th_suncare.md" "200")
 echo "$prompt" | grep -q "shopee_th_suncare" || fail "build_auto_discovery_prompt should mention the table"

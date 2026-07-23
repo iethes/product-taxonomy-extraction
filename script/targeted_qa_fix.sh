@@ -55,6 +55,7 @@ build_prompt() {
   local table="$1"
   local category_file="$2"
   local block_size="${3:-200}"
+  local gate_report="${4:-}"
   local slot_offset=$((block_size - 1))
   cat <<PROMPT
 Targeted QA Fix session for ${table}.
@@ -70,6 +71,13 @@ Known pitfalls from prior sessions, apply generally: (1) \`bq query\` silently t
 STEP 1 — Sanity-check the brief's stated current-state numbers against a live query before trusting them:
 Run: SELECT source, COUNT(*) FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\` WHERE master_table = '${table}' GROUP BY source
 If the live counts disagree with what the brief claims, record the discrepancy in findings — do not silently proceed as if the brief were current.
+
+STEP 1B — Pre-fix QA gate report (already run before this session, informational only — this is a Brief-mode
+session, so your scope is exactly what STEP 3's Brief section specifies, not expanded by this report):
+${gate_report}
+If any FAILing gate above touches rows your Brief already covers, treat it as corroborating signal. If a
+FAILing gate touches rows outside the Brief's stated scope, do not act on it — note it in findings so a future
+session can pick it up; this session does exactly what the Brief says, nothing more.
 
 STEP 2 — Claim a ${block_size}-slot SKU block atomically (DECLARE before BEGIN TRANSACTION — reversing that order is a real BigQuery scripting syntax error):
 BEGIN
