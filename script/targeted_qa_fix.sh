@@ -148,13 +148,24 @@ STEP 1B — Pre-fix QA gate report (already run before this session):
 ${gate_report}
 
 The gates above split into two classes. For any FAILing gate in this list — placeholder-leak,
-structured-fields NULL%, 'all variant/size' name, canonical_name fields, garbled brand text — treat every row
-it flags as an automatic candidate needing a fix, the same way a Tier 1 SQL hit below does:
-no LLM judgment needed to detect it, only to decide and apply the correct fix (a gate can still
-false-positive — e.g. the 'all variant/size' gate flagging legitimate text like "All Skin Types" —
-sanity-check before applying, don't blind-apply). Get the actual affected rows by adapting that gate's own
-query from docs/headless-runbook.md's QA-gate-as-code section (drop the outer COUNT(*), select the
-underlying columns instead) — do not guess which rows failed from the count alone.
+structured-fields NULL%, 'all variant/size' name, canonical_name fields, garbled brand text — first check
+whether its rows already carry a confirmed exception:
+SELECT * FROM \`${PROJECT}.magpie_reference.qa_gate_exceptions\` WHERE gate_name = '<the gate's exact name>' AND master_table = '${table}'.
+If an exception already covers a row, skip re-verifying it entirely — it's closed, not a fresh finding. For
+rows without an existing exception, treat the flag as an automatic candidate needing a fix, the same way a
+Tier 1 SQL hit below does: no LLM judgment needed to detect it, only to decide and apply the correct fix (a
+gate can still false-positive — e.g. the 'all variant/size' gate flagging legitimate text like "All Skin
+Types" — sanity-check before applying, don't blind-apply). Get the actual affected rows by adapting that
+gate's own query from docs/headless-runbook.md's QA-gate-as-code section (drop the outer COUNT(*), select the
+underlying columns instead) — do not guess which rows failed from the count alone. If you confirm a row is a
+genuine, structural false positive (not a data defect, nothing a fix could ever resolve) — check this
+category's QA History for a prior session reaching the same conclusion on the same entity first, since a
+single confirmation is not enough to close it permanently, mirroring the existing
+confident-after-two-agreeing-reviews rule for regular rows. Once a second (or later) confirmation lands,
+insert a row: INSERT INTO \`${PROJECT}.magpie_reference.qa_gate_exceptions\`
+(gate_name, master_table, entity_id, reason, confirmed_at, meta_agent) VALUES
+('<gate name>', '${table}', '<the brand_id or taxonomy_id>', '<why this is permanent, not a defect>', CURRENT_TIMESTAMP(), 'CLAUDE_CODE')
+so no future session re-spends turns on it.
 
 For any FAILing gate in this list instead — dual-mapped (LLM), HUMAN+LLM coexistence, duplicate product_id,
 duplicate product+taxon — do NOT attempt a fix: every one of these can only be resolved by deleting or

@@ -141,6 +141,9 @@ for gate in "dual-mapped (LLM)" "HUMAN+LLM coexistence" "duplicate product_id" "
 done
 echo "$prompt" | grep -q "do NOT attempt a fix" || fail "STEP 1B must mark map-level gates report-only"
 echo "$prompt" | grep -q "flagged as needing a deletion-authorized session" || fail "STEP 1B must flag map-level failures for a deletion-authorized session"
+echo "$prompt" | grep -q "qa_gate_exceptions" || fail "STEP 1B must have the agent check qa_gate_exceptions before re-verifying a gate"
+echo "$prompt" | grep -q "skip re-verifying it entirely" || fail "STEP 1B must tell the agent to skip rows already covered by a confirmed exception"
+echo "$prompt" | grep -q "not enough to close it permanently" || fail "STEP 1B must require more than one confirmation before writing a new exception"
 echo "PASS: build_auto_discovery_prompt gate_report (STEP 1B)"
 
 # --- decide_next_step ---
