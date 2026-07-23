@@ -8,11 +8,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD — see QA History after this run |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 90.2% (2026-06, 12,936 of 31,075 products mapped, LLM+HUMAN union) |
 | Last run | 2026-07-23 |
-| Current MAX taxonomy_id | Queried live at claim time — see SKU Blocks Assigned |
+| Current MAX taxonomy_id | SKU-136922 |
 
 ---
 
@@ -20,7 +20,10 @@
 
 | Block | Usage |
 |-------|-------|
-| (filled in after Step 3 atomic claim) | Full Rebuild — Pass 1 OFFICIAL + Pass 2 RESELLER |
+| SKU-135196–135776 | Pass 1 OFFICIAL (581 entries, 76 brands, 609 products) |
+| SKU-135777–136776 | Pass 2 RESELLER — specific entries (1,000 entries, top-GMV text-matched groups) |
+| SKU-136777–136922 | Pass 2 RESELLER — per-brand catch-alls (146 entries, `(unresolved)`, confidence 0.6) |
+| SKU-136923–137195 | Unused remainder (273 slots) — available for QA follow-up |
 
 ---
 
@@ -302,13 +305,26 @@ with top-tier (0.95+) confidence; treat as ~0.85 (verified-brand, unverified-off
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-23 | Category research | 161 brands in real 95% GMV scope (GWP-zeroed); 1,714 pre-existing HUMAN rows, 0 LLM rows confirmed live | Category file authored; proceeding to Full Rebuild Pass 1+2 |
+| 2026-07-23 | Pass 1 (official store) | 609 candidate products across 76 brands' allowlisted stores (87 merchant names, 904 model-rows). Text-first extraction (sku_name + option_name; no vision reads — coverage-first per headless-runbook.md) | 581 taxonomy entries created (SKU-135196–135776), 609 map rows, confidence 0.90 |
+| 2026-07-23 | Pass 2 (reseller/bulk) | 12,324 remaining in-scope products (161-brand pool minus Pass1). Exact-key grouping (brand+line+size+pack) → 229 products reused Pass 1 entries; long-tail is extremely fragmented (10,802 distinct text groups for 12,095 products) | Top 1,000 groups by GMV (99.1% of remaining new-group GMV) got specific new entries (confidence 0.75); the long tail (9,802 groups, 0.9% of remaining GMV) was routed to 146 per-brand `(unresolved)` catch-alls (confidence 0.6, `is_multi_size=TRUE`) rather than minting ~10,800 near-unique low-GMV entries |
+| 2026-07-23 | Self-check | G1 dual-mapped (LLM-scoped) = 0; structured-fields-missing = 0%; placeholder-leak (LLM-scoped) = 0. Unscoped placeholder-leak query returns 1,580 — 100% attributable to **pre-existing HUMAN keyword-seed rows** using the deprecated "(all variants)" phrasing (e.g. SKU-003100 `L'Occitane Shea Butter / Body Cream (all variants)`), predating this session and the Jul-22 ban on that phrasing. Not cleaned up here — per Full Rebuild policy, HUMAN rows are only deleted where they duplicate a product also mapped by an LLM row, not blanket-superseded | Flagged as pre-existing debt for `targeted_qa_fix.sh`, not a defect of this run |
 
 ---
 
-## Map Row Counts (as of session start, 2026-07-23)
+## Map Row Counts (as of session end, 2026-07-23)
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 0 | First run |
-| HUMAN | 1,714 | Pre-existing keyword-seed rows, retained (not deleted this session) |
-| NULL (unmapped) | ~29,361 of 31,075 distinct products (month 2026-06) | To be reduced by this session's Pass 1 + Pass 2 |
+| LLM | 12,933 | Pass 1 (609) + Pass 2 (12,324), this session |
+| HUMAN | 1,714 | Pre-existing keyword-seed rows, retained untouched (not deleted this session — wrapper's job, only where duplicated by an LLM row) |
+| Mapped (LLM ∪ HUMAN, distinct products) | 12,936 | 90.2% of category GMV (2026-06) |
+| NULL (unmapped) | ~18,139 of 31,075 distinct products | Below 95% GMV brand-scope threshold or out-of-scope brand; long-tail, acceptable per Rule A/B (docs/quality-standards.md §2) |
+
+---
+
+## Known limitations for follow-up (`targeted_qa_fix.sh`)
+
+- **146 per-brand `(unresolved)` catch-all entries** (SKU-136777–136922) cover 9,802 highly-fragmented long-tail reseller listings (0.9% of Pass 2's incremental GMV). These are intentionally low-precision (confidence 0.6) — a future targeted pass could split the highest-GMV catch-alls into real product lines.
+- **89 of 609 Pass 1 entries (~14.6%) have `size=NULL`** (not `is_multi_size`) — genuinely absent from both `sku_name` and `option_name`; `raw_niq_history` has no table for this category (checked, not found) so the only remaining fallback is a per-product image read, not done in this bulk pass. Flagged for D4 follow-up, GMV-ranked.
+- **Official-store allowlist heuristic** (per-brand-exclusivity auto-classifier) has a known false-positive risk on resellers that coincidentally carry only one scoped brand in this table (e.g. `Supple Beauty` kept for CeraVe) — see category file's Official Store Allowlist section.
+- **Unscoped placeholder-leak QA query returns 1,580**, entirely from pre-existing `HUMAN` rows (`(all variants)` phrasing) unrelated to this session — see QA History above.
