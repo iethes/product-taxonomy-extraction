@@ -10,9 +10,11 @@
 |-------|-------|
 | LLM Pass 1 | ✅ Complete |
 | LLM Pass 2 | ✅ Complete |
-| GMV Coverage | 92.6% (2026-06, 28,860 of 39,343 products mapped, LLM only — no prior HUMAN rows existed) |
+| Top-up coverage pass | ✅ 2026-07-23 (this session) |
+| GMV Coverage | 97.4% product-count (2026-06, 29,637 of 39,343 products mapped) — up from 92.6% |
 | Last run | 2026-07-23 |
-| Current MAX taxonomy_id | SKU-149173 (149174–149585 unused remainder, available for QA follow-up) |
+| Current MAX taxonomy_id | SKU-153310 (153311–155022 unused remainder, available for QA follow-up) |
+| Remaining live gap (95%-cum-GMV, GWP-zeroed) | 333 products / SGD 104,074 — mostly genuine dual-species listings (~194, cannot be single-bucketed per this category's hard rule) and long-tail single-brand listings with no text/image species signal |
 
 ---
 
@@ -24,6 +26,8 @@
 | SKU-148515–149172 | Pass 2 RESELLER — per-(brand, species, food-type) catch-alls (658 entries) |
 | SKU-149173 | Single QA fix (species-mixing split, see QA History) |
 | SKU-149174–149585 | Unused remainder (412 slots) — available for QA follow-up |
+| SKU-153023–153310 | Top-up coverage session, 2026-07-23 — 288 new per-(brand,species,food-type) catch-alls (`sku_block_registry` scenario `taxonomy_topup`) |
+| SKU-153311–155022 | Unused remainder of the top-up block (1,712 slots) — available for further QA/coverage follow-up |
 
 ---
 
@@ -368,6 +372,13 @@ miscategorized listing turns up.
 | 2026-07-23 | Pass 1 build | ~29 official-store products resolved to `BRD-UNDEFINED` in `product_brand_map` despite selling through a known single/parent-company store with the real brand stated in `sku_name` (e.g. SHEBA products at `CESAR and SHEBA Official Store`) | Brand reassigned via merchant-context + sku_name text detection before taxonomy build, not left as a literal "Undefined" canonical name |
 | 2026-07-23 | QA gate self-check | 1 taxonomy entry (`SKU-147755`, Taste Of The Wild) mixed a genuine "Cat & Dog" dual-species dry-food line with a separate Feline-only recipe product — found via an extra species-mixing check beyond the required gate set (root cause: Pass 2's bulk-match re-derived species from `canonical_name` text via regex, and the Dog-food entry's own line name literally contained the word "Cat") | Split into a new entry `SKU-149173` for the cat-only product; re-pointed its map row |
 | 2026-07-23 | QA gate self-check | ~20 Pass 2 catch-all entries (grouped by brand+species+food-type) mix wet and dry products where `food_form` couldn't be confidently text-detected at grouping time (mostly multi-choice/assortment reseller listings, e.g. "Cat Dry Food \| Cat Wet Food \| Cat Treat" promo bundles) — a real G3-class imprecision, not caught by the required 4-check gate set (headless-runbook's `run_qa_gates()` doesn't implement a G3 check) | Left as-is per Full Rebuild's coverage-over-precision mandate; flagged here as a concrete worklist for `targeted_qa_fix.sh`'s next pass — query: catch-all entries (`is_multi_size=TRUE`, NULL `product_line`) whose mapped products' `sku_name` contains both wet- and dry-type keywords |
+| 2026-07-23 | Top-up coverage session | Live worklist re-query (not the prompt's stale pre-check number) found 2,025 model rows / 1,110 distinct products still NULL in the 95%-cumulative-GMV (GWP-zeroed) scope for month 2026-06, despite the category already having shipped once | Re-ran STEP 0 live rather than trusting the wrapper's number, per instructions |
+| 2026-07-23 | Top-up: brand join gap | The worklist's `product_taxonomy_map`-derived `brand` column is NULL for every row by construction (no map row exists yet for NULL-taxonomy products) — grouping directly on it silently produces one brand-less bucket | Joined `product_brand_map` on `(product_id, platform='Shopee', country='SG')` instead, per this category's established composite key |
+| 2026-07-23 | Top-up: bulk match/mint | Reused the existing Pass 2 catch-all vocabulary (8 buckets: `[Wet\|Dry\|∅] + [Cat\|Dog] + [Food\|Treats]`, `is_multi_size=TRUE`, `product_line=NULL`) for reuse-before-mint — species/food-type derived from `sku_name` regex, brand_name regex, then a brand-level existing-species-footprint fallback, in that priority order | 777 of 1,110 products bulk-matched or minted this way; 288 new per-(brand,species,food-type) catch-all entries created (`SKU-153023`–`153310`), 777 map rows written (`source_listing='topup_bulk_text_match'`) |
+| 2026-07-23 | Top-up: genuine dual-species products | ~194 products are explicitly marketed as for both cats AND dogs in their own `sku_name` (e.g. "Freeze Dried Chicken ... Cat Treats Dog Treats", verified against 2 of them by image: a Japanese treat brand with 犬・猫用 text, and an Open Farm bone broth pouch printed "MEAL TOPPER FOR DOGS & CATS") — this category's own hard rule says cat and dog must never share one taxonomy entry, so these cannot be bulk-bucketed either way | Left NULL/unmapped this session, not a coverage miss — flagged as a structural question (not this scenario's call to resolve) for a human or a future session to decide how genuinely-dual-species SKUs should be modeled |
+| 2026-07-23 | Top-up: image-read tier for genuine text ambiguity | For the highest-GMV products where `sku_name` gave no species signal (brand-name-only listings), read 20 product images directly (curl-then-Read, per headless-runbook's pattern) rather than leaving them unresolved or guessing from text: 16 resolved cleanly (dog/cat confirmed from packaging), 2 confirmed genuinely dual-species (see row above), 1 revealed as **out-of-scope** (`INXEC FEED Dried Mealworms` — bird/fish/reptile/small-animal feed, not cat/dog food, despite surfacing in this food-curated source table), 1 remained genuinely unresolved even after the image read (Korean treat brand, no legible species cue) | Manual per-product_id overrides applied in the bulk SQL; INXEC correctly left NULL as out-of-scope rather than forced into a bucket |
+| 2026-07-23 | Top-up: BRD-UNDEFINED naming defect (caught by own gate self-check) | First DML pass named the ~17 no-brand-match products' catch-alls literally "Undefined Cat Food" etc. — failed the required placeholder-leak gate (156 map rows joined to 8 offending entries) since "undefined" is one of the banned literal words | Renamed all 8 entries from `Undefined {bucket}` to `Unresolved Brand {bucket}` (`SKU-153303`–`153310`); gate re-run clean (0) |
+| 2026-07-23 | Top-up: shared-environment /tmp collision | A concurrent session/agent on this same machine overwrote a reused scratch file (`/tmp/step0_worklist.sql`) mid-session with an unrelated category's query (`makanananjing_my`), which silently corrupted a post-write verification re-query until caught by an implausible GMV total | Re-ran the remaining-gap verification from a uniquely-named file; actual DML writes were unaffected (verified independently against live BQ, not against any /tmp file state) — flagging this as a real hazard for any future session sharing this environment: never reuse a generic scratch filename for anything you'll re-read later in the same session |
 
 **Final scorecard (2026-07-23, month 2026-06):**
 ```
