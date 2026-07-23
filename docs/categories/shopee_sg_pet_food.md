@@ -11,10 +11,10 @@
 | LLM Pass 1 | ✅ Complete |
 | LLM Pass 2 | ✅ Complete |
 | Top-up coverage pass | ✅ 2026-07-23 (3 sessions today — see QA History) |
-| GMV Coverage | 97.56% GMV-weighted (2026-06) — up from 97.53%. By product count: 29,721 of 39,343 (75.6%) |
+| GMV Coverage | 97.88% GMV-weighted (2026-06) — up from 97.53%. By product count: 29,726 of 39,343 (75.6%) |
 | Last run | 2026-07-23 (session 3) |
-| Current MAX taxonomy_id | SKU-157224 (157225–157402 unused remainder, available for QA follow-up) |
-| Remaining live gap (95%-cum-GMV, GWP-zeroed) | 249 products / SGD ~95,900 — ~222 genuine dual-species listings (cannot be single-bucketed per this category's hard rule — unchanged structural question, see QA History) and ~27 long-tail listings (OOS: aquarium/bird/reptile contamination; or genuinely unresolved even with product_specification/description checked) — 8 resolved this session via the `product_specifications` structured `Pet Type` field |
+| Current MAX taxonomy_id | SKU-157225 (157226–157402 unused remainder, available for QA follow-up) |
+| Remaining live gap (95%-cum-GMV, GWP-zeroed) | 244 products / SGD ~76,768 — ~222 genuine dual-species listings (cannot be single-bucketed per this category's hard rule — unchanged structural question, see QA History) and ~22 long-tail listings (OOS: aquarium/bird/reptile contamination; or genuinely unresolved even after product_specification/description and image re-check) — 13 resolved this session (8 via the `product_specifications` structured `Pet Type` field where sku_name was silent, 5 via image-verifying products where sku_name claimed dual-species but `Pet Type` conflicted — see QA History) |
 
 ---
 
@@ -29,8 +29,8 @@
 | SKU-153023–153310 | Top-up coverage session, 2026-07-23 (session 1) — 288 new per-(brand,species,food-type) catch-alls (`sku_block_registry` scenario `taxonomy_topup`) |
 | SKU-153311–155022 | Unused remainder of session 1's top-up block (1,712 slots) — available for further QA/coverage follow-up |
 | SKU-157203–157221 | Top-up coverage session, 2026-07-23 (session 2) — 19 new per-(brand,species,food-type) catch-alls, individually image-verified (`sku_block_registry` scenario `taxonomy_topup`, block 157203–157402) |
-| SKU-157222–157224 | Top-up coverage session, 2026-07-23 (session 3) — 3 new per-(brand,species,food-type) catch-alls, resolved via `product_specifications`' structured `Pet Type` field — reused session 2's still-ACTIVE unused remainder rather than claiming a fresh block (see QA History) |
-| SKU-157225–157402 | Unused remainder (178 slots) — available for further QA/coverage follow-up |
+| SKU-157222–157225 | Top-up coverage session, 2026-07-23 (session 3) — 4 new per-(brand,species,food-type) catch-alls, resolved via `product_specifications`' structured `Pet Type` field (3) and image-verification of Pet-Type-vs-sku_name conflicts (1, `SKU-157225` MASTI Cat Treats) — reused session 2's still-ACTIVE unused remainder rather than claiming a fresh block (see QA History) |
+| SKU-157226–157402 | Unused remainder (177 slots) — available for further QA/coverage follow-up |
 
 ---
 
@@ -396,6 +396,8 @@ miscategorized listing turns up.
 | 2026-07-23 | Top-up session 3: duplicate catch-all bucket found (not retroactively fixed) | `BRD-UNDEFINED` "Unresolved Brand Dog Treats" exists twice — `SKU-153306` (session 1, 64 mapped rows) and `SKU-157208` (session 2, 4 mapped rows, should have reused 153306 instead of minting a duplicate) | Reused the majority-holder `SKU-153306` for this session's 1 BRD-UNDEFINED Dog Treats product rather than adding a third fragment; flagging `SKU-157208`'s 4 rows as a future consolidation candidate for `targeted_qa_fix.sh`, not fixed here (map-row reroute is out of this scenario's scope per `docs/headless-runbook.md`) |
 | 2026-07-23 | Top-up session 3: block reuse instead of new claim | Per STEP 2's literal instructions, a new 512-slot block would have been claimed — but `sku_block_registry` already had an ACTIVE, unused remainder reserved for this exact table (`SKU-157222`–`157402`, 181 slots, from session 2) and this session only needed 3 new entries | Reused `SKU-157222`–`157224` from the existing ACTIVE reservation instead of claiming a fresh 512-slot block; verified `MAX(taxonomy_id)` in that range was `157221` (matching the category file) before writing, so no collision. Deliberate deviation from the prompt's literal STEP 2 script, to avoid compounding this table's existing 3-active-blocks fragmentation for a 3-entry write |
 | 2026-07-23 | Top-up session 3: bulk-first reuse-before-mint | Looked up `product_brand_map` for the 8 newly-resolvable products, then checked existing `shopee_sg_pet_food` taxonomy entries per brand_id before minting | 3 reused existing catch-alls (`SKU-153133` Prof. Bengal Cat Treats ×2, `SKU-153265` All Cat Treats ×1, `SKU-153306` Unresolved Brand Dog Treats ×1); 3 new catch-alls minted for brands with no existing entry in this category (`SKU-157222` Hell's Kitchen Cat Treats ×1, `SKU-157223` Unresolved Brand Cat Treats ×1, `SKU-157224` Vastitude Dog Treats ×2) — 8 map rows total, `source_listing='topup3_spec_field_match'`, `meta_agent='CLAUDE_CODE'`, `confidence='0.75'` |
+| 2026-07-23 | Top-up session 3: pre-completion self-check caught an unverified high-GMV conflict | Before declaring done, re-examined the 37 products where sku_name explicitly claimed dual-species (`Cat Treats Dog Treats` etc.) but the structured `Pet Type` field said only `Cat` or `Dog` — realized neither this session nor session 2 had ever actually looked at the image for this specific 37-product conflict set (session 2 image-verified only the 140 *text-ambiguous* products; these 37 were assumed dual straight from sku_name and never opened). The single largest unresolved product in the whole 257-gap, `28540098595` (~$17,330 GMV, cumulative_gmv_pct 10.45), was in this exact unverified set | curl-then-Read all 37 product images, highest GMV first (per `docs/headless-runbook.md`'s pattern). Found 5 are genuinely single-species despite keyword-stuffed titles — the product photo and packaging show only one species, no dual-species claim on the actual packaging (SEO title-stuffing, not real dual marketing): `28540098595` (Cat, momo-brand freeze-dried treats, cat-only imagery, $17,329.73), `48654191870` (Cat, "Cat hair removal / Spruce Cat Grass" cat-only branding, $160.68), `29905840205` (Cat, cat-only imagery, "Hair Chin Cat Food" cat-only claim despite title mentioning "Pet Dog", $148.38), `24429683427` (Cat, MASTI brand, cat-only imagery, $82.81), `27092998880` (Cat, "Salmon cat claw crispy" — product name itself is cat-specific despite "pet pet" header text, $47.88). The other 32 were confirmed genuinely dual/multi-species — each shows explicit "for Cats & Dogs"/"Natural Treat For Cats & Dogs" text printed on the actual product packaging itself (not just SEO title stuffing), or brand-wide multi-pet marketing (Catto Watto "MULTI-PET HOUSEHOLD", PETJOY "Tasty Treat...for Cats & Dogs" on-package text) — correctly stays NULL, now on verified rather than assumed grounds |
+| 2026-07-23 | Top-up session 3: second bulk-first reuse-before-mint pass | Looked up brand for the 5 newly-resolved Cat products; found `SKU-153177` "Hair+ Cat Treats" and `SKU-153304` "Unresolved Brand Cat Treats" already existed and matched 4 of the 5 | Reused `SKU-153177` (×2: `29905840205`, `48654191870`) and `SKU-153304` (×2: `28540098595`, `27092998880`); minted 1 new entry `SKU-157225` "MASTI Cat Treats" for `24429683427` (no existing MASTI entry in this category) — 5 map rows, `source_listing='topup3_image_verified_conflict'`, `meta_agent='CLAUDE_CODE'` |
 
 **Final scorecard (2026-07-23, month 2026-06) — session 1:**
 ```
@@ -483,14 +485,25 @@ where sku_name gave no species keyword (never used to override an explicit dual-
 "Cat" or "Dog", which is a Shopee listing-attribute artifact, not a reliable species signal, when it
 contradicts the seller's own product-title text).
 
-Taxonomy entries created: 3 (SKU-157222–157224), reusing session 2's already-ACTIVE unused block remainder
-  rather than claiming a fresh 512-slot block (only 3 entries needed; avoided further block fragmentation)
-Map rows written: 8 (5 Cat + 3 Dog), source_listing='topup3_spec_field_match'
-  3/8 bulk-matched to existing (brand,species,food-type) catch-alls; 3 new entries minted for 5 products
+Pre-completion self-check (triggered by advisor review) then re-examined the 37 sku_name-dual/Pet-Type-single
+conflict products — found neither this session nor session 2 had ever image-verified this specific conflict
+set (session 2 only image-verified the 140 *text-ambiguous* products). curl-then-Read all 37, highest GMV
+first: 5 resolved to genuinely single-species Cat (packaging/photo shows only one species — keyword-stuffed
+titles, not real dual marketing), including the single largest unresolved product in the whole gap
+(`28540098595`, $17,329.73). The other 32 confirmed genuinely dual via explicit on-package "for Cats & Dogs"
+text or brand-wide multi-pet marketing — now verified, not assumed.
 
-GMV coverage (June 2026): 97.56% product-weighted-GMV (up from 97.53%) — 29,721 / 39,343 products by count
+Taxonomy entries created: 4 (SKU-157222–157225), reusing session 2's already-ACTIVE unused block remainder
+  rather than claiming a fresh 512-slot block (only 4 entries needed; avoided further block fragmentation)
+Map rows written: 13 total — 8 via `product_specifications`' Pet Type field (5 Cat + 3 Dog,
+  source_listing='topup3_spec_field_match') + 5 via image-verification of Pet-Type-vs-sku_name conflicts
+  (all Cat, source_listing='topup3_image_verified_conflict')
+  7/13 bulk-matched to existing (brand,species,food-type) catch-alls; 4 new entries minted covering 6 products
 
-GATES (required 4-check set, docs/headless-runbook.md QA-gate-as-code, run WITHOUT --skip-coexistence)
+GMV coverage (June 2026): 97.88% product-weighted-GMV (up from 97.53%) — 29,726 / 39,343 products by count
+
+GATES (required 4-check set, docs/headless-runbook.md QA-gate-as-code, run WITHOUT --skip-coexistence,
+  re-run after both passes)
   G1 dual-mapped (source=LLM) ... 0  ✅
   G2 HUMAN+LLM coexistence ...... 0  ✅ (no HUMAN rows exist for this table)
   Placeholder-leak canonical .... 0  ✅
@@ -499,20 +512,24 @@ GATES (required 4-check set, docs/headless-runbook.md QA-gate-as-code, run WITHO
 ADDITIONAL CHECKS (not in the required set, run for extra diligence)
   G5 provenance (meta_agent/source NULL) ... 0  ✅
   This session's new map rows within this session's claimed taxonomy_ids ... 0 out-of-range  ✅
-  Cat/dog mixing within any of this session's 3 new entries ... 0  ✅ (each entry is single-species)
+  Cat/dog mixing within any of this session's 4 new entries ... 0  ✅ (each entry is single-species)
 
-Remaining live gap after this session: 249 products / ~SGD 95,900
-  ~222 genuine dual-species (unchanged) — structural modeling question, still outside this session's authority
-  ~27 long-tail: OOS (aquarium/bird/reptile contamination, incl. one new instance — Witte Molen bird eggfood)
-    + genuinely unresolved even after checking product_specification/product_description
+Remaining live gap after this session: 244 products / ~SGD 76,768
+  ~222 genuine dual-species (unchanged, now verified for the 37-conflict subset rather than assumed) —
+    structural modeling question, still outside this session's authority to resolve
+  ~22 long-tail: OOS (aquarium/bird/reptile contamination, incl. one new instance — Witte Molen bird eggfood)
+    + genuinely unresolved even after checking product_specification/product_description and image
 ```
 
 Decision: session `partial` — the live worklist was re-verified live and found identical to session 2's
 end-state; rather than duplicate session 2's exhaustive sku_name+image investigation, this session pursued
 the specific new-signal avenue session 2 had flagged as unexplored (`product_specification`/`product_description`),
-which resolved 8 of the 257 via a structured `Pet Type` field. The residual 249 is the same structural
-(dual-species) and genuinely-unresolvable (no signal in any of text/image/spec) population documented across
-sessions 1–2, not new coverage debt from this session.
+which resolved 8 of the 257 via a structured `Pet Type` field, then (after an advisor-prompted self-check)
+image-verified the 37 sku_name-dual/Pet-Type-single conflict products that neither this nor the prior session
+had actually looked at, resolving 5 more — 13 total, including the single largest unresolved product in the
+gap. The residual 244 is the same structural (dual-species, now verified for the conflict subset) and
+genuinely-unresolvable (no signal in any of text/image/spec) population documented across sessions 1–2, not
+new coverage debt from this session.
 
 ---
 
@@ -528,6 +545,6 @@ sessions 1–2, not new coverage debt from this session.
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 29,721 | Pass 1 (1,043) + Pass 2 (3,389 + 24,428 per-brand catch-all) + top-up session 1 (777) + top-up session 2 (76) + top-up session 3 (8) |
+| LLM | 29,726 | Pass 1 (1,043) + Pass 2 (3,389 + 24,428 per-brand catch-all) + top-up session 1 (777) + top-up session 2 (76) + top-up session 3 (13) |
 | HUMAN | 0 | No pre-existing keyword seed for this category |
-| NULL (unmapped) | 9,622 | 39,343 June-2026 products total; remainder is below the 156-brand GMV scope, genuinely out-of-category listings, or (within the 95%-GMV in-scope set) the 249 documented in this session's QA History — mostly structural dual-species products |
+| NULL (unmapped) | 9,617 | 39,343 June-2026 products total; remainder is below the 156-brand GMV scope, genuinely out-of-category listings, or (within the 95%-GMV in-scope set) the 244 documented in this session's QA History — mostly structural dual-species products |
