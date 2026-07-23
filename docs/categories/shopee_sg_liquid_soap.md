@@ -11,8 +11,9 @@
 |-------|-------|
 | LLM Pass 1 | ✅ Complete |
 | LLM Pass 2 | ✅ Complete |
-| GMV Coverage | 94.5% (2026-06, row-grain); in-scope-set coverage 3,321/3,696 (89.9%) |
-| Last run | 2026-07-23 |
+| GMV Coverage | 94.5% (2026-06, row-grain, as of Full Rebuild); in-scope-set coverage 3,321/3,696 (89.9%) as of Full Rebuild |
+| Top-up sessions | 2026-07-23: 267 additional products mapped from the live 664-row worklist gap (242 new entries + 24 reused); 391 rows of that worklist confirmed OOS (bar soap / bath bomb / lotion bleed / unrelated), not a coverage miss — see QA History |
+| Last run | 2026-07-23 (top-up) |
 | Current MAX taxonomy_id | Query BQ live before every write — do not trust any number in this file |
 
 ---
@@ -21,10 +22,13 @@
 
 | Block | Usage |
 |-------|-------|
-| SKU-129756–131755 | Claimed block (2000 slots, full_rebuild), `sku_block_registry` status ACTIVE |
+| SKU-129756–131755 | Claimed block (2000 slots, full_rebuild), `sku_block_registry` status COMPLETE |
 | SKU-129756–130324 | Pass 1 OFFICIAL (569 entries, ~40 store fronts, 686 products mapped) |
 | SKU-130325–131369 | Pass 2 RESELLER (1045 new entries; 60 products reused a Pass-1 entry; 1,262 products mapped total) |
 | SKU-131370–131755 | Unused remainder of claimed block |
+| SKU-134532–135195 | Claimed block (664 slots, taxonomy_topup, 2026-07-23), `sku_block_registry` status COMPLETE |
+| SKU-134532–134773 | Top-up session: 242 new entries minted (bulk text-match reuse-before-mint), 267 products mapped |
+| SKU-134774–135195 | Unused remainder of claimed block |
 
 ---
 
@@ -262,6 +266,10 @@ d'Olive, Old Spice, Men+, Chandrika, BACTISHIELD, Hair+, Alepia, Reve Scent, JME
 | 2026-07-23 | Pass 2 (Reseller) | Format-based scope filter (bar soap by weight-unit absent any liquid/wash/gel/foam signal; body lotion/balm/butter/treatment; bath bomb/bubble bar) applied per-product across the full gap, not as a pre-extraction brand filter — excluded 375 of 1,637 gap products. Two whole-brand-level OOS findings: **Goat Soap Australia** (100% bar soap, no liquid SKU exists under this brand at all) and (partially) **Pelican** (predominantly 80g bar soap) — confirmed via direct reading of every gap row for these brands, not assumed from brand name. A few individual misses caught and fixed before insert: a "South Moon" nasal-inhaler-stick listing (wrong product type entirely, not a wash), an Aesop "Hand Wash / Hand Balm" bundle initially over-excluded by the bar/balm keyword filter (fixed: only exclude when no wash/liquid keyword is also present), and a Neutrogena "Clear Body Wash" naming variant the brand's own product-line rule initially missed. | All fixed before insert; format-oos exclusions documented per product, not silently dropped |
 | 2026-07-23 | Pass 2 (Reseller) | **Self-inflicted placeholder-leak gate failure, caught and fixed same session**: canonical names synthesized for `BRD-UNDEFINED`-branded entries used the literal brand_dict display name "Undefined" as a name prefix (e.g. "Undefined Acne Body Wash 300ml") — this trips the hard-gate's banned-word check on "undefined" itself. Found by running the QA gate immediately after Pass 2 insert, before declaring done. | `UPDATE` stripped the leading "Undefined " token from all 252 affected `product_taxonomy` rows (`REGEXP_REPLACE(canonical_name, r'^Undefined ', '')`); placeholder-leak re-ran at 0 for `source='LLM'` |
 | 2026-07-23 | Post-run QA gates | Unscoped placeholder-leak query (whole category, HUMAN+LLM combined) returns 1,271 — traced to pre-existing `source='HUMAN'` keyword-seed rows created 2026-06-18 (before this session), all using a banned "(all variants)" catch-all phrasing (e.g. "Dettol Antibacterial Liquid Soap / Body Wash (all variants)"). **Not remediated this session** — out of scope for a Full Rebuild (this is `script/targeted_qa_fix.sh` auto-discovery territory); flagged here for a future targeted QA pass. | Left as-is; `source='LLM'`-scoped placeholder-leak (this session's actual output) is 0 |
+| 2026-07-23 | Top-up coverage (month 2026-06) | Live re-query of the STEP 0 worklist (top-95%-cum-GMV, GWP-zeroed, `taxonomy_id IS NULL`) found 664 rows / 552 distinct products, close to the wrapper's stale 664 pre-check. Format classification (sku_name text, cross-checked against 9 representative product images across ALADA/Madame Heng/YUAN/SKINEVER/Herbal Pharm/Lydimoon/Precious Skin/Snail White/Yanzsoap) found the overwhelming majority — 345 of 664 rows, $50,674 GMV — are **solid/bar-format "Whitening Soap"/"Herbal Soap" listings** (weight-in-grams, no liquid unit or wash/gel/foam keyword), the same data-quality bleed already documented in this file's Pass-1/Pass-2 QA rows, not a coverage miss. One prior-session mapping (`SKU-130555` "Precious Skin Extra Pure Gluta White Soap") is itself now suspected mismapped bar soap based on this session's image check — flagged for a future targeted QA pass, not corrected here (out of top-up scope). A further 40 rows ($4.3k GMV) were bath bombs/bubble bars, standalone body lotion/cream bleed, or unrelated product types (nasal inhaler, bath sponge, fragrance body spray, facial cleanser) miscategorized into this table — excluded per category scope, not force-mapped. | 273 rows ($16,665 GMV) confirmed genuine liquid soap/wash format and processed; 391 rows ($56,266 GMV) left NULL as documented OOS |
+| 2026-07-23 | Top-up coverage (month 2026-06) | Bulk-first reuse-before-mint per headless-runbook.md: grouped the 273 in-scope rows by (brand_id, normalized product-line text, size, pack_count) → 266 distinct products. Token-overlap matching against the category's existing 1,654 taxonomy entries (same brand_id, same size, ≥50% Jaccard token overlap) found 24 genuine reuse matches (duplicate listings of already-taxonomized products across different resellers/sellers). Resolved 5 `BRD-UNDEFINED` products to their real brand (Dove ×2, Kirei Kirei ×2, Aesop ×1) by scanning sku_name for a known brand token, consistent with th_softdrink precedent that taxonomy mapping does not require `brand_id` agreement with `product_brand_map`. | 24 products mapped to existing taxonomy entries (no new SKU); remaining 242 distinct products minted as new entries |
+| 2026-07-23 | Top-up coverage (month 2026-06) | Claimed SKU block SKU-134532–135195 (664 slots, `taxonomy_topup`) per the atomic-claim pattern — queried `sku_block_registry` live, did not trust this file's stale numbers. Minted 242 new `product_taxonomy` entries (SKU-134532–134773) via bulk regex-based size/pack_count extraction from sku_name text (ml/L/oz/kg/g units; bundle/x-N pack patterns) — no per-product image reads for minting (text was sufficient in all 242 cases; the representative-sample image checks above were for the format/scope decision, not per-product extraction). Verified zero `canonical_name` "undefined" leaks before insert (`BRD-UNDEFINED` appears only in the brand_id column, never in canonical_name text, avoiding the exact defect from this file's earlier Pass-2 QA row). Wrote via `bq query` DML only. `sku_block_registry` marked COMPLETE; SKU-134774–135195 left unused. | 242 taxonomy entries inserted, 267 distinct products mapped (24 reused + 243 new-entry rows collapse to 242 distinct entries via 1 exact-duplicate group; 6 worklist rows shared a product_id with another row and correctly deduped to 1 map row per product_id, per the "one row per product_id" rule) |
+| 2026-07-23 | Top-up coverage — QA self-check | Ran QA-gate-as-code from headless-runbook.md **without** `--skip-coexistence` per this session's instructions. G1 dual-mapped (source=LLM) = 0. Placeholder-leak (source=LLM) = 0. G5 provenance = 0. structured_fields_missing_pct = 0%. **G2 HUMAN+LLM coexistence = 491** — verified this is the exact pre-existing count from the prior Full Rebuild session (this file's own QA History row above, "no dedup/delete step run this session"), confirmed **not** introduced by this top-up: none of this session's 267 newly-mapped `product_id`s had a pre-existing `source='HUMAN'` row (explicit `IN`-list check against the map table returned 0). The Full Rebuild's step-5 HUMAN-dedup-delete was never run in either session — this remains a genuine open item but is unchanged by this top-up. | No action taken on G2 (out of this session's instructed scope — no dedup/delete step was requested); flagged for whoever next runs the HUMAN-row cleanup per docs/headless-runbook.md's Full Rebuild step 5 |
 
 ---
 
@@ -282,21 +290,30 @@ needed for this run.
 
 ## Map Row Counts
 
-| Source | Before this session | After this session | Notes |
-|--------|-----------------|-----------------|-------|
-| LLM | 0 | 1,948 | 686 Pass 1 + 1,262 Pass 2 (1,202 new-entry + 60 reused-entry) |
-| HUMAN | 1,726 | 1,726 | Untouched this session — no HUMAN dedup/delete step was in this session's scope (Full Rebuild first-pass, not the shampoo-style top-up cleanup) |
-| In-scope set (month 2026-06) | — | 3,321 / 3,696 mapped (89.9%), 375 still NULL | Remaining NULLs are OOS-format (bar soap, bath bombs, gift/GWP boxes, mystery listings) or genuinely indeterminate — documented in QA History, not silently dropped |
-| GMV coverage (all products, 2026-06) | — | 94.5% | row-grain coverage across the full 20,072-distinct-product table |
+| Source | Before Full Rebuild | After Full Rebuild | After top-up (2026-07-23) | Notes |
+|--------|-----------------|-----------------|-----------------|-------|
+| LLM | 0 | 1,948 | 2,215 | 686 Pass 1 + 1,262 Pass 2 + 267 top-up (24 reused-entry + 243 new-entry) |
+| HUMAN | 1,726 | 1,726 | 1,726 | Untouched across both sessions — no HUMAN dedup/delete step run yet |
+| In-scope set (month 2026-06 top-up worklist) | — | — | 664 live worklist rows re-queried; 273 mapped, 391 confirmed OOS (bar soap / bath bomb / lotion bleed / unrelated) | See QA History for the full OOS breakdown |
+| GMV coverage (all products, 2026-06) | — | 94.5% | not re-measured this session (worklist was Rule-A-only, not the full §2 in-scope set) | — |
 
-**Universe refresh:** not run this session (out of scope for this prompt, which ends at STEP 7's QA self-check). A future session should run the `universe_taxonomy_overlay` MERGE per docs/headless-runbook.md before this category's data reaches `marketshare_universe`.
+**Universe refresh:** not run this session (explicitly out of scope for this top-up prompt — a separate step, to run only after independent QA verification). A future session should run the `universe_taxonomy_overlay` MERGE per docs/headless-runbook.md before this category's data reaches `marketshare_universe`.
 
-**QA gate results (final, this session):**
+**QA gate results (top-up session, 2026-07-23, run without `--skip-coexistence`):**
 ```
 G1 dual-mapped (source=LLM) ................ 0  ✅
-Placeholder-leak (source=LLM, this session)   0  ✅
-Placeholder-leak (unscoped, incl. legacy HUMAN rows)  1,271  ⚠️ pre-existing, not this session's scope
+Placeholder-leak (source=LLM) ............... 0  ✅
 structured_fields_missing_pct (product_line NULL, excl. is_multi_size) .. 0%  ✅
 G5 provenance (meta_agent/source NULL) ...... 0  ✅
-G2 HUMAN+LLM coexistence .................... 491  (expected — no dedup/delete step run this session, see note above)
+G2 HUMAN+LLM coexistence .................... 491  ⚠️ pre-existing from prior Full Rebuild session, confirmed NOT introduced by this top-up (0 of this session's 267 mapped product_ids had a prior HUMAN row) — unresolved dedup-delete step remains an open item
+```
+
+**QA gate results (prior Full Rebuild session, for reference):**
+```
+G1 dual-mapped (source=LLM) ................ 0  ✅
+Placeholder-leak (source=LLM, that session)   0  ✅
+Placeholder-leak (unscoped, incl. legacy HUMAN rows)  1,271  ⚠️ pre-existing, not that session's scope
+structured_fields_missing_pct (product_line NULL, excl. is_multi_size) .. 0%  ✅
+G5 provenance (meta_agent/source NULL) ...... 0  ✅
+G2 HUMAN+LLM coexistence .................... 491  (expected at that point — no dedup/delete step had run yet)
 ```
