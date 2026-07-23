@@ -51,6 +51,27 @@ has_real_brief() {
   fi
 }
 
+append_qa_history_row() {
+  local category_file="$1"
+  local finding="$2"
+  local resolution="$3"
+  local timestamp="$4"
+  local qa_history_line divider_line
+  qa_history_line=$(grep -n '^## QA History' "$category_file" | head -1 | cut -d: -f1)
+  [[ -z "$qa_history_line" ]] && return 1
+  divider_line=$(awk -v start="$qa_history_line" 'NR > start && /^---$/ { print NR; exit }' "$category_file")
+  [[ -z "$divider_line" ]] && return 1
+  finding=$(printf '%s' "$finding" | tr '\n' ' ' | sed 's/|/\\|/g')
+  resolution=$(printf '%s' "$resolution" | tr '\n' ' ' | sed 's/|/\\|/g')
+  local new_row="| ${timestamp} | Automated review session (auto-discovery) | ${finding} | ${resolution} |"
+  local tmpfile
+  tmpfile=$(mktemp)
+  head -n $((divider_line - 1)) "$category_file" > "$tmpfile"
+  printf '%s\n' "$new_row" >> "$tmpfile"
+  tail -n +"$divider_line" "$category_file" >> "$tmpfile"
+  mv "$tmpfile" "$category_file"
+}
+
 build_prompt() {
   local table="$1"
   local category_file="$2"
@@ -97,13 +118,15 @@ STEP 4 — Write via bq query DML only, never the streaming API. Set meta_agent=
 
 STEP 5 — Do NOT run the universe refresh yourself. That step runs after this session, only if independent QA gates pass — it is not something you do.
 
-STEP 6 — Append a dated row to ${category_file}'s '## QA History' table (columns: Date | Pass | Finding | Resolution) summarizing what you did and found this session. Commit the updated file:
-git add ${category_file} && git commit -m 'Targeted QA Fix session for ${table}: update QA History'
+STEP 6 — Do not edit ${category_file} or run git yourself. Instead, set the final JSON output's
+qa_history_entry field to {finding: "...", resolution: "..."} summarizing what you did and found this
+session — the same content that used to go directly into the QA History table's Finding/Resolution columns.
+The wrapper appends it to ${category_file} and commits on your behalf after you finish.
 
 STEP 7 — If you hit a genuine blocker at any step — something wrong with these instructions, missing data, anything that would make proceeding unsafe — stop, write nothing further, and output status='blocked' with the blockers array populated. That is a valid, expected outcome, not a failure.
 
 Output ONLY this JSON when done, nothing else:
-{status: complete|partial|failed|blocked, rows_created, rows_mapped, taxonomy_id_range_used, findings, blockers}.
+{status: complete|partial|failed|blocked, rows_created, rows_mapped, taxonomy_id_range_used, qa_history_entry: null|{finding, resolution}, findings, blockers}.
 PROMPT
 }
 
@@ -324,10 +347,11 @@ write or update. Never delete an existing row.
 STEP 8 — Do NOT run the universe refresh yourself. That step runs after this session, only if independent QA
 gates pass — it is not something you do.
 
-STEP 9 — Append a dated row to ${category_file}'s '## QA History' table (columns: Date | Pass | Finding |
-Resolution) summarizing what you reviewed, what you fixed, and the confidence distribution you left behind.
-Commit the updated file:
-git add ${category_file} && git commit -m 'Automated review session for ${table}: update QA History'
+STEP 9 — Do not edit ${category_file} or run git yourself. Instead, set the final JSON output's
+qa_history_entry field to {finding: "...", resolution: "..."} summarizing what you reviewed, what you fixed,
+and the confidence distribution you left behind — the same content that used to go directly into the QA
+History table's Finding/Resolution columns. The wrapper appends it to ${category_file} and commits on your
+behalf after you finish.
 
 STEP 10 — Before declaring status, self-check the hard gates from docs/headless-runbook.md's QA-gate-as-code
 section, WITHOUT --skip-coexistence (this category already shipped once — coexistence is always a genuine bug
@@ -338,7 +362,7 @@ anything that would make proceeding unsafe — stop, write nothing further, and 
 the blockers array populated. That is a valid, expected outcome, not a failure.
 
 Output ONLY this JSON when done, nothing else:
-{status: complete|partial|failed|blocked, rows_created, rows_mapped, taxonomy_id_range_used, findings, blockers}.
+{status: complete|partial|failed|blocked, rows_created, rows_mapped, taxonomy_id_range_used, qa_history_entry: null|{finding, resolution}, findings, blockers}.
 PROMPT
 }
 
@@ -490,6 +514,21 @@ main() {
     extracted=$(extract_json_object "$result_json")
     if [[ -n "$extracted" ]] && echo "$extracted" | jq -e . >/dev/null 2>&1; then
       result_json="$extracted"
+    fi
+  fi
+
+  local qa_finding qa_resolution
+  qa_finding=$(echo "$result_json" | jq -r '.qa_history_entry.finding // empty')
+  qa_resolution=$(echo "$result_json" | jq -r '.qa_history_entry.resolution // empty')
+  if [[ -n "$qa_finding" ]]; then
+    local qa_timestamp
+    qa_timestamp=$(date -u +'%Y-%m-%d %H:%M UTC')
+    if append_qa_history_row "$category_file" "$qa_finding" "$qa_resolution" "$qa_timestamp"; then
+      echo "Appending QA History row and committing..."
+      git add "$category_file"
+      git commit -m "Automated review session for ${table}: update QA History"
+    else
+      echo "WARNING: could not append QA History row (no '## QA History' heading or closing '---' found in ${category_file}) — skipping commit." >&2
     fi
   fi
 

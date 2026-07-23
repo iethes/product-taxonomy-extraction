@@ -66,6 +66,47 @@ EOF
 rm -rf "$tmpdir"
 echo "PASS: has_real_brief"
 
+# --- append_qa_history_row ---
+tmpdir=$(mktemp -d)
+cat > "$tmpdir/cat.md" <<'EOF'
+# Category
+
+## QA History
+
+| Date | Pass | Finding | Resolution |
+|------|------|---------|------------|
+| 2026-07-20 | Pass 1 | old finding | old resolution |
+
+---
+
+## Other section
+EOF
+
+append_qa_history_row "$tmpdir/cat.md" 'new finding with a | pipe
+and a newline' "new resolution" "2026-07-23 12:00 UTC" || fail "append_qa_history_row should succeed on a well-formed file"
+
+grep -qF "| 2026-07-20 | Pass 1 | old finding | old resolution |" "$tmpdir/cat.md" || fail "prior row must survive untouched"
+grep -qF "2026-07-23 12:00 UTC" "$tmpdir/cat.md" || fail "new row must be inserted"
+grep -qF 'new finding with a \| pipe and a newline' "$tmpdir/cat.md" || fail "pipe must be escaped and newline collapsed to a space"
+
+new_row_line=$(grep -n "2026-07-23 12:00 UTC" "$tmpdir/cat.md" | cut -d: -f1)
+divider_line=$(grep -n '^---$' "$tmpdir/cat.md" | head -1 | cut -d: -f1)
+[[ "$new_row_line" -lt "$divider_line" ]] || fail "new row must land before the QA History divider, not after"
+
+rm -rf "$tmpdir"
+echo "PASS: append_qa_history_row"
+
+tmpdir=$(mktemp -d)
+cat > "$tmpdir/no_history.md" <<'EOF'
+# Category
+No history section here.
+EOF
+if append_qa_history_row "$tmpdir/no_history.md" "f" "r" "2026-07-23 12:00 UTC"; then
+  fail "append_qa_history_row should fail when there's no '## QA History' heading"
+fi
+rm -rf "$tmpdir"
+echo "PASS: append_qa_history_row missing heading"
+
 # --- build_prompt ---
 prompt=$(build_prompt "shopee_th_detergent" "docs/categories/th_detergent.md")
 echo "$prompt" | grep -q "shopee_th_detergent" || fail "build_prompt should mention the table name"
@@ -75,6 +116,8 @@ echo "$prompt" | grep -q "status='blocked'" || fail "build_prompt should documen
 echo "$prompt" | grep -q "Do NOT run the universe refresh yourself" || fail "build_prompt should forbid self-refresh"
 echo "$prompt" | grep -q "never creates coverage for products with" || fail "build_prompt must state this script never creates coverage for taxonomy_id IS NULL products"
 echo "$prompt" | grep -q "headless_taxonomy.sh" || fail "build_prompt should point NULL-coverage work at headless_taxonomy.sh instead"
+echo "$prompt" | grep -q "qa_history_entry" || fail "build_prompt output schema must include qa_history_entry"
+echo "$prompt" | grep -q "Do not edit docs/categories/th_detergent.md or run git yourself" || fail "build_prompt STEP 6 must not have the agent edit the file or commit directly"
 echo "PASS: build_prompt"
 
 # --- build_prompt: gate_report parameter (STEP 1B) ---
@@ -126,6 +169,8 @@ echo "$prompt" | grep -q "null_size" || fail "build_auto_discovery_prompt's Tier
 echo "$prompt" | grep -qF "r'[\p{L}]'" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the garbage_brand check"
 echo "$prompt" | grep -q "product type genuinely matches" || fail "STEP 3 must require an explicit type-conflict check, not just naming/structure judgment"
 echo "$prompt" | grep -q "brand_id resolves to BRD-UNDEFINED/BRD-UNBRANDED while canonical_name clearly states a real" || fail "STEP 4 must branch wrong_field_order's fix between reordering text and correcting brand_id"
+echo "$prompt" | grep -q "qa_history_entry" || fail "build_auto_discovery_prompt output schema must include qa_history_entry"
+echo "$prompt" | grep -q "Do not edit docs/categories/th_suncare.md or run git yourself" || fail "build_auto_discovery_prompt STEP 9 must not have the agent edit the file or commit directly"
 echo "PASS: build_auto_discovery_prompt"
 
 # --- build_auto_discovery_prompt: gate_report parameter (STEP 1B, fix-direction) ---
@@ -175,6 +220,8 @@ echo "$script_src" | grep -qF 'QA_FIX_TABLE="$table"' || fail "main() must set Q
 echo "$script_src" | grep -q 'trap.*qa_coverage_report\.sh.*EXIT' || fail "main() must set an EXIT trap invoking qa_coverage_report.sh"
 echo "$script_src" | grep -qF 'build_prompt "$table" "$category_file" "$block_size" "$gate_report"' || fail "brief-mode call site must pass gate_report to build_prompt"
 echo "$script_src" | grep -qF 'build_auto_discovery_prompt "$table" "$category_file" "$block_size" "$gate_report"' || fail "auto-discovery call site must pass gate_report to build_auto_discovery_prompt"
+echo "$script_src" | grep -qF 'qa_history_entry' || fail "main() must read qa_history_entry from result_json"
+echo "$script_src" | grep -q 'append_qa_history_row' || fail "main() must call append_qa_history_row"
 echo "PASS: main() gate report capture + coverage trap wiring"
 
 echo "ALL TESTS PASSED"
