@@ -112,7 +112,7 @@ else echo "[FAIL] 'all variant/size' name:   ${ALL_VARIANT}"; FAIL=1; fi
 CANON_FIELDS=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
   "SELECT COUNT(*) FROM (
      SELECT DISTINCT pt.taxonomy_id, pt.canonical_name, pt.product_line, pt.sub_line,
-            pt.variant, pt.size, pt.pack_count
+            pt.variant, pt.size, pt.pack_count, pt.is_bundle
      FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
      JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
      WHERE m.master_table = '${TABLE}'
@@ -125,7 +125,7 @@ CANON_FIELDS=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --forma
     OR (variant IS NOT NULL AND (SELECT LOGICAL_OR(LOWER(canonical_name) NOT LIKE CONCAT('%', w, '%'))
         FROM UNNEST(SPLIT(LOWER(variant), ' ')) w WHERE w != ''))
     OR (size IS NOT NULL AND NOT LOWER(canonical_name) LIKE CONCAT('%', LOWER(size), '%'))
-    OR (pack_count > 1 AND NOT LOWER(canonical_name) LIKE CONCAT('%x', CAST(pack_count AS STRING), '%'))
+    OR (pack_count > 1 AND is_bundle IS NOT TRUE AND NOT LOWER(canonical_name) LIKE CONCAT('%x', CAST(pack_count AS STRING), '%'))
    )
    AND NOT REGEXP_CONTAINS(LOWER(canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b')
    AND taxonomy_id NOT IN (

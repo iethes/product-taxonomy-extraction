@@ -167,6 +167,7 @@ grep -q "most .ฟรี./.free. hits are GWP" <<< "$prompt" || fail "the pack-c
 # text) instead of the real one (fix brand_id).
 grep -q "null_size" <<< "$prompt" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the D4 size-coverage check"
 grep -qF "r'[\p{L}]'" <<< "$prompt" || fail "build_auto_discovery_prompt's Tier 1 sweep must add the garbage_brand check"
+grep -qF "pt.is_bundle IS NOT TRUE" <<< "$prompt" || fail "build_auto_discovery_prompt's canonical_field_mismatch check must exempt is_bundle=true rows from the literal-xN requirement"
 grep -q "product type genuinely matches" <<< "$prompt" || fail "STEP 3 must require an explicit type-conflict check, not just naming/structure judgment"
 grep -q "brand_id resolves to BRD-UNDEFINED/BRD-UNBRANDED while canonical_name clearly states a real" <<< "$prompt" || fail "STEP 4 must branch wrong_field_order's fix between reordering text and correcting brand_id"
 grep -q "qa_history_entry" <<< "$prompt" || fail "build_auto_discovery_prompt output schema must include qa_history_entry"
