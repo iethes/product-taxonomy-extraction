@@ -190,6 +190,10 @@ grep -q "flagged as needing a deletion-authorized session" <<< "$prompt" || fail
 grep -q "qa_gate_exceptions" <<< "$prompt" || fail "STEP 1B must have the agent check qa_gate_exceptions before re-verifying a gate"
 grep -q "skip re-verifying it entirely" <<< "$prompt" || fail "STEP 1B must tell the agent to skip rows already covered by a confirmed exception"
 grep -q "not enough to close it permanently" <<< "$prompt" || fail "STEP 1B must require more than one confirmation before writing a new exception"
+grep -qF "STEP 1C — Fast-lane recheck" <<< "$prompt" || fail "build_auto_discovery_prompt must add a STEP 1C fast-lane recheck for fixed_pending_recheck rows"
+grep -qF "JSON_VALUE(_meta, '\$.review_confidence') IS NULL" <<< "$prompt" || fail "STEP 1C must scope its sweep to the fixed_pending_recheck predicate"
+grep -qF "no Tier 2 sample slot spent" <<< "$prompt" || fail "STEP 1C must bulk-promote clean rows without spending Tier 2 judgment"
+grep -qF "STEP 1C already bulk-promoted" <<< "$prompt" || fail "STEP 3 must exclude rows STEP 1C already resolved"
 echo "PASS: build_auto_discovery_prompt gate_report (STEP 1B)"
 
 # --- decide_next_step ---
