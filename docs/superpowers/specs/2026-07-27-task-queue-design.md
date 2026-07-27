@@ -33,6 +33,9 @@ schema, the worker, and a CLI stopgap for using the queue before that UI exists.
 | `script/test_queue_worker.sh` | New: self-test for pure helpers (signal parsing, claim-race handling), no-network style matching `script/test_targeted_qa_fix.sh` |
 | `script/headless_taxonomy.sh` | Append a `QUEUE_SIGNAL:` line at existing exit points |
 | `script/targeted_qa_fix.sh` | Add an auto-discovery-mode pre-check; append a `QUEUE_SIGNAL:` line at existing exit points |
+| `script/load_env.sh` | New: sourced by `queue_worker.sh`/`queue_ctl.sh` to export `.env` into the process environment |
+| `.env.example` | New: template for `QUEUE_DATABASE_URL`, `POLL_INTERVAL_SECONDS`, `LEASE_TIMEOUT_HOURS` |
+| `.gitignore` | Add `.env` (holds a live DB connection string — must never be committed) |
 | `docs/headless-runbook.md` | New "Queue mode" section: `QUEUE_DATABASE_URL`, running N workers, brief-mode `loop_count` caveat |
 
 ---
@@ -204,6 +207,8 @@ retry within the same task. A human investigates and resubmits via `queue_ctl.sh
 ## 5. `script/queue_worker.sh` — outline
 
 ```bash
+source "$(dirname "$0")/load_env.sh"   # exports QUEUE_DATABASE_URL etc. from .env, if present
+
 WORKER_ID="$(hostname)-$$"
 
 main() {
@@ -218,6 +223,32 @@ main() {
 
 Running N workers = starting `script/queue_worker.sh` N times (tmux/nohup/systemd/etc — the same kind of
 manual process-management already used for `claude -p` sessions today; not something this repo builds).
+
+### `.env` loading
+
+Both `queue_worker.sh` and `queue_ctl.sh` need `QUEUE_DATABASE_URL` (and optionally
+`POLL_INTERVAL_SECONDS` / `LEASE_TIMEOUT_HOURS`) in their process environment. Rather than requiring the
+operator to `export` these by hand every session, both scripts source a small shared helper at startup:
+
+```bash
+# script/load_env.sh — sourced, not executed directly, by queue_worker.sh / queue_ctl.sh.
+# Also usable standalone: `source script/load_env.sh` in an interactive shell.
+set -a
+[[ -f "$(dirname "${BASH_SOURCE[0]}")/../.env" ]] && source "$(dirname "${BASH_SOURCE[0]}")/../.env"
+set +a
+```
+
+`set -a` / `set +a` marks every variable assigned while sourcing `.env` for export, without needing an
+`export` prefix on each line in `.env` itself. If `.env` doesn't exist (e.g. CI, or vars already exported
+via shell profile), this is a silent no-op — existing environment variables win either way, since `.env`
+values only apply if actually present in the file.
+
+```bash
+# .env.example — copy to .env and fill in real values; .env itself is gitignored.
+QUEUE_DATABASE_URL=postgres://user:password@localhost:5432/taxonomy_queue
+POLL_INTERVAL_SECONDS=15
+LEASE_TIMEOUT_HOURS=4
+```
 
 ---
 
