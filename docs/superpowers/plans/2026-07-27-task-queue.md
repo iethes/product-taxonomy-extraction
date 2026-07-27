@@ -455,7 +455,13 @@ claim_next_task() {
     echo "$out" >&2
     return 1
   fi
-  echo "$out"
+  # $out is polluted with non-data lines that psql always prints regardless of -t/-A: the "SET" tag
+  # from queue_psql's search_path prefix statement, and (confirmed empirically against a live
+  # postgres:16 client) the "UPDATE 1" command-completion tag that psql prints for an UPDATE...
+  # RETURNING even under -t. Only the actual data line contains the -F'|' separator, so filter down to
+  # that. `|| true` is required: grep exits 1 on the legitimate "no row claimed" case (empty $out),
+  # which under `set -e` would otherwise be treated as this function failing.
+  grep '|' <<< "$out" || true
 }
 
 heartbeat() {
@@ -482,16 +488,28 @@ run_underlying_script() {
 # last_result is stored as `json`, not `jsonb` -- matches the pre-existing NocoDB-created column type
 # (see Global Constraints: this design does not alter that column, to touch the shared table as little
 # as possible).
+#
+# Deliberately does NOT use `psql -v ... -c "... :'var' ..."` for this -- confirmed empirically against
+# a fresh, unmodified postgres:16 client (not a shim/PgBouncer artifact) that psql's `:'var'`
+# interpolation is never performed inside a `-c` string, only for `-f`/stdin input; `-v` + `-c` with
+# colon-variables raises `ERROR: syntax error at or near ":"`. Since queue_psql (Task 1) always sends
+# its query through `-c` (required for the PgBouncer-safe single-transaction SET search_path trick),
+# colon-variable substitution can never work through it. Uses the same inline-SQL-building convention
+# as Task 5's build_submit_sql/build_*_sql instead.
+_sql_quote() {
+  local s="$1"
+  echo "'${s//\'/\'\'}'"
+}
+
 persist_final_status() {
   local id="$1" status="$2" iterations_run="$3" output="$4"
   local last_result_json
   last_result_json=$(printf '%s' "$output" | jq -Rs '{raw_output: .}')
   queue_psql "
       UPDATE task_queue
-      SET status = :'status', iterations_run = :iterations_run, updated_at = now(),
-          last_result = :'last_result'::json
-      WHERE id = :id;" \
-    -v id="$id" -v status="$status" -v iterations_run="$iterations_run" -v last_result="$last_result_json" \
+      SET status = $(_sql_quote "$status"), iterations_run = ${iterations_run}, updated_at = now(),
+          last_result = $(_sql_quote "$last_result_json")::json
+      WHERE id = ${id};" \
     -t -A >/dev/null
 }
 
