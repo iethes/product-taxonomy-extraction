@@ -146,6 +146,12 @@ run_task() {
 
 main() {
   source "$(dirname "$0")/load_env.sh"
+  QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"   # recompute now that .env is actually loaded -- the
+                                                       # top-level assignment (needed so pure-function
+                                                       # tests get a value without ever calling main())
+                                                       # ran before .env existed, using whatever
+                                                       # QUEUE_SCHEMA happened to already be in the
+                                                       # process environment at that point
   : "${QUEUE_DATABASE_URL:?QUEUE_DATABASE_URL must be set (via .env or the environment)}"
   WORKER_ID="$(hostname)-$$"
   echo "Worker ${WORKER_ID} starting, polling every ${POLL_INTERVAL_SECONDS:-15}s"
