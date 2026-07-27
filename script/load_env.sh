@@ -3,7 +3,7 @@
 # process environment. Also usable standalone: `source script/load_env.sh` in an interactive shell.
 # No-op if .env doesn't exist -- existing environment variables (CI, shell profile) are left as-is.
 set -a
-[[ -f "$(dirname "${BASH_SOURCE[0]}")/../.env" ]] && source "$(dirname "${BASH_SOURCE[0]}")/../.env"
+[[ -f "$(dirname "${BASH_SOURCE[0]:-$0}")/../.env" ]] && source "$(dirname "${BASH_SOURCE[0]:-$0}")/../.env"
 set +a
 
 # Wraps `psql "$QUEUE_DATABASE_URL"`, transparently selecting QUEUE_SCHEMA (if set) via a
