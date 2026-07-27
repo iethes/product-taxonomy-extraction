@@ -817,9 +817,18 @@ cmd_list() {
 
 cmd_priority() {
   local task_id="$1" new_priority="$2"
-  local result
-  result=$(queue_psql "$(build_priority_sql "$task_id" "$new_priority")" -t -A)
-  if [[ -z "$result" ]]; then
+  local out id_line
+  out=$(queue_psql "$(build_priority_sql "$task_id" "$new_priority")" -t -A)
+  # $out is polluted with non-data lines that psql always prints regardless of -t/-A: the "SET" tag
+  # from queue_psql's search_path prefix statement, and the "UPDATE N" command-completion tag -- both
+  # present even when RETURNING matched zero rows (confirmed empirically against a live postgres:16
+  # client: UPDATE ... WHERE <no match> RETURNING id still prints "SET\nUPDATE 0", never empty). A
+  # bare `[[ -z "$out" ]]` check is therefore never true and would always report success, even for a
+  # nonexistent or already-started task_id. Filter down to a line that is purely the numeric id
+  # RETURNING would emit on an actual match. `|| true` is required: grep exits 1 on the legitimate
+  # "no row matched" case, which under `set -e` would otherwise be treated as this function failing.
+  id_line=$(grep -E '^[0-9]+$' <<< "$out" || true)
+  if [[ -z "$id_line" ]]; then
     echo "Task ${task_id} already started (or doesn't exist) -- priority can no longer be changed." >&2
     exit 1
   fi
@@ -828,9 +837,12 @@ cmd_priority() {
 
 cmd_cancel() {
   local task_id="$1"
-  local result
-  result=$(queue_psql "$(build_cancel_sql "$task_id")" -t -A)
-  if [[ -z "$result" ]]; then
+  local out id_line
+  out=$(queue_psql "$(build_cancel_sql "$task_id")" -t -A)
+  # See cmd_priority above for why a bare `-z "$out"` check is wrong -- the SET/UPDATE-N tags are
+  # always present, so filter down to the bare numeric id line RETURNING emits on an actual match.
+  id_line=$(grep -E '^[0-9]+$' <<< "$out" || true)
+  if [[ -z "$id_line" ]]; then
     echo "Task ${task_id} already started (or doesn't exist) -- can no longer be cancelled." >&2
     exit 1
   fi
