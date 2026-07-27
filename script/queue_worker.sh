@@ -8,6 +8,8 @@ set -euo pipefail
 # Usage: script/queue_worker.sh
 # Requires QUEUE_DATABASE_URL (see script/load_env.sh / .env.example).
 
+QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
+
 parse_queue_signal() {
   local output="$1"
   grep -o 'QUEUE_SIGNAL: [A-Z_]*' <<< "$output" | tail -1 | awk '{print $2}'
@@ -34,7 +36,7 @@ should_stop_looping() {
 
 reclaim_stale_leases() {
   queue_psql "
-    UPDATE task_queue SET status='queued', claimed_by=NULL, claimed_at=NULL
+    UPDATE ${QUEUE_TABLE} SET status='queued', claimed_by=NULL, claimed_at=NULL
     WHERE status='running' AND claimed_at < now() - interval '${LEASE_TIMEOUT_HOURS:-4} hours';" -t -A >/dev/null
 }
 
@@ -46,11 +48,11 @@ reclaim_stale_leases() {
 claim_next_task() {
   local out
   if ! out=$(queue_psql "
-    UPDATE task_queue SET status='running', claimed_by='${WORKER_ID}', claimed_at=now()
+    UPDATE ${QUEUE_TABLE} SET status='running', claimed_by='${WORKER_ID}', claimed_at=now()
     WHERE id = (
-      SELECT id FROM task_queue
+      SELECT id FROM ${QUEUE_TABLE}
       WHERE status='queued'
-        AND table_name NOT IN (SELECT table_name FROM task_queue WHERE status='running')
+        AND table_name NOT IN (SELECT table_name FROM ${QUEUE_TABLE} WHERE status='running')
       ORDER BY priority DESC, submitted_at ASC
       FOR UPDATE SKIP LOCKED LIMIT 1
     )
@@ -60,18 +62,17 @@ claim_next_task() {
     echo "$out" >&2
     return 1
   fi
-  # $out is polluted with non-data lines that psql always prints regardless of -t/-A: the "SET" tag
-  # from queue_psql's search_path prefix statement, and (empirically confirmed against a live
-  # postgres:16 client) the "UPDATE 1" command-completion tag that psql prints for an UPDATE...
-  # RETURNING even under -t. Only the actual data line contains the -F'|' separator, so filter down to
-  # that. `|| true` is required: grep exits 1 on the legitimate "no row claimed" case (empty $out),
-  # which under `set -e` would otherwise be treated as this function failing.
+  # $out is polluted with non-data lines that psql always prints regardless of -t/-A: the "UPDATE 1"
+  # command-completion tag (confirmed empirically against a live postgres:16 client) that psql prints
+  # for an UPDATE...RETURNING even under -t. Only the actual data line contains the -F'|' separator, so
+  # filter down to that. `|| true` is required: grep exits 1 on the legitimate "no row claimed" case
+  # (empty $out), which under `set -e` would otherwise be treated as this function failing.
   grep '|' <<< "$out" || true
 }
 
 heartbeat() {
   local id="$1"
-  queue_psql "UPDATE task_queue SET claimed_at=now() WHERE id=${id} AND status='running';" -t -A >/dev/null
+  queue_psql "UPDATE ${QUEUE_TABLE} SET claimed_at=now() WHERE id=${id} AND status='running';" -t -A >/dev/null
 }
 
 run_underlying_script() {
@@ -94,16 +95,11 @@ run_underlying_script() {
 # (see Global Constraints: this design does not alter that column, to touch the shared table as little
 # as possible).
 #
-# NOTE: this deliberately does NOT use `psql -v ... -c "... :'var' ..."` the way the brief originally
-# specified. Empirically confirmed against a fresh, unmodified `postgres:16` client (not a shim/
-# PgBouncer artifact -- reproduced against a bare local container with no queue_psql involved at all):
-# psql's `:'var'` / `:var` interpolation is simply never performed inside a `-c` string, only for
-# `-f`/stdin input. `-v` + `-c` combined with colon-variables always raises
-# `ERROR: syntax error at or near ":"`. Since queue_psql (Task 1) sends everything through `-c` (see
-# script/load_env.sh's own comment on why -- PgBouncer + a single implicit-transaction -c string is
-# load-bearing there), colon-variable substitution can never work through it. Falling back to the
-# same inline-SQL-building convention already used by Task 5's build_submit_sql/build_*_sql
-# (docs/superpowers/plans/2026-07-27-task-queue.md), with the same single-quote-doubling escape.
+# Deliberately does NOT use `psql -v ... -c "... :'var' ..."` for this -- confirmed empirically against
+# a fresh, unmodified postgres:16 client (not a shim/PgBouncer artifact) that psql's `:'var'`
+# interpolation is never performed inside a `-c` string, only for `-f`/stdin input; `-v` + `-c` with
+# colon-variables raises `ERROR: syntax error at or near ":"`. Uses the same inline-SQL-building
+# convention as Task 5's build_submit_sql/build_*_sql instead.
 _sql_quote() {
   local s="$1"
   echo "'${s//\'/\'\'}'"
@@ -114,7 +110,7 @@ persist_final_status() {
   local last_result_json
   last_result_json=$(printf '%s' "$output" | jq -Rs '{raw_output: .}')
   queue_psql "
-      UPDATE task_queue
+      UPDATE ${QUEUE_TABLE}
       SET status = $(_sql_quote "$status"), iterations_run = ${iterations_run}, updated_at = now(),
           last_result = $(_sql_quote "$last_result_json")::json
       WHERE id = ${id};" \

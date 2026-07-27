@@ -15,6 +15,8 @@ set -euo pipefail
 #
 # Requires QUEUE_DATABASE_URL (see script/load_env.sh / .env.example).
 
+QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
+
 sql_quote() {
   local s="$1"
   echo "'${s//\'/\'\'}'"
@@ -27,7 +29,7 @@ build_submit_sql() {
   [[ -z "$max_turns" ]] && max_turns_sql="NULL" || max_turns_sql="$max_turns"
   [[ -z "$block_size" ]] && block_size_sql="NULL" || block_size_sql="$block_size"
   cat <<SQL
-INSERT INTO task_queue (table_name, script_type, month, max_turns, block_size, loop_count, priority, status, submitted_at, iterations_run)
+INSERT INTO ${QUEUE_TABLE} (table_name, script_type, month, max_turns, block_size, loop_count, priority, status, submitted_at, iterations_run)
 VALUES ($(sql_quote "$table"), $(sql_quote "$script_type"), ${month_sql}, ${max_turns_sql}, ${block_size_sql}, ${loop_count}, ${priority}, 'queued', now(), 0)
 RETURNING id;
 SQL
@@ -36,20 +38,20 @@ SQL
 build_list_sql() {
   local status_filter="$1"
   if [[ -z "$status_filter" ]]; then
-    echo "SELECT id, table_name, script_type, status, priority, iterations_run, loop_count, submitted_at FROM task_queue ORDER BY status, priority DESC, submitted_at ASC;"
+    echo "SELECT id, table_name, script_type, status, priority, iterations_run, loop_count, submitted_at FROM ${QUEUE_TABLE} ORDER BY status, priority DESC, submitted_at ASC;"
   else
-    echo "SELECT id, table_name, script_type, status, priority, iterations_run, loop_count, submitted_at FROM task_queue WHERE status = $(sql_quote "$status_filter") ORDER BY priority DESC, submitted_at ASC;"
+    echo "SELECT id, table_name, script_type, status, priority, iterations_run, loop_count, submitted_at FROM ${QUEUE_TABLE} WHERE status = $(sql_quote "$status_filter") ORDER BY priority DESC, submitted_at ASC;"
   fi
 }
 
 build_priority_sql() {
   local task_id="$1" new_priority="$2"
-  echo "UPDATE task_queue SET priority = ${new_priority}, updated_at = now() WHERE id = ${task_id} AND status = 'queued' RETURNING id;"
+  echo "UPDATE ${QUEUE_TABLE} SET priority = ${new_priority}, updated_at = now() WHERE id = ${task_id} AND status = 'queued' RETURNING id;"
 }
 
 build_cancel_sql() {
   local task_id="$1"
-  echo "UPDATE task_queue SET status = 'cancelled', updated_at = now() WHERE id = ${task_id} AND status = 'queued' RETURNING id;"
+  echo "UPDATE ${QUEUE_TABLE} SET status = 'cancelled', updated_at = now() WHERE id = ${task_id} AND status = 'queued' RETURNING id;"
 }
 
 cmd_submit() {
@@ -79,14 +81,13 @@ cmd_priority() {
   local task_id="$1" new_priority="$2"
   local out id_line
   out=$(queue_psql "$(build_priority_sql "$task_id" "$new_priority")" -t -A)
-  # $out is polluted with non-data lines that psql always prints regardless of -t/-A: the "SET" tag
-  # from queue_psql's search_path prefix statement, and the "UPDATE N" command-completion tag --
-  # both present even when RETURNING matched zero rows (empirically confirmed against a live
-  # postgres:16 client; see script/queue_worker.sh's claim_next_task for the same finding). A bare
-  # `[[ -z "$out" ]]` check is therefore never true and would always report success. Filter down to
-  # a line that is purely the numeric id RETURNING would emit. `|| true` is required: grep exits 1
-  # on the legitimate "no row matched" case, which under `set -e` would otherwise be treated as this
-  # function failing.
+  # $out is polluted with the "UPDATE N" command-completion tag that psql always prints regardless of
+  # -t/-A, present even when RETURNING matched zero rows (confirmed empirically against a live
+  # postgres:16 client: UPDATE ... WHERE <no match> RETURNING id still prints "UPDATE 0", never empty).
+  # A bare `[[ -z "$out" ]]` check is therefore never true and would always report success, even for a
+  # nonexistent or already-started task_id. Filter down to a line that is purely the numeric id
+  # RETURNING would emit on an actual match. `|| true` is required: grep exits 1 on the legitimate
+  # "no row matched" case, which under `set -e` would otherwise be treated as this function failing.
   id_line=$(grep -E '^[0-9]+$' <<< "$out" || true)
   if [[ -z "$id_line" ]]; then
     echo "Task ${task_id} already started (or doesn't exist) -- priority can no longer be changed." >&2
@@ -99,8 +100,8 @@ cmd_cancel() {
   local task_id="$1"
   local out id_line
   out=$(queue_psql "$(build_cancel_sql "$task_id")" -t -A)
-  # See cmd_priority for why we can't just check `-z "$out"` -- the SET/UPDATE-N tags are always
-  # present, so we filter down to the bare numeric id line RETURNING emits on an actual match.
+  # See cmd_priority above for why a bare `-z "$out"` check is wrong -- the UPDATE-N tag is always
+  # present, so filter down to the bare numeric id line RETURNING emits on an actual match.
   id_line=$(grep -E '^[0-9]+$' <<< "$out" || true)
   if [[ -z "$id_line" ]]; then
     echo "Task ${task_id} already started (or doesn't exist) -- can no longer be cancelled." >&2

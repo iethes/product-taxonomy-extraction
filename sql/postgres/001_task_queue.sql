@@ -1,7 +1,9 @@
 -- sql/postgres/001_task_queue.sql
--- Applied once by hand:
+-- Reference DDL -- shown here against the bare table name for readability. Applied once by hand
+-- against the REAL, schema-qualified table (never against a bare, unqualified name -- see Global
+-- Constraints on why no SET search_path is ever used in this design):
 --   source script/load_env.sh
---   queue_psql "$(cat sql/postgres/001_task_queue.sql)"
+--   queue_psql "CREATE UNIQUE INDEX IF NOT EXISTS one_running_task_per_table ON ${QUEUE_TABLE} (table_name) WHERE status = 'running';"
 --
 -- task_queue already exists (created via NocoDB's UI) with the columns this design needs, plus
 -- NocoDB's own audit columns (created_at, updated_at, created_by, updated_by, nc_order, __nc_deleted,

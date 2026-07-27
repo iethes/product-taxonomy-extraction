@@ -29,27 +29,34 @@ output=$(cd "$tmpdir" && bash -c 'source script/load_env.sh; echo "${QUEUE_DATAB
 rm -rf "$tmpdir"
 echo "PASS: load_env.sh no-op when .env absent"
 
-# --- queue_psql prefixes SET search_path when QUEUE_SCHEMA is set ---
+# --- queue_psql passes the query through unmodified, and never touches search_path ---
 # queue_psql shells out to the real `psql` binary, so stub PATH with a fake one that just echoes its
-# args back -- no real Postgres connection needed to test the prefixing logic itself.
+# args back -- no real Postgres connection needed to test this.
+#
+# NOTE: queue_psql does NOT select a schema. An earlier version prefixed a `SET search_path` onto the
+# query -- found live, empirically, to leak across this PgBouncer's transaction-pooled connection reuse
+# onto OTHER clients (confirmed: a SET from one connection was still visible on ten separate fresh
+# connections afterward, since transaction pooling does not run a reset query between every hand-off).
+# Schema selection is instead done via $QUEUE_TABLE (a fully-qualified table name, see Tasks 4/5) --
+# queue_psql itself must never emit a SET statement of any kind. This test asserts the negative: no
+# `search_path` string ever appears in what queue_psql sends to psql, regardless of QUEUE_SCHEMA.
 tmpdir=$(mktemp -d)
 mkdir -p "$tmpdir/bin"
-mkdir -p "$tmpdir/script"
-cp script/load_env.sh "$tmpdir/script/"
 cat > "$tmpdir/bin/psql" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@"
 EOF
 chmod +x "$tmpdir/bin/psql"
 
-output=$(cd "$tmpdir" && PATH="$tmpdir/bin:$PATH" QUEUE_DATABASE_URL="postgres://fake" QUEUE_SCHEMA="myschema" bash -c '
+output=$(PATH="$tmpdir/bin:$PATH" QUEUE_DATABASE_URL="postgres://fake" QUEUE_SCHEMA="myschema" bash -c '
   source script/load_env.sh
   queue_psql "SELECT 1;" -t -A
 ')
-grep -qF "SET search_path TO myschema; SELECT 1;" <<< "$output" || fail "queue_psql should prefix the SQL with SET search_path when QUEUE_SCHEMA is set"
+grep -qF "SELECT 1;" <<< "$output" || fail "queue_psql should pass the SQL through unmodified"
 grep -qF -- "-t" <<< "$output" || fail "queue_psql should still pass through extra psql flags"
+[[ "$output" != *"search_path"* ]] || fail "queue_psql must NEVER inject a SET search_path, even when QUEUE_SCHEMA is set -- that leaked across PgBouncer's pooled connections in production"
 
-output=$(cd "$tmpdir" && PATH="$tmpdir/bin:$PATH" QUEUE_DATABASE_URL="postgres://fake" bash -c '
+output=$(PATH="$tmpdir/bin:$PATH" QUEUE_DATABASE_URL="postgres://fake" bash -c '
   source script/load_env.sh
   queue_psql "SELECT 1;" -t -A
 ')

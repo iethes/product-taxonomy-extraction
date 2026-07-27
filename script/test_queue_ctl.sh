@@ -6,9 +6,19 @@ set -euo pipefail
 # Run: bash script/test_queue_ctl.sh
 
 cd "$(dirname "$0")/.."
+# QUEUE_SCHEMA is unset explicitly (not just left alone) so this test is deterministic even when run
+# from an interactive shell that already exported it via `source script/load_env.sh` earlier in the
+# same session -- QUEUE_TABLE is computed once, at source time, from whatever QUEUE_SCHEMA the process
+# environment happens to hold, so an inherited real value would otherwise silently change what these
+# assertions need to match.
+unset QUEUE_SCHEMA
 source script/queue_ctl.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
+
+# --- QUEUE_TABLE ---
+[[ "$QUEUE_TABLE" == "public.task_queue" ]] || fail "QUEUE_TABLE should default to public.task_queue when QUEUE_SCHEMA is unset, got '$QUEUE_TABLE'"
+echo "PASS: QUEUE_TABLE default"
 
 # --- sql_quote ---
 [[ "$(sql_quote "shopee_th_shampoo")" == "'shopee_th_shampoo'" ]] || fail "plain string should just be quoted"
@@ -17,6 +27,7 @@ echo "PASS: sql_quote"
 
 # --- build_submit_sql ---
 sql=$(build_submit_sql "shopee_th_shampoo" "headless_taxonomy" "" "" "" "3" "100")
+grep -qF "INSERT INTO public.task_queue" <<< "$sql" || fail "should target the fully-qualified QUEUE_TABLE, not bare task_queue"
 grep -qF "'shopee_th_shampoo'" <<< "$sql" || fail "should quote the table name"
 grep -qF "'headless_taxonomy'" <<< "$sql" || fail "should quote the script_type"
 grep -qF "NULL, NULL, NULL" <<< "$sql" || fail "omitted month/max_turns/block_size should become SQL NULL"
@@ -29,6 +40,7 @@ echo "PASS: build_submit_sql"
 
 # --- build_list_sql ---
 sql=$(build_list_sql "")
+grep -qF "FROM public.task_queue" <<< "$sql" || fail "should target the fully-qualified QUEUE_TABLE"
 [[ "$sql" != *"WHERE"* ]] || fail "no status filter should mean no WHERE clause"
 
 sql=$(build_list_sql "queued")
@@ -37,12 +49,14 @@ echo "PASS: build_list_sql"
 
 # --- build_priority_sql ---
 sql=$(build_priority_sql "42" "500")
+grep -qF "UPDATE public.task_queue" <<< "$sql" || fail "should target the fully-qualified QUEUE_TABLE"
 grep -qF "SET priority = 500" <<< "$sql" || fail "should set the new priority"
 grep -qF "WHERE id = 42 AND status = 'queued'" <<< "$sql" || fail "must guard the UPDATE to status='queued' only"
 echo "PASS: build_priority_sql"
 
 # --- build_cancel_sql ---
 sql=$(build_cancel_sql "42")
+grep -qF "UPDATE public.task_queue" <<< "$sql" || fail "should target the fully-qualified QUEUE_TABLE"
 grep -qF "SET status = 'cancelled'" <<< "$sql" || fail "should set status to cancelled"
 grep -qF "WHERE id = 42 AND status = 'queued'" <<< "$sql" || fail "must guard the UPDATE to status='queued' only"
 echo "PASS: build_cancel_sql"
