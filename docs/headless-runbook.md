@@ -456,3 +456,54 @@ that writes to production once it starts.
   the `QUALIFY ROW_NUMBER()` clause in the `USING` subquery already guards against the multi-model-variant
   version of this error (the same fix `CLAUDE.md`'s farsight troubleshooting entry documents for the old
   NULLIFY+UPDATE pattern — same root cause, applies equally to `MERGE`'s `USING` subquery).
+
+## Queue Mode
+
+An alternative to running `headless_taxonomy.sh` / `targeted_qa_fix.sh` by hand: submit them as
+priority-queued tasks and let one or more `script/queue_worker.sh` processes pull and run them. See
+`docs/superpowers/specs/2026-07-27-task-queue-design.md` for the full design.
+
+### Setup
+
+1. `psql` must be installed and on `$PATH` (or run it via `docker run --rm postgres:16 psql ...` if you'd rather not install it).
+2. Copy `.env.example` to `.env` and set `QUEUE_DATABASE_URL`. Also set `QUEUE_SCHEMA` if your `task_queue` table lives in a non-default schema (the current deployment uses a NocoDB-hosted Postgres, schema `p4ct2g2urhzcfnz` — not `public`).
+3. Apply the one-time migration: `source script/load_env.sh; queue_psql "$(cat sql/postgres/001_task_queue.sql)"`. All queue tooling reads/writes through `queue_psql`, never raw `psql`, so `QUEUE_SCHEMA` is honored everywhere automatically.
+
+**Never manage queue rows through NocoDB's own grid UI** if `task_queue` happens to live in a NocoDB-hosted database (as the current deployment does) — NocoDB soft-deletes (sets its own `__nc_deleted` flag) without touching `status`, so a row "deleted" that way would still read `status='queued'` and the worker would still claim and run it. Always use `queue_ctl.sh cancel` to remove a queued task.
+
+### Submitting and managing tasks
+
+```bash
+source script/load_env.sh
+script/queue_ctl.sh submit shopee_th_shampoo headless_taxonomy --priority 200
+script/queue_ctl.sh submit shopee_th_shampoo targeted_qa_fix --loop-count 1 --priority 100
+script/queue_ctl.sh list --status queued
+script/queue_ctl.sh priority <id> 500
+script/queue_ctl.sh cancel <id>
+```
+
+The same operations are also exposed as a Windmill UI, built separately against the same Postgres
+table — see the design spec's §7 for the UI's own build prompt.
+
+### Running workers
+
+```bash
+source script/load_env.sh
+script/queue_worker.sh
+```
+
+Each worker is a long-running loop: it claims the highest-priority queued task for a table no other
+worker currently holds, runs the appropriate script up to `loop_count` times (stopping early if the
+script's own live pre-check finds nothing left to do), and persists the result. Run multiple instances
+(tmux, nohup, systemd — your choice) to process several categories concurrently; two workers will never
+claim the same `table_name` at once — see the design spec's §3 for why.
+
+### `loop_count` guidance
+
+- `headless_taxonomy.sh` tasks and `targeted_qa_fix.sh` auto-discovery-mode tasks can self-detect
+  "nothing left to do" (a live `gap_count`/worklist-count pre-check re-run at the start of every
+  iteration) — `loop_count = 3` (the default) is safe and will stop itself early once the category is
+  caught up.
+- `targeted_qa_fix.sh` **brief-mode** tasks (a hand-written `## Targeted QA Fix Brief` section) cannot
+  self-detect completion — set `--loop-count 1` for those unless you specifically know the brief needs
+  multiple passes, or the wrapper will simply re-run the same brief redundantly.
