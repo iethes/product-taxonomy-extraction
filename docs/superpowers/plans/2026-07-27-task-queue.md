@@ -222,8 +222,11 @@ CREATE INDEX
 
 - [ ] **Step 3: Verify the index exists**
 
+`\d` is a psql meta-command, not SQL — it cannot be combined with a `SET search_path` statement in one `-c` string, so `queue_psql`'s prefix (whenever `QUEUE_SCHEMA` is set) breaks it. Capture the real schema first, then blank `QUEUE_SCHEMA` for this one read-only call and schema-qualify the target directly instead:
+
 ```bash
-queue_psql "\d task_queue"
+schema="${QUEUE_SCHEMA:-public}"
+QUEUE_SCHEMA="" queue_psql "\d ${schema}.task_queue"
 ```
 
 Expected: under `Indexes:`, alongside NocoDB's existing `task_queue_pkey`/`task_queue_deleted_idx`/`task_queue_order_idx`, a new line similar to:
