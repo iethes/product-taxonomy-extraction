@@ -13,7 +13,9 @@
 - Storage is Postgres only — not Redis, RabbitMQ, or BigQuery — for `task_queue` (see `docs/superpowers/specs/2026-07-27-task-queue-design.md` §1).
 - `QUEUE_DATABASE_URL` (a standard libpq connection string) is required by `queue_worker.sh` and `queue_ctl.sh`, loaded via `script/load_env.sh` sourcing `.env` if present.
 - **Real deployment target (confirmed live):** the Postgres is a NocoDB-hosted instance behind PgBouncer (port 6432, transaction pooling), schema `p4ct2g2urhzcfnz`, not `public`. `QUEUE_SCHEMA` (new env var, also loaded via `.env`) holds this schema name. NocoDB's UI already created a `task_queue` table in that schema with its own audit columns (`created_at`, `updated_at`, `created_by`, `updated_by`, `nc_order`, `__nc_deleted`, `nc_row_meta`, `title`) alongside the columns this design needs — leave NocoDB's columns alone, do not drop or rename them.
-- **Every SQL call MUST go through the `queue_psql` helper (Task 1), never raw `psql "$QUEUE_DATABASE_URL"` directly.** This PgBouncer rejects the `options=-csearch_path=...` connection-string trick (confirmed live: `unsupported startup parameter in options: search_path`), and a schema-selecting `SET search_path` sent as its own separate `-c` call is not safe either — PgBouncer can hand a transaction-pooled client a different backend connection between two separate `-c` invocations, silently losing the `SET`. `queue_psql` avoids both by prefixing `SET search_path TO ${QUEUE_SCHEMA};` onto the SAME `-c` string as the query, which Postgres runs as one implicit transaction on one backend connection (confirmed live to work).
+- **Every SQL call MUST go through the `queue_psql` helper (Task 1), never raw `psql "$QUEUE_DATABASE_URL"` directly** — a single point of truth for the connection string. `queue_psql` does NOT select a schema itself.
+- **Every query MUST target the fully-qualified `${QUEUE_TABLE}` (`${QUEUE_SCHEMA:-public}.task_queue`), never bare `task_queue`.** No `SET search_path` of any kind — session-scoped or otherwise — may appear anywhere in this design. **This was a real, live-confirmed production bug, not a hypothetical:** an earlier version of this design used `SET search_path TO ${QUEUE_SCHEMA}` prefixed onto each query. Since this PgBouncer runs in transaction-pooling mode, that `SET` is session-scoped and does NOT reset when the backend connection returns to the pool — confirmed empirically live (one connection ran `SET search_path TO p4ct2g2urhzcfnz`; ten separate, brand-new connections afterward all inherited it instead of the correct default `public`, and stayed polluted until manually reset). On a shared instance also serving NocoDB's own app, that silently redirects any of NocoDB's own *unqualified* queries that happen to land on the same recycled backend. Schema-qualifying every table reference removes any need for `SET` at all, so this whole class of leak is structurally impossible rather than merely mitigated — this is a stronger fix than `SET LOCAL search_path` (which would have closed the leak but kept the design coupled to session/transaction semantics for no remaining benefit, since the `options=-csearch_path=...` connection-string parameter is separately confirmed rejected by this PgBouncer: `unsupported startup parameter in options: search_path`).
+- `QUEUE_TABLE` is computed as a plain, side-effect-free top-level assignment (`QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"`) at the top of `queue_worker.sh` and `queue_ctl.sh` — NOT inside `load_env.sh`'s `main()`-gated env loading, and NOT gated behind sourcing `.env` at all. It must be available the moment either script is sourced (including when sourced for pure-function testing, before `.env` has ever been read), so every `build_*_sql`/query-building function can reference it unconditionally.
 - Confirmed (this session): the table is empty, so no destructive migration risk; do not add DB-level `DEFAULT`/`NOT NULL`/`CHECK` constraints to NocoDB's existing columns — this design touches that shared table with exactly one additive, idempotent statement (the required unique index) and instead sets every column this design depends on (`status`, `submitted_at`, `iterations_run`) explicitly in its own `INSERT`, never relying on a table default.
 - **Never delete a queue row via NocoDB's own grid UI.** NocoDB soft-deletes (sets `__nc_deleted=true`, confirmed by the dedicated `task_queue_deleted_idx` index) without changing `status` — a "deleted" row would still read `status='queued'` and the worker would still claim and run it. Per the confirmed operating model, NocoDB's grid is not used to manage queue rows at all; cancellation always goes through `queue_ctl.sh cancel` (which sets `status='cancelled'`, the actual signal every query in this design checks).
 - `task_queue.priority`: higher integer = higher priority; default `100`.
@@ -37,7 +39,7 @@
 - Modify: `.gitignore`
 
 **Interfaces:**
-- Produces: `script/load_env.sh`, sourced (not executed) by `script/queue_worker.sh` and `script/queue_ctl.sh` in Tasks 4 and 5 — `source "$(dirname "$0")/load_env.sh"`. Exports every variable assigned while reading `.env` (if present) into the calling process's environment. No-op if `.env` doesn't exist. Also produces `queue_psql(sql, [extra psql flags...])`, the ONLY way any later task may run a query against `$QUEUE_DATABASE_URL` (see Global Constraints) — consumed by Tasks 2, 4, and 5.
+- Produces: `script/load_env.sh`, sourced (not executed) by `script/queue_worker.sh` and `script/queue_ctl.sh` in Tasks 4 and 5 — `source "$(dirname "$0")/load_env.sh"`. Exports every variable assigned while reading `.env` (if present) into the calling process's environment. No-op if `.env` doesn't exist. Also produces `queue_psql(sql, [extra psql flags...])`, the ONLY way any later task may run a query against `$QUEUE_DATABASE_URL` (see Global Constraints) — consumed by Tasks 2, 4, and 5. Does NOT select a schema — that's `$QUEUE_TABLE`'s job (Tasks 4/5), computed independently in each consuming script.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -75,9 +77,17 @@ output=$(cd "$tmpdir" && bash -c 'source script/load_env.sh; echo "${QUEUE_DATAB
 rm -rf "$tmpdir"
 echo "PASS: load_env.sh no-op when .env absent"
 
-# --- queue_psql prefixes SET search_path when QUEUE_SCHEMA is set ---
+# --- queue_psql passes the query through unmodified, and never touches search_path ---
 # queue_psql shells out to the real `psql` binary, so stub PATH with a fake one that just echoes its
-# args back -- no real Postgres connection needed to test the prefixing logic itself.
+# args back -- no real Postgres connection needed to test this.
+#
+# NOTE: queue_psql does NOT select a schema. An earlier version prefixed a `SET search_path` onto the
+# query -- found live, empirically, to leak across this PgBouncer's transaction-pooled connection reuse
+# onto OTHER clients (confirmed: a SET from one connection was still visible on ten separate fresh
+# connections afterward, since transaction pooling does not run a reset query between every hand-off).
+# Schema selection is instead done via $QUEUE_TABLE (a fully-qualified table name, see Tasks 4/5) --
+# queue_psql itself must never emit a SET statement of any kind. This test asserts the negative: no
+# `search_path` string ever appears in what queue_psql sends to psql, regardless of QUEUE_SCHEMA.
 tmpdir=$(mktemp -d)
 mkdir -p "$tmpdir/bin"
 cat > "$tmpdir/bin/psql" <<'EOF'
@@ -90,8 +100,9 @@ output=$(PATH="$tmpdir/bin:$PATH" QUEUE_DATABASE_URL="postgres://fake" QUEUE_SCH
   source script/load_env.sh
   queue_psql "SELECT 1;" -t -A
 ')
-grep -qF "SET search_path TO myschema; SELECT 1;" <<< "$output" || fail "queue_psql should prefix the SQL with SET search_path when QUEUE_SCHEMA is set"
+grep -qF "SELECT 1;" <<< "$output" || fail "queue_psql should pass the SQL through unmodified"
 grep -qF -- "-t" <<< "$output" || fail "queue_psql should still pass through extra psql flags"
+[[ "$output" != *"search_path"* ]] || fail "queue_psql must NEVER inject a SET search_path, even when QUEUE_SCHEMA is set -- that leaked across PgBouncer's pooled connections in production"
 
 output=$(PATH="$tmpdir/bin:$PATH" QUEUE_DATABASE_URL="postgres://fake" bash -c '
   source script/load_env.sh
@@ -123,18 +134,22 @@ set -a
 [[ -f "$(dirname "${BASH_SOURCE[0]}")/../.env" ]] && source "$(dirname "${BASH_SOURCE[0]}")/../.env"
 set +a
 
-# Wraps `psql "$QUEUE_DATABASE_URL"`, transparently selecting QUEUE_SCHEMA (if set) via a
-# `SET search_path` issued as the first statement in the SAME -c string as the query. Required
-# because some deployments (e.g. a PgBouncer-fronted instance in transaction-pooling mode) reject the
-# `options=-csearch_path=...` connection-string parameter, and a separate `-c "SET ..."` call is not
-# safe either -- PgBouncer can hand a transaction-pooled client a different backend connection between
-# two separate -c calls, silently losing the SET. A single -c string is one implicit transaction on
-# one backend connection, so the SET reliably applies to the query that follows it.
+# Wraps `psql "$QUEUE_DATABASE_URL"` -- the single point of truth for the connection string. Does NOT
+# select a schema (no `SET search_path`, no `options=-csearch_path=...`). An earlier version of this
+# helper prefixed a `SET search_path TO ${QUEUE_SCHEMA}` onto every query's -c string -- found live,
+# empirically, to leak: this deployment's PgBouncer runs in transaction-pooling mode, where a plain
+# (session-scoped) SET does NOT reset when the backend connection returns to the pool, so it silently
+# carries over onto whatever OTHER client (including NocoDB's own app, sharing this database) gets
+# handed that backend next. Confirmed: one connection ran the SET, and ten separate fresh connections
+# afterward all inherited it instead of the correct default. Schema selection is instead done by
+# fully-qualifying the table name in every query ($QUEUE_TABLE, computed in queue_worker.sh/
+# queue_ctl.sh -- see those files) -- this removes the need for any SET at all, so the leak is
+# structurally impossible rather than merely patched.
 # Usage: queue_psql "<sql>" [extra psql flags...]
 queue_psql() {
   local sql="$1"
   shift
-  psql "$QUEUE_DATABASE_URL" "$@" -c "${QUEUE_SCHEMA:+SET search_path TO ${QUEUE_SCHEMA}; }${sql}"
+  psql "$QUEUE_DATABASE_URL" "$@" -c "$sql"
 }
 ```
 
@@ -143,8 +158,8 @@ Create `.env.example`:
 ```bash
 # Copy to .env and fill in real values. .env itself is gitignored -- never commit real credentials.
 QUEUE_DATABASE_URL=postgres://user:password@localhost:5432/taxonomy_queue
-# Schema to SET search_path to before every query (see script/load_env.sh's queue_psql). Leave unset
-# to use the connection's default schema (usually "public").
+# Schema task_queue lives in (used to build the fully-qualified $QUEUE_TABLE -- see
+# script/queue_worker.sh / script/queue_ctl.sh). Leave unset to default to "public".
 QUEUE_SCHEMA=
 POLL_INTERVAL_SECONDS=15
 LEASE_TIMEOUT_HOURS=4
@@ -194,9 +209,11 @@ This task has no bash logic to unit-test — its "test" is applying the migratio
 
 ```sql
 -- sql/postgres/001_task_queue.sql
--- Applied once by hand:
+-- Reference DDL -- shown here against the bare table name for readability. Applied once by hand
+-- against the REAL, schema-qualified table (never against a bare, unqualified name -- see Global
+-- Constraints on why no SET search_path is ever used in this design):
 --   source script/load_env.sh
---   queue_psql "$(cat sql/postgres/001_task_queue.sql)"
+--   queue_psql "CREATE UNIQUE INDEX IF NOT EXISTS one_running_task_per_table ON ${QUEUE_TABLE} (table_name) WHERE status = 'running';"
 --
 -- task_queue already exists (created via NocoDB's UI) with the columns this design needs, plus
 -- NocoDB's own audit columns (created_at, updated_at, created_by, updated_by, nc_order, __nc_deleted,
@@ -212,7 +229,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_running_task_per_table
 
 ```bash
 source script/load_env.sh
-queue_psql "$(cat sql/postgres/001_task_queue.sql)"
+queue_psql "CREATE UNIQUE INDEX IF NOT EXISTS one_running_task_per_table ON ${QUEUE_TABLE} (table_name) WHERE status = 'running';"
 ```
 
 Expected output:
@@ -222,11 +239,8 @@ CREATE INDEX
 
 - [ ] **Step 3: Verify the index exists**
 
-`\d` is a psql meta-command, not SQL — it cannot be combined with a `SET search_path` statement in one `-c` string, so `queue_psql`'s prefix (whenever `QUEUE_SCHEMA` is set) breaks it. Capture the real schema first, then blank `QUEUE_SCHEMA` for this one read-only call and schema-qualify the target directly instead:
-
 ```bash
-schema="${QUEUE_SCHEMA:-public}"
-QUEUE_SCHEMA="" queue_psql "\d ${schema}.task_queue"
+queue_psql "\d ${QUEUE_TABLE}"
 ```
 
 Expected: under `Indexes:`, alongside NocoDB's existing `task_queue_pkey`/`task_queue_deleted_idx`/`task_queue_order_idx`, a new line similar to:
@@ -238,16 +252,16 @@ Expected: under `Indexes:`, alongside NocoDB's existing `task_queue_pkey`/`task_
 
 ```bash
 queue_psql "
-  INSERT INTO task_queue (table_name, script_type, status) VALUES
+  INSERT INTO ${QUEUE_TABLE} (table_name, script_type, status) VALUES
     ('test_table','headless_taxonomy','queued'), ('test_table','headless_taxonomy','queued') RETURNING id;"
 
 queue_psql "
-  UPDATE task_queue SET status='running'
-  WHERE table_name='test_table' AND id = (SELECT MIN(id) FROM task_queue WHERE table_name='test_table');"
+  UPDATE ${QUEUE_TABLE} SET status='running'
+  WHERE table_name='test_table' AND id = (SELECT MIN(id) FROM ${QUEUE_TABLE} WHERE table_name='test_table');"
 
 queue_psql "
-  UPDATE task_queue SET status='running'
-  WHERE table_name='test_table' AND id = (SELECT MAX(id) FROM task_queue WHERE table_name='test_table');"
+  UPDATE ${QUEUE_TABLE} SET status='running'
+  WHERE table_name='test_table' AND id = (SELECT MAX(id) FROM ${QUEUE_TABLE} WHERE table_name='test_table');"
 ```
 
 Expected: the first `UPDATE` succeeds (`UPDATE 1`). The second fails:
@@ -260,7 +274,7 @@ This is the exact error `script/queue_worker.sh` (Task 3/4) must treat as an exp
 - [ ] **Step 5: Clean up test rows**
 
 ```bash
-queue_psql "DELETE FROM task_queue WHERE table_name='test_table';"
+queue_psql "DELETE FROM ${QUEUE_TABLE} WHERE table_name='test_table';"
 ```
 
 - [ ] **Step 6: Commit**
@@ -415,21 +429,27 @@ git commit -m "Add queue_worker.sh signal-parsing and status-decision helpers"
 
 **Interfaces:**
 - Consumes: `parse_queue_signal`, `is_duplicate_key_error`, `queue_signal_to_status`, `should_stop_looping` (Task 3); `script/load_env.sh` and `queue_psql` (Task 1); the `task_queue` table + `one_running_task_per_table` index (Task 2).
-- Produces: `main()`, run when the script is executed directly (`./script/queue_worker.sh`). Reads `HEADLESS_TAXONOMY_SCRIPT` / `TARGETED_QA_FIX_SCRIPT` env vars to override which script `run_underlying_script()` invokes (defaults to the real scripts; overridden by this task's smoke test to avoid needing live BQ/claude credentials).
+- Produces: `QUEUE_TABLE` (a top-level, side-effect-free assignment — see Global Constraints; must be set before any function in this file runs, including under pure-function testing) and `main()`, run when the script is executed directly (`./script/queue_worker.sh`). Reads `HEADLESS_TAXONOMY_SCRIPT` / `TARGETED_QA_FIX_SCRIPT` env vars to override which script `run_underlying_script()` invokes (defaults to the real scripts; overridden by this task's smoke test to avoid needing live BQ/claude credentials).
 
 No new pure functions here, so no `test_queue_worker.sh` additions — this task is verified with a manual smoke test against the real Postgres from Task 2, using a stub script standing in for `headless_taxonomy.sh`.
 
-Every query below goes through `queue_psql` (Task 1), never raw `psql "$QUEUE_DATABASE_URL"` — see Global Constraints for why.
+Every query below goes through `queue_psql` (Task 1), never raw `psql "$QUEUE_DATABASE_URL"`, and targets `${QUEUE_TABLE}`, never bare `task_queue` — see Global Constraints for why (a live-confirmed PgBouncer session leak, not a style preference).
 
 - [ ] **Step 1: Append the orchestration functions to `script/queue_worker.sh`**
 
-Add to the end of `script/queue_worker.sh` (after the four functions from Task 3):
+First, add this line near the top of `script/queue_worker.sh`, right after `set -euo pipefail` (before Task 3's four functions):
+
+```bash
+QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
+```
+
+Then add to the end of the file (after the four functions from Task 3):
 
 ```bash
 
 reclaim_stale_leases() {
   queue_psql "
-    UPDATE task_queue SET status='queued', claimed_by=NULL, claimed_at=NULL
+    UPDATE ${QUEUE_TABLE} SET status='queued', claimed_by=NULL, claimed_at=NULL
     WHERE status='running' AND claimed_at < now() - interval '${LEASE_TIMEOUT_HOURS:-4} hours';" -t -A >/dev/null
 }
 
@@ -441,11 +461,11 @@ reclaim_stale_leases() {
 claim_next_task() {
   local out
   if ! out=$(queue_psql "
-    UPDATE task_queue SET status='running', claimed_by='${WORKER_ID}', claimed_at=now()
+    UPDATE ${QUEUE_TABLE} SET status='running', claimed_by='${WORKER_ID}', claimed_at=now()
     WHERE id = (
-      SELECT id FROM task_queue
+      SELECT id FROM ${QUEUE_TABLE}
       WHERE status='queued'
-        AND table_name NOT IN (SELECT table_name FROM task_queue WHERE status='running')
+        AND table_name NOT IN (SELECT table_name FROM ${QUEUE_TABLE} WHERE status='running')
       ORDER BY priority DESC, submitted_at ASC
       FOR UPDATE SKIP LOCKED LIMIT 1
     )
@@ -455,18 +475,17 @@ claim_next_task() {
     echo "$out" >&2
     return 1
   fi
-  # $out is polluted with non-data lines that psql always prints regardless of -t/-A: the "SET" tag
-  # from queue_psql's search_path prefix statement, and (confirmed empirically against a live
-  # postgres:16 client) the "UPDATE 1" command-completion tag that psql prints for an UPDATE...
-  # RETURNING even under -t. Only the actual data line contains the -F'|' separator, so filter down to
-  # that. `|| true` is required: grep exits 1 on the legitimate "no row claimed" case (empty $out),
-  # which under `set -e` would otherwise be treated as this function failing.
+  # $out is polluted with non-data lines that psql always prints regardless of -t/-A: the "UPDATE 1"
+  # command-completion tag (confirmed empirically against a live postgres:16 client) that psql prints
+  # for an UPDATE...RETURNING even under -t. Only the actual data line contains the -F'|' separator, so
+  # filter down to that. `|| true` is required: grep exits 1 on the legitimate "no row claimed" case
+  # (empty $out), which under `set -e` would otherwise be treated as this function failing.
   grep '|' <<< "$out" || true
 }
 
 heartbeat() {
   local id="$1"
-  queue_psql "UPDATE task_queue SET claimed_at=now() WHERE id=${id} AND status='running';" -t -A >/dev/null
+  queue_psql "UPDATE ${QUEUE_TABLE} SET claimed_at=now() WHERE id=${id} AND status='running';" -t -A >/dev/null
 }
 
 run_underlying_script() {
@@ -492,10 +511,8 @@ run_underlying_script() {
 # Deliberately does NOT use `psql -v ... -c "... :'var' ..."` for this -- confirmed empirically against
 # a fresh, unmodified postgres:16 client (not a shim/PgBouncer artifact) that psql's `:'var'`
 # interpolation is never performed inside a `-c` string, only for `-f`/stdin input; `-v` + `-c` with
-# colon-variables raises `ERROR: syntax error at or near ":"`. Since queue_psql (Task 1) always sends
-# its query through `-c` (required for the PgBouncer-safe single-transaction SET search_path trick),
-# colon-variable substitution can never work through it. Uses the same inline-SQL-building convention
-# as Task 5's build_submit_sql/build_*_sql instead.
+# colon-variables raises `ERROR: syntax error at or near ":"`. Uses the same inline-SQL-building
+# convention as Task 5's build_submit_sql/build_*_sql instead.
 _sql_quote() {
   local s="$1"
   echo "'${s//\'/\'\'}'"
@@ -506,7 +523,7 @@ persist_final_status() {
   local last_result_json
   last_result_json=$(printf '%s' "$output" | jq -Rs '{raw_output: .}')
   queue_psql "
-      UPDATE task_queue
+      UPDATE ${QUEUE_TABLE}
       SET status = $(_sql_quote "$status"), iterations_run = ${iterations_run}, updated_at = now(),
           last_result = $(_sql_quote "$last_result_json")::json
       WHERE id = ${id};" \
@@ -576,6 +593,7 @@ Requires `QUEUE_DATABASE_URL`/`QUEUE_SCHEMA` set (Task 2's target) and `psql`/`j
 
 ```bash
 source script/load_env.sh
+QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
 
 mkdir -p /tmp/queue_worker_smoke
 rm -f /tmp/queue_worker_smoke/counter
@@ -594,7 +612,7 @@ EOF
 chmod +x /tmp/queue_worker_smoke/fake_headless.sh
 
 queue_psql "
-  INSERT INTO task_queue (table_name, script_type, status, loop_count, priority, submitted_at, iterations_run)
+  INSERT INTO ${QUEUE_TABLE} (table_name, script_type, status, loop_count, priority, submitted_at, iterations_run)
   VALUES ('smoke_test_table', 'headless_taxonomy', 'queued', 3, 500, now(), 0);"
 
 HEADLESS_TAXONOMY_SCRIPT=/tmp/queue_worker_smoke/fake_headless.sh bash -c '
@@ -606,7 +624,7 @@ HEADLESS_TAXONOMY_SCRIPT=/tmp/queue_worker_smoke/fake_headless.sh bash -c '
   run_task "$id" "$table_name" "$script_type" "$month" "$max_turns" "$block_size" "$loop_count"
 '
 
-queue_psql "SELECT id, table_name, status, iterations_run FROM task_queue WHERE table_name='smoke_test_table';"
+queue_psql "SELECT id, table_name, status, iterations_run FROM ${QUEUE_TABLE} WHERE table_name='smoke_test_table';"
 ```
 
 Expected final query output: `status = done`, `iterations_run = 2` — the loop ran a second iteration because the first returned `DONE` (keep going), then stopped early on the second's `NOTHING_TO_DO`, never using the third of `loop_count=3`.
@@ -624,7 +642,7 @@ EOF
 chmod +x /tmp/queue_worker_smoke/fake_crash.sh
 
 queue_psql "
-  INSERT INTO task_queue (table_name, script_type, status, loop_count, priority, submitted_at, iterations_run)
+  INSERT INTO ${QUEUE_TABLE} (table_name, script_type, status, loop_count, priority, submitted_at, iterations_run)
   VALUES ('smoke_test_crash', 'headless_taxonomy', 'queued', 3, 500, now(), 0);"
 
 HEADLESS_TAXONOMY_SCRIPT=/tmp/queue_worker_smoke/fake_crash.sh bash -c '
@@ -637,7 +655,7 @@ HEADLESS_TAXONOMY_SCRIPT=/tmp/queue_worker_smoke/fake_crash.sh bash -c '
   echo "run_task returned normally, exit=$?"
 '
 
-queue_psql "SELECT id, table_name, status, iterations_run FROM task_queue WHERE table_name='smoke_test_crash';"
+queue_psql "SELECT id, table_name, status, iterations_run FROM ${QUEUE_TABLE} WHERE table_name='smoke_test_crash';"
 ```
 
 Expected: `run_task returned normally, exit=0` prints (the `bash -c` subshell did NOT die partway through), and the final query shows `status = failed`, `iterations_run = 1` — a real crash correctly produces `failed`, it just doesn't take the worker process down doing it.
@@ -645,7 +663,7 @@ Expected: `run_task returned normally, exit=0` prints (the `bash -c` subshell di
 - [ ] **Step 5: Clean up**
 
 ```bash
-queue_psql "DELETE FROM task_queue WHERE table_name IN ('smoke_test_table', 'smoke_test_crash');"
+queue_psql "DELETE FROM ${QUEUE_TABLE} WHERE table_name IN ('smoke_test_table', 'smoke_test_crash');"
 rm -rf /tmp/queue_worker_smoke
 ```
 
@@ -667,9 +685,9 @@ git commit -m "Add queue_worker.sh claim/reclaim/heartbeat orchestration and mai
 
 **Interfaces:**
 - Consumes: `script/load_env.sh` and `queue_psql` (Task 1); the `task_queue` table + `one_running_task_per_table` index (Task 2).
-- Produces: `sql_quote(s)`, `build_submit_sql(...)`, `build_list_sql(status_filter)`, `build_priority_sql(task_id, new_priority)`, `build_cancel_sql(task_id)` — pure SQL-building functions, unit-tested directly; not consumed by any other file.
+- Produces: `QUEUE_TABLE` (a top-level, side-effect-free assignment, same pattern as Task 4 — must be set before any function in this file runs, including under pure-function testing); `sql_quote(s)`, `build_submit_sql(...)`, `build_list_sql(status_filter)`, `build_priority_sql(task_id, new_priority)`, `build_cancel_sql(task_id)` — pure SQL-building functions, unit-tested directly; not consumed by any other file.
 
-Every query below goes through `queue_psql` (Task 1), never raw `psql "$QUEUE_DATABASE_URL"` — see Global Constraints for why. `build_submit_sql`'s `INSERT` also sets `status`, `submitted_at`, and `iterations_run` explicitly (per Global Constraints, `task_queue` has no DB-level defaults for these — they must be set by every writer, not assumed).
+Every query below goes through `queue_psql` (Task 1), never raw `psql "$QUEUE_DATABASE_URL"`, and targets `${QUEUE_TABLE}`, never bare `task_queue` — see Global Constraints for why (a live-confirmed PgBouncer session leak, not a style preference). `build_submit_sql`'s `INSERT` also sets `status`, `submitted_at`, and `iterations_run` explicitly (per Global Constraints, `task_queue` has no DB-level defaults for these — they must be set by every writer, not assumed).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -684,9 +702,19 @@ set -euo pipefail
 # Run: bash script/test_queue_ctl.sh
 
 cd "$(dirname "$0")/.."
+# QUEUE_SCHEMA is unset explicitly (not just left alone) so this test is deterministic even when run
+# from an interactive shell that already exported it via `source script/load_env.sh` earlier in the
+# same session -- QUEUE_TABLE is computed once, at source time, from whatever QUEUE_SCHEMA the process
+# environment happens to hold, so an inherited real value would otherwise silently change what these
+# assertions need to match.
+unset QUEUE_SCHEMA
 source script/queue_ctl.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
+
+# --- QUEUE_TABLE ---
+[[ "$QUEUE_TABLE" == "public.task_queue" ]] || fail "QUEUE_TABLE should default to public.task_queue when QUEUE_SCHEMA is unset, got '$QUEUE_TABLE'"
+echo "PASS: QUEUE_TABLE default"
 
 # --- sql_quote ---
 [[ "$(sql_quote "shopee_th_shampoo")" == "'shopee_th_shampoo'" ]] || fail "plain string should just be quoted"
@@ -695,6 +723,7 @@ echo "PASS: sql_quote"
 
 # --- build_submit_sql ---
 sql=$(build_submit_sql "shopee_th_shampoo" "headless_taxonomy" "" "" "" "3" "100")
+grep -qF "INSERT INTO public.task_queue" <<< "$sql" || fail "should target the fully-qualified QUEUE_TABLE, not bare task_queue"
 grep -qF "'shopee_th_shampoo'" <<< "$sql" || fail "should quote the table name"
 grep -qF "'headless_taxonomy'" <<< "$sql" || fail "should quote the script_type"
 grep -qF "NULL, NULL, NULL" <<< "$sql" || fail "omitted month/max_turns/block_size should become SQL NULL"
@@ -707,6 +736,7 @@ echo "PASS: build_submit_sql"
 
 # --- build_list_sql ---
 sql=$(build_list_sql "")
+grep -qF "FROM public.task_queue" <<< "$sql" || fail "should target the fully-qualified QUEUE_TABLE"
 [[ "$sql" != *"WHERE"* ]] || fail "no status filter should mean no WHERE clause"
 
 sql=$(build_list_sql "queued")
@@ -715,12 +745,14 @@ echo "PASS: build_list_sql"
 
 # --- build_priority_sql ---
 sql=$(build_priority_sql "42" "500")
+grep -qF "UPDATE public.task_queue" <<< "$sql" || fail "should target the fully-qualified QUEUE_TABLE"
 grep -qF "SET priority = 500" <<< "$sql" || fail "should set the new priority"
 grep -qF "WHERE id = 42 AND status = 'queued'" <<< "$sql" || fail "must guard the UPDATE to status='queued' only"
 echo "PASS: build_priority_sql"
 
 # --- build_cancel_sql ---
 sql=$(build_cancel_sql "42")
+grep -qF "UPDATE public.task_queue" <<< "$sql" || fail "should target the fully-qualified QUEUE_TABLE"
 grep -qF "SET status = 'cancelled'" <<< "$sql" || fail "should set status to cancelled"
 grep -qF "WHERE id = 42 AND status = 'queued'" <<< "$sql" || fail "must guard the UPDATE to status='queued' only"
 echo "PASS: build_cancel_sql"
@@ -755,6 +787,8 @@ set -euo pipefail
 #
 # Requires QUEUE_DATABASE_URL (see script/load_env.sh / .env.example).
 
+QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
+
 sql_quote() {
   local s="$1"
   echo "'${s//\'/\'\'}'"
@@ -767,7 +801,7 @@ build_submit_sql() {
   [[ -z "$max_turns" ]] && max_turns_sql="NULL" || max_turns_sql="$max_turns"
   [[ -z "$block_size" ]] && block_size_sql="NULL" || block_size_sql="$block_size"
   cat <<SQL
-INSERT INTO task_queue (table_name, script_type, month, max_turns, block_size, loop_count, priority, status, submitted_at, iterations_run)
+INSERT INTO ${QUEUE_TABLE} (table_name, script_type, month, max_turns, block_size, loop_count, priority, status, submitted_at, iterations_run)
 VALUES ($(sql_quote "$table"), $(sql_quote "$script_type"), ${month_sql}, ${max_turns_sql}, ${block_size_sql}, ${loop_count}, ${priority}, 'queued', now(), 0)
 RETURNING id;
 SQL
@@ -776,20 +810,20 @@ SQL
 build_list_sql() {
   local status_filter="$1"
   if [[ -z "$status_filter" ]]; then
-    echo "SELECT id, table_name, script_type, status, priority, iterations_run, loop_count, submitted_at FROM task_queue ORDER BY status, priority DESC, submitted_at ASC;"
+    echo "SELECT id, table_name, script_type, status, priority, iterations_run, loop_count, submitted_at FROM ${QUEUE_TABLE} ORDER BY status, priority DESC, submitted_at ASC;"
   else
-    echo "SELECT id, table_name, script_type, status, priority, iterations_run, loop_count, submitted_at FROM task_queue WHERE status = $(sql_quote "$status_filter") ORDER BY priority DESC, submitted_at ASC;"
+    echo "SELECT id, table_name, script_type, status, priority, iterations_run, loop_count, submitted_at FROM ${QUEUE_TABLE} WHERE status = $(sql_quote "$status_filter") ORDER BY priority DESC, submitted_at ASC;"
   fi
 }
 
 build_priority_sql() {
   local task_id="$1" new_priority="$2"
-  echo "UPDATE task_queue SET priority = ${new_priority}, updated_at = now() WHERE id = ${task_id} AND status = 'queued' RETURNING id;"
+  echo "UPDATE ${QUEUE_TABLE} SET priority = ${new_priority}, updated_at = now() WHERE id = ${task_id} AND status = 'queued' RETURNING id;"
 }
 
 build_cancel_sql() {
   local task_id="$1"
-  echo "UPDATE task_queue SET status = 'cancelled', updated_at = now() WHERE id = ${task_id} AND status = 'queued' RETURNING id;"
+  echo "UPDATE ${QUEUE_TABLE} SET status = 'cancelled', updated_at = now() WHERE id = ${task_id} AND status = 'queued' RETURNING id;"
 }
 
 cmd_submit() {
@@ -819,11 +853,10 @@ cmd_priority() {
   local task_id="$1" new_priority="$2"
   local out id_line
   out=$(queue_psql "$(build_priority_sql "$task_id" "$new_priority")" -t -A)
-  # $out is polluted with non-data lines that psql always prints regardless of -t/-A: the "SET" tag
-  # from queue_psql's search_path prefix statement, and the "UPDATE N" command-completion tag -- both
-  # present even when RETURNING matched zero rows (confirmed empirically against a live postgres:16
-  # client: UPDATE ... WHERE <no match> RETURNING id still prints "SET\nUPDATE 0", never empty). A
-  # bare `[[ -z "$out" ]]` check is therefore never true and would always report success, even for a
+  # $out is polluted with the "UPDATE N" command-completion tag that psql always prints regardless of
+  # -t/-A, present even when RETURNING matched zero rows (confirmed empirically against a live
+  # postgres:16 client: UPDATE ... WHERE <no match> RETURNING id still prints "UPDATE 0", never empty).
+  # A bare `[[ -z "$out" ]]` check is therefore never true and would always report success, even for a
   # nonexistent or already-started task_id. Filter down to a line that is purely the numeric id
   # RETURNING would emit on an actual match. `|| true` is required: grep exits 1 on the legitimate
   # "no row matched" case, which under `set -e` would otherwise be treated as this function failing.
@@ -839,8 +872,8 @@ cmd_cancel() {
   local task_id="$1"
   local out id_line
   out=$(queue_psql "$(build_cancel_sql "$task_id")" -t -A)
-  # See cmd_priority above for why a bare `-z "$out"` check is wrong -- the SET/UPDATE-N tags are
-  # always present, so filter down to the bare numeric id line RETURNING emits on an actual match.
+  # See cmd_priority above for why a bare `-z "$out"` check is wrong -- the UPDATE-N tag is always
+  # present, so filter down to the bare numeric id line RETURNING emits on an actual match.
   id_line=$(grep -E '^[0-9]+$' <<< "$out" || true)
   if [[ -z "$id_line" ]]; then
     echo "Task ${task_id} already started (or doesn't exist) -- can no longer be cancelled." >&2
@@ -875,6 +908,7 @@ fi
 Run: `bash script/test_queue_ctl.sh`
 Expected: PASS
 ```
+PASS: QUEUE_TABLE default
 PASS: sql_quote
 PASS: build_submit_sql
 PASS: build_list_sql
@@ -898,7 +932,8 @@ script/queue_ctl.sh cancel <id>
 script/queue_ctl.sh list --status cancelled   # the row should now appear here
 
 # Cleanup
-queue_psql "DELETE FROM task_queue WHERE table_name='shopee_th_smoke_ctl';"
+QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
+queue_psql "DELETE FROM ${QUEUE_TABLE} WHERE table_name='shopee_th_smoke_ctl';"
 ```
 
 - [ ] **Step 6: Commit**
@@ -1292,7 +1327,7 @@ priority-queued tasks and let one or more `script/queue_worker.sh` processes pul
 
 1. `psql` must be installed and on `$PATH` (or run it via `docker run --rm postgres:16 psql ...` if you'd rather not install it).
 2. Copy `.env.example` to `.env` and set `QUEUE_DATABASE_URL`. Also set `QUEUE_SCHEMA` if your `task_queue` table lives in a non-default schema (the current deployment uses a NocoDB-hosted Postgres, schema `p4ct2g2urhzcfnz` — not `public`).
-3. Apply the one-time migration: `source script/load_env.sh; queue_psql "$(cat sql/postgres/001_task_queue.sql)"`. All queue tooling reads/writes through `queue_psql`, never raw `psql`, so `QUEUE_SCHEMA` is honored everywhere automatically.
+3. Apply the one-time migration: `source script/load_env.sh; QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"; queue_psql "CREATE UNIQUE INDEX IF NOT EXISTS one_running_task_per_table ON ${QUEUE_TABLE} (table_name) WHERE status = 'running';"`. All queue tooling reads/writes the fully-qualified `${QUEUE_TABLE}`, never bare `task_queue` and never a `SET search_path` — see Global Constraints for why (a live-confirmed leak across this PgBouncer's pooled connections, not a style preference).
 
 **Never manage queue rows through NocoDB's own grid UI** if `task_queue` happens to live in a NocoDB-hosted database (as the current deployment does) — NocoDB soft-deletes (sets its own `__nc_deleted` flag) without touching `status`, so a row "deleted" that way would still read `status='queued'` and the worker would still claim and run it. Always use `queue_ctl.sh cancel` to remove a queued task.
 
@@ -1356,6 +1391,7 @@ This task cannot be automated in CI (it needs live BQ/claude credentials, same l
 
 ```bash
 source script/load_env.sh
+QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
 script/queue_ctl.sh submit <a_mostly_covered_table> headless_taxonomy --loop-count 3 --priority 999
 ```
 
@@ -1370,12 +1406,12 @@ Expected: the worker claims the task, the underlying `headless_taxonomy.sh` invo
 - [ ] **Step 3: Confirm the persisted result**
 
 ```bash
-queue_psql "SELECT id, table_name, status, iterations_run, last_result FROM task_queue WHERE table_name='<a_mostly_covered_table>';"
+queue_psql "SELECT id, table_name, status, iterations_run, last_result FROM ${QUEUE_TABLE} WHERE table_name='<a_mostly_covered_table>';"
 ```
 
 Expected: `status = done`, `iterations_run = 1`.
 
-- [ ] **Step 4: Confirm mutual exclusion holds under real contention** — submit two tasks for the *same* table and start two workers; confirm (via `queue_psql "SELECT table_name, status, claimed_by FROM task_queue WHERE table_name = '<table>'"`) that only one ever reaches `status='running'` at a time, never both simultaneously.
+- [ ] **Step 4: Confirm mutual exclusion holds under real contention** — submit two tasks for the *same* table and start two workers; confirm (via `queue_psql "SELECT table_name, status, claimed_by FROM ${QUEUE_TABLE} WHERE table_name = '<table>'"`) that only one ever reaches `status='running'` at a time, never both simultaneously.
 
 - [ ] **Step 5: `reclaim_stale_leases` — the one function no earlier task exercised**
 
@@ -1383,11 +1419,11 @@ Zero risk, no real scripts or credentials needed beyond Postgres — pure fabric
 
 ```bash
 queue_psql "
-  INSERT INTO task_queue (table_name, script_type, status, claimed_by, claimed_at, loop_count, priority, submitted_at, iterations_run)
+  INSERT INTO ${QUEUE_TABLE} (table_name, script_type, status, claimed_by, claimed_at, loop_count, priority, submitted_at, iterations_run)
   VALUES ('smoke_test_stale_lease', 'headless_taxonomy', 'running', 'dead-worker-123', now() - interval '5 hours', 3, 100, now(), 0)
   RETURNING id;"
 queue_psql "
-  INSERT INTO task_queue (table_name, script_type, status, claimed_by, claimed_at, loop_count, priority, submitted_at, iterations_run)
+  INSERT INTO ${QUEUE_TABLE} (table_name, script_type, status, claimed_by, claimed_at, loop_count, priority, submitted_at, iterations_run)
   VALUES ('smoke_test_fresh_lease', 'headless_taxonomy', 'running', 'live-worker-456', now() - interval '10 minutes', 3, 100, now(), 0)
   RETURNING id;"
 
@@ -1397,7 +1433,7 @@ bash -c '
   reclaim_stale_leases
 '
 
-queue_psql "SELECT id, table_name, status, claimed_by FROM task_queue WHERE table_name IN ('smoke_test_stale_lease', 'smoke_test_fresh_lease');"
+queue_psql "SELECT id, table_name, status, claimed_by FROM ${QUEUE_TABLE} WHERE table_name IN ('smoke_test_stale_lease', 'smoke_test_fresh_lease');"
 ```
 
 Expected: the 5-hour-old row flips to `status='queued'`, `claimed_by` cleared — the default `LEASE_TIMEOUT_HOURS=4` was exceeded. The 10-minute-old row stays `status='running'`, `claimed_by='live-worker-456'` — untouched, since a live worker's lease must never be stolen out from under it.
@@ -1405,7 +1441,7 @@ Expected: the 5-hour-old row flips to `status='queued'`, `claimed_by` cleared �
 - [ ] **Step 6: Clean up test rows**
 
 ```bash
-queue_psql "DELETE FROM task_queue WHERE table_name IN ('<a_mostly_covered_table>', 'smoke_test_stale_lease', 'smoke_test_fresh_lease');"
+queue_psql "DELETE FROM ${QUEUE_TABLE} WHERE table_name IN ('<a_mostly_covered_table>', 'smoke_test_stale_lease', 'smoke_test_fresh_lease');"
 ```
 
 **Reminder:** never clean up or manage these rows via NocoDB's own grid UI — see Global Constraints on why a NocoDB delete wouldn't actually change `status`.

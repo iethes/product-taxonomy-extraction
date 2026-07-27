@@ -1,6 +1,14 @@
 # Design: Priority Task Queue for `headless_taxonomy.sh` / `targeted_qa_fix.sh`
 
-> Status: approved design, not yet implemented.
+> Status: implemented. This document is the original approved design; several implementation details
+> below were superseded by fixes made and verified live during implementation. The authoritative,
+> corrected reference is [`docs/superpowers/plans/2026-07-27-task-queue.md`](../plans/2026-07-27-task-queue.md).
+> Most notably: **§3's `queue_psql` design (prefixing `SET search_path` onto each query) was found,
+> live, to leak the queue's schema across this PgBouncer's transaction-pooled connection reuse onto
+> other clients sharing the database** — confirmed empirically (a `SET` from one connection was still
+> visible on ten separate fresh connections afterward). The shipped design instead fully qualifies every
+> table reference (`${QUEUE_SCHEMA:-public}.task_queue`) and never issues a `SET search_path` at all —
+> see the plan's Global Constraints and Task 1/4/5 sections for the corrected code.
 > Companion to [`script/headless_taxonomy.sh`](../../../script/headless_taxonomy.sh) and
 > [`script/targeted_qa_fix.sh`](../../../script/targeted_qa_fix.sh).
 
