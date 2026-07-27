@@ -1377,12 +1377,39 @@ Expected: `status = done`, `iterations_run = 1`.
 
 - [ ] **Step 4: Confirm mutual exclusion holds under real contention** — submit two tasks for the *same* table and start two workers; confirm (via `queue_psql "SELECT table_name, status, claimed_by FROM task_queue WHERE table_name = '<table>'"`) that only one ever reaches `status='running'` at a time, never both simultaneously.
 
-- [ ] **Step 5: Clean up test rows**
+- [ ] **Step 5: `reclaim_stale_leases` — the one function no earlier task exercised**
+
+Zero risk, no real scripts or credentials needed beyond Postgres — pure fabricated queue-table state:
 
 ```bash
-queue_psql "DELETE FROM task_queue WHERE table_name='<a_mostly_covered_table>';"
+queue_psql "
+  INSERT INTO task_queue (table_name, script_type, status, claimed_by, claimed_at, loop_count, priority, submitted_at, iterations_run)
+  VALUES ('smoke_test_stale_lease', 'headless_taxonomy', 'running', 'dead-worker-123', now() - interval '5 hours', 3, 100, now(), 0)
+  RETURNING id;"
+queue_psql "
+  INSERT INTO task_queue (table_name, script_type, status, claimed_by, claimed_at, loop_count, priority, submitted_at, iterations_run)
+  VALUES ('smoke_test_fresh_lease', 'headless_taxonomy', 'running', 'live-worker-456', now() - interval '10 minutes', 3, 100, now(), 0)
+  RETURNING id;"
+
+bash -c '
+  source script/queue_worker.sh
+  source script/load_env.sh
+  reclaim_stale_leases
+'
+
+queue_psql "SELECT id, table_name, status, claimed_by FROM task_queue WHERE table_name IN ('smoke_test_stale_lease', 'smoke_test_fresh_lease');"
+```
+
+Expected: the 5-hour-old row flips to `status='queued'`, `claimed_by` cleared — the default `LEASE_TIMEOUT_HOURS=4` was exceeded. The 10-minute-old row stays `status='running'`, `claimed_by='live-worker-456'` — untouched, since a live worker's lease must never be stolen out from under it.
+
+- [ ] **Step 6: Clean up test rows**
+
+```bash
+queue_psql "DELETE FROM task_queue WHERE table_name IN ('<a_mostly_covered_table>', 'smoke_test_stale_lease', 'smoke_test_fresh_lease');"
 ```
 
 **Reminder:** never clean up or manage these rows via NocoDB's own grid UI — see Global Constraints on why a NocoDB delete wouldn't actually change `status`.
+
+**On Step 4's `claude -p` risk:** picking a genuinely `gap_count==0` table (verified fresh, immediately before submitting — gaps can shift under concurrent activity) keeps this whole task safe to run unattended: at `gap_count==0`, `headless_taxonomy.sh` does two `bq` reads and exits, `claude -p` is never invoked, and the only write anywhere is the worker's own `status='done'` on `task_queue`. Running this same verification against a table with a nonzero gap would invoke `claude -p` with `--permission-mode bypassPermissions` for real — a genuine, irreversible production write to `product_taxonomy` — and requires explicit human authorization first, not something to trigger as a side effect of "verification."
 
 No commit for this task — it's verification only.
