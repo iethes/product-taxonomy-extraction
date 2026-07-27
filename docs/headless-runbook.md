@@ -467,7 +467,7 @@ priority-queued tasks and let one or more `script/queue_worker.sh` processes pul
 
 1. `psql` must be installed and on `$PATH` (or run it via `docker run --rm postgres:16 psql ...` if you'd rather not install it).
 2. Copy `.env.example` to `.env` and set `QUEUE_DATABASE_URL`. Also set `QUEUE_SCHEMA` if your `task_queue` table lives in a non-default schema (the current deployment uses a NocoDB-hosted Postgres, schema `p4ct2g2urhzcfnz` — not `public`).
-3. Apply the one-time migration: `source script/load_env.sh; queue_psql "$(cat sql/postgres/001_task_queue.sql)"`. All queue tooling reads/writes through `queue_psql`, never raw `psql`, so `QUEUE_SCHEMA` is honored everywhere automatically.
+3. Apply the one-time migration: `source script/load_env.sh; QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"; queue_psql "CREATE UNIQUE INDEX IF NOT EXISTS one_running_task_per_table ON ${QUEUE_TABLE} (table_name) WHERE status = 'running';"`. All queue tooling reads/writes the fully-qualified `${QUEUE_TABLE}`, never bare `task_queue` and never a `SET search_path` — see the design spec for why (a live-confirmed leak across this PgBouncer's pooled connections, not a style preference).
 
 **Never manage queue rows through NocoDB's own grid UI** if `task_queue` happens to live in a NocoDB-hosted database (as the current deployment does) — NocoDB soft-deletes (sets its own `__nc_deleted` flag) without touching `status`, so a row "deleted" that way would still read `status='queued'` and the worker would still claim and run it. Always use `queue_ctl.sh cancel` to remove a queued task.
 
