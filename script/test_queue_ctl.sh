@@ -8,9 +8,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # QUEUE_SCHEMA is unset explicitly (not just left alone) so this test is deterministic even when run
 # from an interactive shell that already exported it via `source script/load_env.sh` earlier in the
-# same session -- QUEUE_TABLE is computed once, at source time, from whatever QUEUE_SCHEMA the process
+# same session -- queue_ctl.sh's top-level QUEUE_TABLE assignment (the one that applies here, since
+# main() never runs under this test) is computed at source time from whatever QUEUE_SCHEMA the process
 # environment happens to hold, so an inherited real value would otherwise silently change what these
-# assertions need to match.
+# assertions need to match. (main(), when actually run, recomputes QUEUE_TABLE again after loading
+# .env -- irrelevant here, but see queue_ctl.sh's main() for why.)
 unset QUEUE_SCHEMA
 source script/queue_ctl.sh
 
