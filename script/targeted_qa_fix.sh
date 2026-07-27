@@ -72,6 +72,17 @@ append_qa_history_row() {
   mv "$tmpfile" "$category_file"
 }
 
+review_worklist_count_query() {
+  local table="$1"
+  cat <<SQL
+SELECT COUNT(DISTINCT pt.taxonomy_id)
+FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
+JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
+WHERE m.master_table = '${table}'
+  AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '\$.review_confidence'), 'unreviewed') != 'confident')
+SQL
+}
+
 build_prompt() {
   local table="$1"
   local category_file="$2"
@@ -536,7 +547,15 @@ main() {
     echo "==========================="
     prompt=$(build_prompt "$table" "$category_file" "$block_size" "$gate_report")
   else
-    echo "TARGETED QA FIX STARTED (auto-discovery mode: ${category_file}, block_size=${block_size}, max_turns=${max_turns})"
+    local review_worklist_count
+    review_worklist_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+      "$(review_worklist_count_query "$table")" | tail -1)
+    if [[ "$review_worklist_count" == "0" ]]; then
+      echo "No unreviewed/unconfident taxonomy entries for ${table} — nothing to do."
+      echo "QUEUE_SIGNAL: NOTHING_TO_DO"
+      exit 0
+    fi
+    echo "TARGETED QA FIX STARTED (auto-discovery mode: ${category_file}, block_size=${block_size}, max_turns=${max_turns}, review_worklist_count=${review_worklist_count})"
     echo "==========================="
     prompt=$(build_auto_discovery_prompt "$table" "$category_file" "$block_size" "$gate_report")
   fi
@@ -586,16 +605,19 @@ main() {
     BLOCKED)
       echo "STATUS: blocked. Claimed block left ACTIVE (nothing written) — see blockers below."
       echo "$result_json" | jq -r '.blockers[]?' >&2
+      echo "QUEUE_SIGNAL: BLOCKED"
       exit 0
       ;;
     NOOP)
       echo "STATUS: complete/partial with rows_created=0 — nothing to gate or refresh. Block left ACTIVE."
+      echo "QUEUE_SIGNAL: DONE"
       exit 0
       ;;
     MARK_FAILED)
       echo "STATUS: failed or malformed. Marking block FAILED_QA." >&2
       echo "$result_json" >&2
       mark_failed_qa "$table"
+      echo "QUEUE_SIGNAL: FAILED"
       exit 1
       ;;
     GATE_AND_REFRESH)
@@ -604,9 +626,11 @@ main() {
         run_universe_refresh "$table"
         echo "============================"
         echo "TARGETED QA FIX FINISHED — universe refreshed"
+        echo "QUEUE_SIGNAL: DONE"
       else
         echo "QA gates failed — marking block FAILED_QA, skipping universe refresh." >&2
         mark_failed_qa "$table"
+        echo "QUEUE_SIGNAL: FAILED"
         exit 1
       fi
       ;;

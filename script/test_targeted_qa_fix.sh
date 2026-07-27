@@ -229,4 +229,21 @@ grep -qF 'qa_history_entry' <<< "$script_src" || fail "main() must read qa_histo
 grep -q 'append_qa_history_row' <<< "$script_src" || fail "main() must call append_qa_history_row"
 echo "PASS: main() gate report capture + coverage trap wiring"
 
+# --- review_worklist_count_query ---
+q=$(review_worklist_count_query "shopee_th_suncare")
+echo "$q" | grep -q "COUNT(DISTINCT pt.taxonomy_id)" || fail "review_worklist_count_query should count distinct taxonomy_id"
+echo "$q" | grep -q "master_table = 'shopee_th_suncare'" || fail "review_worklist_count_query should scope by master_table"
+echo "$q" | grep -q "review_confidence" || fail "review_worklist_count_query should mirror the auto-discovery worklist's _meta filter"
+echo "PASS: review_worklist_count_query"
+
+# --- QUEUE_SIGNAL wiring in main() (static check -- live bq/claude calls are out of scope here) ---
+script_src=$(cat script/targeted_qa_fix.sh)
+grep -qF 'review_worklist_count_query "$table"' <<< "$script_src" || fail "main() must run the pre-check worklist count before invoking claude -p in auto-discovery mode"
+grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() must emit NOTHING_TO_DO when the auto-discovery worklist is empty"
+grep -qF 'echo "QUEUE_SIGNAL: BLOCKED"' <<< "$script_src" || fail "main() must emit BLOCKED in the BLOCKED case branch"
+grep -qF 'echo "QUEUE_SIGNAL: FAILED"' <<< "$script_src" || fail "main() must emit FAILED in both the MARK_FAILED case and the failed-gate branch"
+signal_done_count=$(grep -cF 'echo "QUEUE_SIGNAL: DONE"' <<< "$script_src")
+[[ "$signal_done_count" -eq 2 ]] || fail "main() must emit DONE in both the NOOP case (rows_created=0 is not nothing-to-do) and the successful GATE_AND_REFRESH case, got $signal_done_count occurrences"
+echo "PASS: main() QUEUE_SIGNAL wiring"
+
 echo "ALL TESTS PASSED"
