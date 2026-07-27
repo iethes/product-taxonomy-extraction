@@ -96,4 +96,30 @@ echo "$prompt" | grep -q "script/targeted_qa_fix.sh is the dedicated follow-up t
 echo "$prompt" | grep -q "G1 (no dual-mapping), G2 (no HUMAN+LLM coexistence), G4 (no cross-category mapping), and G5 (provenance) are structural invariants and must still pass" || fail "build_topup_prompt must state hard gates are never optional even under a speed-first approach"
 echo "PASS: build_topup_prompt"
 
+# --- decide_queue_signal ---
+complete_output='{"result": "{\"status\": \"complete\", \"rows_created\": 5}"}'
+[[ "$(decide_queue_signal "$complete_output")" == "DONE" ]] || fail "status=complete -> DONE"
+
+partial_zero_rows_output='{"result": "{\"status\": \"partial\", \"rows_created\": 0}"}'
+[[ "$(decide_queue_signal "$partial_zero_rows_output")" == "DONE" ]] || fail "status=partial with rows_created=0 must still be DONE -- only the live gap_count pre-check may claim NOTHING_TO_DO, never rows_created"
+
+blocked_output='{"result": "{\"status\": \"blocked\", \"blockers\": [\"x\"]}"}'
+[[ "$(decide_queue_signal "$blocked_output")" == "BLOCKED" ]] || fail "status=blocked -> BLOCKED"
+
+failed_output='{"result": "{\"status\": \"failed\"}"}'
+[[ "$(decide_queue_signal "$failed_output")" == "FAILED" ]] || fail "status=failed -> FAILED"
+
+malformed_output='not json at all'
+[[ "$(decide_queue_signal "$malformed_output")" == "FAILED" ]] || fail "unparseable output -> FAILED, not silently ignored"
+
+prose_wrapped_output='{"result": "prose before {\"status\": \"complete\"} prose after"}'
+[[ "$(decide_queue_signal "$prose_wrapped_output")" == "DONE" ]] || fail "prose-wrapped JSON should still be extracted via extract_json_object"
+echo "PASS: decide_queue_signal"
+
+# --- QUEUE_SIGNAL wiring in main() (static check -- gap_count/claude -p require live BQ, out of scope here) ---
+script_src=$(cat script/headless_taxonomy.sh)
+grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() must emit NOTHING_TO_DO when gap_count==0, before the early exit"
+grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() must emit the post-run signal derived from decide_queue_signal"
+echo "PASS: main() QUEUE_SIGNAL wiring"
+
 echo "ALL TESTS PASSED (part 1)"

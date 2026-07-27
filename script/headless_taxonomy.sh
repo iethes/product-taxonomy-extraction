@@ -204,6 +204,35 @@ Output ONLY this JSON when done, nothing else:
 PROMPT
 }
 
+extract_json_object() {
+  local text="$1"
+  printf '%s' "$text" | grep -Pzo '(?s)\{.*\}' | tr -d '\0'
+}
+
+decide_queue_signal() {
+  local claude_output="$1"
+  local result_json
+  result_json=$(echo "$claude_output" | jq -r '.result // empty' 2>/dev/null) || result_json=""
+  if [[ -z "$result_json" ]]; then
+    echo "FAILED"
+    return
+  fi
+  if ! echo "$result_json" | jq -e . >/dev/null 2>&1; then
+    local extracted
+    extracted=$(extract_json_object "$result_json")
+    if [[ -n "$extracted" ]] && echo "$extracted" | jq -e . >/dev/null 2>&1; then
+      result_json="$extracted"
+    fi
+  fi
+  local status
+  status=$(echo "$result_json" | jq -r '.status // empty' 2>/dev/null) || status=""
+  case "$status" in
+    blocked) echo "BLOCKED" ;;
+    complete|partial) echo "DONE" ;;
+    *) echo "FAILED" ;;
+  esac
+}
+
 main() {
   if [[ $# -lt 1 ]]; then
     echo "Usage: $0 <TABLE> [MONTH] [MAX_TURNS]" >&2
@@ -230,6 +259,7 @@ main() {
 
   if [[ "$gap_count" == "0" ]]; then
     echo "No in-scope coverage gap for ${table}/${month} — nothing to do."
+    echo "QUEUE_SIGNAL: NOTHING_TO_DO"
     exit 0
   fi
 
@@ -254,10 +284,13 @@ main() {
     prompt=$(build_topup_prompt "$table" "$month" "$block_size" "$gap_count")
   fi
 
-  claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt"
+  local claude_output
+  claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt")
+  echo "$claude_output"
 
   echo "============================"
   echo "TAXONOMY EXTRACTION FINISHED"
+  echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
