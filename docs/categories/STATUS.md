@@ -70,7 +70,7 @@ Status section for what this means for a session picking up the next ID category
 | sg_carbonated_drink | ✅ Complete | LLM Pass 1+2 complete Jul 22, 94.4% GMV coverage, SKU-110406–110728; 6 real alcoholic beer listings correctly left out of scope despite category-table presence |
 | sg_beverages | ⏳ Keyword only | |
 | sg_beer_and_lager | ⏳ Keyword only | |
-| sg_breakfast_cereals | ⏳ LLM Pass 1 complete, Pass 2 partial (83.9% GMV) | SKU-080151–080422; see sg_breakfast_cereals.md for NULL-coverage follow-up scope |
+| sg_breakfast_cereals | ✅ Pass 1+2 + 2026-06 top-up complete (95.8% GMV) | SKU-080151–080422, SKU-171652–172069 (two disjoint ranges — see sg_breakfast_cereals.md); D1-D5 precision gaps in top-up tail flagged for targeted_qa_fix.sh |
 | sg_pet_food | ⏳ Keyword only | |
 | sg_spirits | ⏳ Keyword only | |
 | sg_toilet_rolls | ⏳ Keyword only | |
