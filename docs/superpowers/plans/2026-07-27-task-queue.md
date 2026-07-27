@@ -495,6 +495,17 @@ persist_final_status() {
     -t -A >/dev/null
 }
 
+# The `|| true` on both command substitutions below is required, not decorative: `signal` and
+# `last_output` are already `local`-declared above, so these are bare reassignments -- under
+# `set -euo pipefail`, a bare `var=$(...)` reassignment DOES propagate the substitution's exit status
+# (unlike a combined `local var=$(...)`, which does not). parse_queue_signal's `grep -o ... | tail -1`
+# pipeline exits non-zero whenever no QUEUE_SIGNAL line is found (e.g. the underlying script crashed
+# before printing one) -- without `|| true` here, that would silently kill the whole worker loop
+# instead of falling through to queue_signal_to_status's own "unparseable -> failed" handling.
+# Confirmed empirically: a bare `signal=$(...)` reassignment of an already-local var, with a failing
+# pipeline on the right-hand side, exits the enclosing function under set -e; `local signal=$(...)`
+# (combined declare+assign) does NOT propagate the same way -- these are genuinely different, so the
+# `|| true` is the correct fix, not a redundant safety net.
 run_task() {
   local id="$1" table="$2" script_type="$3" month="$4" max_turns="$5" block_size="$6" loop_count="$7"
   local iterations_run=0 final_status="failed" last_output="" signal=""
@@ -504,7 +515,7 @@ run_task() {
     last_output=$(run_underlying_script "$script_type" "$table" "$month" "$max_turns" "$block_size" 2>&1) || true
     echo "$last_output"
     iterations_run=$((iterations_run + 1))
-    signal=$(parse_queue_signal "$last_output")
+    signal=$(parse_queue_signal "$last_output") || true
     final_status=$(queue_signal_to_status "$signal")
     [[ "$(should_stop_looping "$signal")" == "true" ]] && break
   done
@@ -582,14 +593,45 @@ queue_psql "SELECT id, table_name, status, iterations_run FROM task_queue WHERE 
 
 Expected final query output: `status = done`, `iterations_run = 2` — the loop ran a second iteration because the first returned `DONE` (keep going), then stopped early on the second's `NOTHING_TO_DO`, never using the third of `loop_count=3`.
 
-- [ ] **Step 4: Clean up**
+- [ ] **Step 4: Manual smoke test — a crashed underlying script (no `QUEUE_SIGNAL:` line at all) must not kill the worker**
+
+This proves the `|| true` guards on `run_task`'s two command substitutions actually do something — without them, a script that dies before printing any signal line would take the whole worker process down with it under `set -euo pipefail`, silently stopping every other queued table too.
 
 ```bash
-queue_psql "DELETE FROM task_queue WHERE table_name='smoke_test_table';"
+cat > /tmp/queue_worker_smoke/fake_crash.sh <<'EOF'
+#!/usr/bin/env bash
+echo "simulating a crash with no QUEUE_SIGNAL line at all"
+exit 1
+EOF
+chmod +x /tmp/queue_worker_smoke/fake_crash.sh
+
+queue_psql "
+  INSERT INTO task_queue (table_name, script_type, status, loop_count, priority, submitted_at, iterations_run)
+  VALUES ('smoke_test_crash', 'headless_taxonomy', 'queued', 3, 500, now(), 0);"
+
+HEADLESS_TAXONOMY_SCRIPT=/tmp/queue_worker_smoke/fake_crash.sh bash -c '
+  source script/queue_worker.sh
+  source script/load_env.sh
+  WORKER_ID="smoke-test-crash"
+  row=$(claim_next_task)
+  IFS="|" read -r id table_name script_type month max_turns block_size loop_count <<< "$row"
+  run_task "$id" "$table_name" "$script_type" "$month" "$max_turns" "$block_size" "$loop_count"
+  echo "run_task returned normally, exit=$?"
+'
+
+queue_psql "SELECT id, table_name, status, iterations_run FROM task_queue WHERE table_name='smoke_test_crash';"
+```
+
+Expected: `run_task returned normally, exit=0` prints (the `bash -c` subshell did NOT die partway through), and the final query shows `status = failed`, `iterations_run = 1` — a real crash correctly produces `failed`, it just doesn't take the worker process down doing it.
+
+- [ ] **Step 5: Clean up**
+
+```bash
+queue_psql "DELETE FROM task_queue WHERE table_name IN ('smoke_test_table', 'smoke_test_crash');"
 rm -rf /tmp/queue_worker_smoke
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 chmod +x script/queue_worker.sh
