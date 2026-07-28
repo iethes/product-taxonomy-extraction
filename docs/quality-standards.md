@@ -187,6 +187,15 @@ WHERE u.month = '2026-04-01' AND pt.size IS NULL AND pt.is_multi_size IS NOT TRU
 GROUP BY 1,2 ORDER BY gmv DESC;
 ```
 
+**Shared-bucket variant of the same defect** (since 2026-07-28, `targeted_qa_fix.sh`'s auto-discovery Tier 1
+sweep runs this automatically as STEP 2c): `pt.is_multi_size IS NOT TRUE` alone misses the case where a
+product's own `sku_name` states exactly one readable size but got mapped into a generic `is_multi_size=TRUE`
+catch-all that also legitimately serves listings whose titles state 2+ sizes — found via `shopee_sg_pet_food`,
+where 16,307 products (e.g. `"ROYAL CANIN FELINE HEALTH NUTRITION INDOOR 27 DRY CAT FOOD 2KG"` → canonical
+`"Royal Canin Dry Cat Food"`) had a single readable size silently dropped this way. The fix must never write
+that one size onto a bucket shared with genuinely different sizes — see STEP 4's aggregation-first logic in
+`targeted_qa_fix.sh` before applying.
+
 ### D5 — Pack-Count Correctness
 
 Two failure modes: (a) `pack_count=1` but the listing is a genuine multipack (missed
@@ -209,6 +218,11 @@ WHERE pt.pack_count = 1
 GROUP BY 1,2,3 ORDER BY gmv DESC;
 -- Most "ฟรี"/"free" hits are GWP (correct pack=1); confirm against image before changing.
 ```
+
+**Same shared-bucket defect applies to multipliers**: a `sku_name` stating exactly one pack count
+(`"DoggyMan Yogurt Sausage - 7pcs"`) can land on a generic bucket (`"Doggyman Dog Treats"`, `pack_count=1`,
+no `x{N}` suffix) alongside genuinely different pack counts. Also wired into `targeted_qa_fix.sh` STEP 2c
+(2026-07-28) alongside the D4 case above, sharing the same aggregate-before-writing fix logic in STEP 4.
 
 ### D6 — In-Scope NULL Coverage
 
