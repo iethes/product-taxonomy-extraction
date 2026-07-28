@@ -1,10 +1,20 @@
 # makanankucing_my — Category Context
 
 > Custom (non-NIQ) source: `sincere-hearth-273704.makanankucing.9_makanankucing_my_daily`
-> (Shopee Malaysia, daily grain summed to monthly). Not a `master_clean_niq` table — different
+> (daily grain summed to monthly). Not a `master_clean_niq` table — different
 > schema, no `model_id`/`month`/`merchant_badge`-driven official-store data in the form other
 > categories rely on. Taxonomy state is keyed under `master_table = 'makanankucing_my'`, not the
 > source table name.
+>
+> **Platform scope (updated 2026-07-28):** originally Shopee Malaysia only. As of the 2026-07-28
+> top-up session, `ecommerce_platform='Tiktok'` rows are also IN SCOPE — this is the first category
+> to mix platforms under one `master_table`. `product_taxonomy_map` is keyed on `(product_id,
+> platform, country)` precisely so Shopee and Tiktok products never collide. **Known, accepted data
+> issue:** Tiktok rows' `price`/`gmv_daily` figures in this source table are corrupted by an
+> inconsistent scale factor and mixed daily/monthly grain — the 95%-cumulative-GMV worklist ordering
+> and `gmv_monthly` figures are unreliable for Tiktok rows specifically (values run ~1000x too high).
+> This is a separate upstream data-pipeline problem, out of scope for taxonomy sessions to fix —
+> proceed with extraction using the worklist as given.
 
 ---
 
@@ -12,11 +22,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass | ✅ Complete (Full Rebuild, first run) + 🔶 Top-up coverage pass (2026-07-23) + 🔶 second top-up coverage pass (2026-07-23, this session, partial — 489 products still gap) |
-| GMV Coverage | 86.4% as of Full Rebuild; first top-up resolved 141/695; this session's top-up resolved 65/554 of the live-worklist gap found afterward (~3.35M MYR still unmapped in-scope in that gap as of this pass) |
-| Last run | 2026-07-23 (second top-up coverage session) |
-| Current MAX taxonomy_id (this category) | SKU-157455 |
-| SKU blocks this category has claimed | SKU-145586–147585 (Full Rebuild, 1,554 used) · SKU-155023–155717 (top-up 1, 77 used) · SKU-157403–157956 (top-up 2, this session, 53 used) |
+| LLM Pass | ✅ Complete (Full Rebuild, first run) + 🔶 Top-up coverage pass (2026-07-23) + 🔶 second top-up coverage pass (2026-07-23) + 🔶 third top-up coverage pass (2026-07-28, this session, partial — first pass to include Tiktok; 396 products still gap) |
+| GMV Coverage | 86.4% as of Full Rebuild; see prior QA History rows for the 2026-07-23 top-ups. This session added Tiktok to scope for the first time — live worklist was 1,501 products (all Tiktok), resolved 1,103 |
+| Last run | 2026-07-28 (third top-up coverage session — Tiktok scope added) |
+| Current MAX taxonomy_id (this category) | SKU-191193 |
+| SKU blocks this category has claimed | SKU-145586–147585 (Full Rebuild, 1,554 used) · SKU-155023–155717 (top-up 1, 77 used) · SKU-157403–157956 (top-up 2, 53 used) · SKU-191043–192543 (top-up 3, this session, 151 used) |
 
 ---
 
@@ -28,6 +38,10 @@
 | SKU-145586–SKU-147139 | Actually used (1,554 taxonomy entries) — 435 slots left unused in the block |
 | SKU-155023–SKU-155717 | Claimed block (695 slots, `sku_block_registry`, scenario `custom_topup`, 2026-07-23) |
 | SKU-155023–SKU-155099 | Actually used (77 new taxonomy entries) — 618 slots left unused in the block |
+| SKU-157403–SKU-157956 | Claimed block (554 slots, `sku_block_registry`, scenario `custom_topup`, 2026-07-23, second top-up) |
+| SKU-157403–SKU-157455 | Actually used (53 new taxonomy entries) — 501 slots left unused in the block |
+| SKU-191043–SKU-192543 | Claimed block (1,501 slots, `sku_block_registry`, scenario `custom_topup`, 2026-07-28, third top-up — Tiktok scope added) |
+| SKU-191043–SKU-191193 | Actually used (151 new taxonomy entries) — 1,350 slots left unused in the block |
 
 ## Brand IDs Assigned
 
@@ -35,7 +49,8 @@
 |-------|-------|
 | BRD-MY-01070–BRD-MY-01127 | 58 new local/house brands minted in the Full Rebuild session |
 | BRD-MY-01169–BRD-MY-01184 | 16 new local/house brands minted in the 2026-07-23 top-up session, after confirming the other 21 initially-assumed-new brands already existed in the *global* `brand_dict` under other markets/categories (see top-up QA History rows for the full reuse map, incl. routing "Advance" products to the existing `BRD-MY-01072` "Advance Veterinary") |
-| BRD-MY-01187–BRD-MY-01214 | 28 new local/house brands minted in the second 2026-07-23 top-up session (this session), after a global `brand_dict` check confirmed several other candidates (Hi-Cubs/喜崽, PETSEE, Carry's, Chun Fu, Prochoice, Partner, Kucinta, Rich.Co, Proud Holistic, NurturePro, Gewuan, Legendsandy, Felix, Meow, BOSSKU, Wono) already existed globally and were reused instead of re-minted. `Hegen` (the pet-treat listings, distinct from the pre-existing SG baby-bottle brand `BRD-SG-00702 Hegen`) was evaluated but left unmapped this session — its products' per-unit size could not be confirmed even from the product image, so no taxonomy entry was created pending a future size-resolution pass |
+| BRD-MY-01187–BRD-MY-01214 | 28 new local/house brands minted in the second 2026-07-23 top-up session, after a global `brand_dict` check confirmed several other candidates (Hi-Cubs/喜崽, PETSEE, Carry's, Chun Fu, Prochoice, Partner, Kucinta, Rich.Co, Proud Holistic, NurturePro, Gewuan, Legendsandy, Felix, Meow, BOSSKU, Wono) already existed globally and were reused instead of re-minted. `Hegen` (the pet-treat listings, distinct from the pre-existing SG baby-bottle brand `BRD-SG-00702 Hegen`) was evaluated but left unmapped this session — its products' per-unit size could not be confirmed even from the product image, so no taxonomy entry was created pending a future size-resolution pass |
+| BRD-MY-01230–BRD-MY-01247 | 18 new local/house brands minted in the 2026-07-28 top-up session (this session, Tiktok scope), after a global `brand_dict` REGEXP_CONTAINS search confirmed several other candidates already existed globally and were reused instead: Kucinta (BRD-MY-01032), Deeplove (BRD-SG-00669), Midalac (BRD-MY-01219), Omega Plus (BRD-SG-05090), PUAINTA (BRD-TH-02109), Pet Record (BRD-GLOBAL-00348), my meow (BRD-SG-04971). Also reused this category's own existing entries where the Tiktok worklist's text form differed from `brand_dict`'s stored spelling: `SPACECAT` (worklist: "Space Cat"), `Si Comot` (worklist: "Comot"), `Carry's` (worklist: "CARRYS"), `SmartHeart` (worklist: "Smart Heart"), `Smartz Choice` (worklist: "SMARTCHOICE PREFECTKAT" — read as a typo'd "Smart Choice Perfect Cat"), and `A-Tier` (worklist: "Sarar" — reusing this category's own pre-existing brand_id/canonical_name mismatch from an earlier session rather than minting a second "Sarar" brand; the mismatch itself is a precision-pass fix, not resolved this session). New mints: Mivita, Public Pet, Regal Whiskers, COMEOW, GoodMew, Dr.Pikac, PAWROO, Neco, FURREVER, CAPTAIN CAT, Pets Science, WormShield, LUMeO, YESFAVOR, Petfos, Purr Lab, Aplus (MY-scoped; a same-named `BRD-TH-02250 "A Plus"` exists but wasn't reused — no verified real-world link between the TH and MY listings, same caution as the Hegen precedent above), MeowShop |
 
 **Collision note:** `brand_dict` has no atomic claim registry equivalent to `sku_block_registry`.
 A parallel session inserted 47 new `BRD-MY-*` rows (`BRD-MY-01012`–`BRD-MY-01058`) ~4 minutes before
@@ -186,12 +201,23 @@ case a future session hand-rolls similar regex against this source table):
 | 2026-07-23 | Second top-up coverage | Claimed SKU block `SKU-157403`–`SKU-157956` (554 slots, atomic `DECLARE`/`BEGIN TRANSACTION` claim per the runbook). Grouped the 65 mappable products by `(brand_id, size, pack_count, is_multi_size)`: 6 exact-matched an existing taxonomy entry (reused directly, no new row), 53 groups had no existing match and got one new taxonomy entry each (covering the other 59 products) — used `SKU-157403`–`SKU-157455` (53 of 554 claimed slots), 501 unused. Two groups (Food Chain, Hell's Kitchen, both genuine "80g/170g"-style buyer-choice multi-size listings) were correctly written `is_multi_size=TRUE, size=NULL` with a real brand+descriptor name, never "Multiple Sizes" text (checked against this file's own banned-phrase precedent before writing) | 53 new `product_taxonomy` rows + 65 new `product_taxonomy_map` rows written via `bq query` DML, `meta_agent='CLAUDE_CODE'`, `source='LLM'` on every row |
 | 2026-07-23 | Second top-up coverage | Self-check QA gates (G1 dual-mapped, G2 HUMAN+LLM coexistence, G4 cross-category `taxonomy_id` leakage, G5 provenance, placeholder-leak) run without `--skip-coexistence`, scoped to `master_table='makanankucing_my'` | All passed: 0 dual-mapped (LLM-scoped), 0 HUMAN+LLM coexistence, 0 out-of-range/cross-category `taxonomy_id`s (all map rows resolve to this category's own 3 claimed blocks), 0 provenance gaps, 0 placeholder-leak canonical names |
 | 2026-07-23 | Second top-up coverage | **Remaining gap after this session: 489 products (554 − 65)**, breakdown: ~237 in-scope but brand-unidentifiable-from-text or size-unresolved-even-from-image (mostly the already-documented "genuinely unbranded freeze-dried booster/treat" commodity pattern, plus a handful of newly-identified-but-size-silent branded listings like Hegen/FURVIT/Amelisa/Pawmised toppers), ~253 correctly-OOS this pass (158 dog, 63 non-food/accessory, 24 litter, 6 flea/dewormer, 1 baby formula) | Not fixed this session — flagged for a future top-up or `targeted_qa_fix.sh` pass; per this session's own turn budget, did not attempt a full image-verification sweep of all ~118 remaining brand-matched-but-size-unresolved rows, only the top 15 by GMV |
+| 2026-07-28 | Third top-up coverage (Tiktok scope added) | Re-ran the live STEP-0 worklist query directly rather than trusting the wrapper's 1,501 pre-check number — confirmed exactly 1,501 products with `taxonomy_id IS NULL`, matching the wrapper's figure. All 1,501 were `ecommerce_platform='Tiktok'` — Tiktok entered scope for the first time this session (prior sessions' 489-product Shopee gap dropped out of the live top-95%-cumulative-GMV window because Tiktok's inflated GMV figures now dominate the ranking; this is a side-effect of the documented Tiktok GMV data issue, not a coverage regression — those Shopee products still have `taxonomy_id IS NULL`, just outside this session's 95% window) | Proceeded with the live 1,501-product Tiktok worklist per the session brief's explicit scope decision |
+| 2026-07-28 | Third top-up coverage | Scope classifier's first pass wrongly excluded ~112 genuine cat-food listings (`no_food_kw` rule required an explicit food/kibble/makanan keyword, but many listings are brand+descriptor+size only, e.g. `"Reflex Plus Adult Chicken 15kg"`, `"ROYAL CANIN HAIR & SKIN 10KG"`) — caught by manually reading the rejected bucket before generating any SQL. Also found 2 false-positive OOS matches: `"Rich Choice Holistic ... Dry Cat Food (Coat & Flea Control...)"` (flea-repelling *feature* of food, not a standalone flea treatment) and `"Meow Litter Fat Premium Cat Treat..."` (bare `litter` substring-matched a typo'd "Little Fat" booster-treat listing, not actual cat litter) | Dropped the food-keyword requirement (source table is already the cat-food category feed — default in-scope, exclude only on explicit OOS signal); tightened `flea`/`litter` patterns to require the real product bigram or absence of a food-framing keyword. Final split: 1,499 in-scope / 2 OOS (1 litter, 1 grooming/supplement product) |
+| 2026-07-28 | Third top-up coverage | Brand matching: built an alias table from this category's 198 existing `brand_dict` entries + documented consolidation aliases, then a `REGEXP_CONTAINS` sweep of the *global* `brand_dict` for repeated unmatched-candidate tokens found 7 reuse hits (Kucinta, Deeplove, Midalac, Omega Plus, PUAINTA, Pet Record, my meow) plus several worklist-text-vs-brand_dict-spelling mismatches within this category's own existing brands (`SPACECAT`, `Si Comot`, `Carry's`, `SmartHeart`, `Smartz Choice`, and `A-Tier`/"Sarar" — the last reusing this category's own pre-existing brand_id/canonical_name mismatch from an earlier session for consistency rather than minting a duplicate). 1,233 of 1,499 in-scope rows (82%, 90% of in-scope GMV) brand-matched; 266 left unmatched (genuinely brand-unidentifiable from text, consistent with prior sessions' commodity-treat pattern) | Minted 18 confirmed-new brands (`BRD-MY-01230`–`01247`, re-verified `MAX(BRD-MY-*)` immediately before insert; re-checked post-insert via `COUNT(*) = COUNT(DISTINCT brand_id)` — no collision, 18/18 unique) — see Brand IDs Assigned above for the full list and reuse map |
+| 2026-07-28 | Third top-up coverage | Size/pack regex (built fresh this session, not reused from a prior session's script since none is committed) had two bugs caught before writing: (1) the unit-alternation regex required a trailing "m" for gram-unit matches (`gr?a?ms?`), so bare `"g"` and `"gr"` never matched at all — silently missed slash-separated multi-size listings like `"60g/550g"`; (2) `\b` word-boundary checks after a unit fail on no-space runs like `"85gx12"` (letter→letter, no boundary) and on multi-digit numbers following a single-digit pack check (`"x 16"` — boundary check landed between "1" and "6"), both matching this file's own previously-documented gotcha class for this source table. Also caught a false-positive: `"ProDiet 8kg... (8kg/500g x 16 Packs)"` initially flagged as multi-size-alternation by the slash-pattern gate even though `500g×16=8kg` is a consistent pack breakdown, not two alternative sizes | Fixed unit alternation to include bare `g`/`gr`, replaced boundary check with a lookahead permitting no-space `x<digit>` runs, and added a pack-qualifier guard + same-unit ratio-consistency check so a "total/breakdown" pattern isn't misread as buyer-choice multi-size. Verified against multiple sample rows post-fix before generating SQL |
+| 2026-07-28 | Third top-up coverage | Grouped the 1,233 brand-matched rows by `(brand_id, size, pack_count)` (concrete) or `(brand_id)` with `is_multi_size=TRUE` (40 rows, buyer-choice multi-size listings like `"1.5KG & 2KG"`, `"500GM/1KG"`) — 428 groups total, 277 exact-matched an existing taxonomy entry (reused), 151 needed a new entry. 130 rows had no extractable size (not genuinely multi-size either) and were left unmapped rather than guessed, per this file's own established precedent | Claimed SKU block `SKU-191043`–`SKU-192543` (1,501 slots, atomic `DECLARE`/`BEGIN TRANSACTION` claim). Wrote 151 new `product_taxonomy` rows (`SKU-191043`–`SKU-191193`, 1,350 slots unused) + 1,103 new `product_taxonomy_map` rows via `bq query` DML, `meta_agent='CLAUDE_CODE'`, `source='LLM'`, `platform='Tiktok'`, `country='MY'` on every row. First DML attempt for the map rows failed cleanly with 0 rows written (`confidence` column is `STRING` in this table, not `FLOAT64` as `ARCHITECTURE.md` documents, and the `country` column — part of the ADR-006 composite key — was initially omitted) — fixed and re-ran before any partial write occurred |
+| 2026-07-28 | Third top-up coverage | Self-check QA gates (G1 dual-mapped, G2 HUMAN+LLM coexistence, G4 cross-category `taxonomy_id` leakage, G5 provenance, placeholder-leak), run without `--skip-coexistence`, scoped to `master_table='makanankucing_my'` | All passed: 0 dual-mapped (LLM-scoped, keyed on product_id+platform+country), 0 HUMAN+LLM coexistence, 0 out-of-range/cross-category `taxonomy_id`s (all map rows resolve to this category's own 4 claimed blocks), 0 provenance gaps, 0 placeholder-leak canonical names, 30% NULL `product_line` among LLM entries excluding multi-size catch-alls (well under the 50% threshold) |
+| 2026-07-28 | Third top-up coverage | **Remaining gap after this session: 396 products** (266 brand-unidentifiable-from-text + 130 brand-matched-but-size-unresolved), all in-scope. This is a bulk-first regex-only pass (per the session brief's coverage-over-precision mandate) — no product images were read this session; `product_line`/`variant` text is regex-stripped `sku_name` remainder and retains noise on some long-tail entries (consistent with the "known simplification" already accepted for this category's prior sessions) | Not fixed this session — flagged for a future top-up (image-based resolution of the size-unresolved tail) or `targeted_qa_fix.sh` precision pass on the 151 newly-minted entries' `product_line`/`variant` split |
 
 ---
 
 ## Targeted QA Fix Brief
 
 > Scope for a future `targeted_qa_fix.sh` / NULL-coverage session — not executed this session.
+> **Note (2026-07-28):** the figures below predate the Tiktok-scope top-up sessions and are stale —
+> see "Map Row Counts" above for the current gap (396 products, all Tiktok, as of 2026-07-28) and this
+> session's QA History rows for what's specifically unresolved. Kept here as historical record of the
+> original Shopee-only gap.
 
 **Verdict:** D6 in-scope NULL coverage gap + D1/D2 precision pass needed.
 
@@ -216,18 +242,26 @@ this custom, non-NIQ source table.
 
 ---
 
-## Map Row Counts (as of the second 2026-07-23 top-up session, this session)
+## Map Row Counts (as of the third top-up session, 2026-07-28, this session — Tiktok scope added)
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 2,038 | 1,832 Full Rebuild + 141 first top-up + 65 this session (bulk text-matching + 15 image-verifications, not a full per-product multimodal pass) |
+| LLM | 3,141 | 1,832 Full Rebuild + 141 first top-up + 65 second top-up + 1,103 this session (all Tiktok — bulk regex text-matching against sku_name, no image reads this session) |
 | HUMAN | 0 | No prior keyword-seed pass for this category |
-| NULL (unmapped, in-scope, live-worklist gap remaining) | 489 (~3.35M MYR) | Mostly genuinely brand-unidentifiable or size-unresolved-even-from-image commodity treats — see this session's QA History rows above |
-| NULL (out-of-scope, correctly excluded, this session's live worklist) | 253 | 158 dog, 63 non-food/accessory, 24 cat litter, 6 flea/dewormer, 1 baby formula |
+| NULL (unmapped, in-scope, live-worklist gap remaining) | 396 | 266 brand-unidentifiable-from-text + 130 brand-matched-but-size-unresolved (neither genuinely multi-size nor text-extractable) — see this session's QA History row below |
+| NULL (out-of-scope, correctly excluded, this session's live worklist) | 2 | 1 cat litter, 1 grooming/supplement product mixed with shampoo mention |
 
 Prior sessions' snapshots (kept for history):
 
-Snapshot before this session's top-up (after the first 2026-07-23 top-up):
+Snapshot before this session's top-up (after the second 2026-07-23 top-up):
+
+| Source | Count | Notes |
+|--------|-------|-------|
+| LLM | 2,038 | 1,832 Full Rebuild + 141 first top-up + 65 second top-up |
+| NULL (unmapped, in-scope, live-worklist gap remaining) | 489 (~3.35M MYR) | Mostly genuinely brand-unidentifiable or size-unresolved-even-from-image commodity treats |
+| NULL (out-of-scope, correctly excluded) | 253 | 158 dog, 63 non-food/accessory, 24 cat litter, 6 flea/dewormer, 1 baby formula |
+
+Snapshot before the second top-up (after the first 2026-07-23 top-up):
 
 | Source | Count | Notes |
 |--------|-------|-------|
