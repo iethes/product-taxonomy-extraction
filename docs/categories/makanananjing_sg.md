@@ -26,7 +26,7 @@
 | LLM Pass | ✅ Complete (Full Rebuild, first run) |
 | GMV Coverage | 85.98% of total table GMV (198/685 products mapped); 94.9% cumulative-GMV in-scope worklist fully worked (198 mapped + 11 legitimately excluded/unresolved of 209) |
 | Last run | 2026-07-28 |
-| Current MAX taxonomy_id (this category) | SKU-186545 — **query BQ directly before trusting this**, per CLAUDE.md's SKU Block Management warning |
+| Current MAX taxonomy_id (this category) | SKU-186547 — **query BQ directly before trusting this**, per CLAUDE.md's SKU Block Management warning |
 
 ---
 
@@ -35,7 +35,8 @@
 | Block | Usage |
 |-------|-------|
 | SKU-186352–SKU-188351 | Claimed block (2,000 slots, `sku_block_registry`, scenario `custom_full_rebuild`) |
-| SKU-186352–SKU-186545 | Actually used (194 taxonomy entries) — remainder (186546–188351) left unused for future top-ups |
+| SKU-186352–SKU-186545 | First pass, 194 taxonomy entries |
+| SKU-186546–SKU-186547 | Post-write precision fix (split 2 over-merged entries, see QA History) — 196 taxonomy entries actually used total; remainder (186548–188351) left unused for future top-ups |
 
 ---
 
@@ -174,7 +175,8 @@ size=100g, pack_count=16). Listings whose sizes are seller-side option selectors
 | 2026-07-28 | Full Rebuild | `image` column format differs from `docs/headless-runbook.md`'s documented "direct CDN URL" — it's a Python-repr'd list of dicts with `url_list` arrays (TikTok CDN, webp, multiple resolutions) | Confirmed the `curl -sL -o <file> "<url_list[0]>"` → `Read` pattern still works after extracting the first URL; used for 6 targeted ambiguous-case verifications |
 | 2026-07-28 | Full Rebuild | Cross-`master_table` true-composite-key collision check (`platform='TikTok Shop', country='SG'`) run **before** writing, against all 209 in-scope product_ids — 0 collisions found (no other category has touched these TikTok Shop SG product_ids) | No action needed; confirmed clean via `docs/categories/makanananjing_my.md`'s established pre-write-check precedent |
 | 2026-07-28 | Full Rebuild | `product_brand_map` has 0 rows for any of these 209 product_ids (`platform='TikTok Shop', country='SG'`) — Stage 03 brand resolution has never run for this product set, mirroring the documented gap for `shopee_id_*` tables in `docs/categories/STATUS.md` | Not a blocker for Phase 5 — `product_taxonomy`/`product_taxonomy_map` brand assignment is independent of `product_brand_map`; noted for awareness, not remediated this session |
-| 2026-07-28 | Full Rebuild | Self-check QA gates (G1, G2 without `--skip-coexistence` since no pre-existing HUMAN rows exist, G4 full cross-table, G5, placeholder-leak, structured-fields-NULL%): G1=0, G2=0, G4=0, G5=0, placeholder-leak=0, structured-fields-NULL%=0% (well under 50% threshold) | All gates pass; proceeded to write category doc |
+| 2026-07-28 | Full Rebuild | Pre-report review found 2 of the 4 taxonomy entries that collapsed 2 products onto 1 entry were genuine over-merges, not true duplicates: (1) Absolute Bites "Single Ingredient Air Dried Treats" merged a "Small Pack (35g-240g)" listing and a "Big Pack (150g-900g)" listing into one entry — different seller-labeled pack tiers, not the same product; (2) OMAKASE's generic multi-variant catch-all merged a regular listing with a "[MEDIUM Packs] WHOLESALE" listing — different pack tier. (The other 2 merges — Sourcesage Club Ostrich Flat Tendon reseller dup, Bronco 16-tray Pate Tray dup — were verified genuine.) Also found the 5 `BRD-UNBRANDED` entries had the raw brand_id leaking into `canonical_name` (e.g. "BRD-UNBRANDED Live Exclusive Bundle Medium Dog") — a placeholder-leak-class defect the QA gate's regex didn't catch since it doesn't check for a `BRD-` prefix | Split the 2 over-merged entries: minted `SKU-186546` (Absolute Bites Big Pack) and `SKU-186547` (OMAKASE Wholesale Medium Pack) from the unused block remainder, re-pointed the 2 affected `product_taxonomy_map` rows, renamed the original 2 entries to disambiguate ("(Small Pack)" / drop the wholesale qualifier). Stripped the `BRD-UNBRANDED ` prefix from all 5 affected `canonical_name` values via `REGEXP_REPLACE`. Re-ran QA gates after fix (see below) |
+| 2026-07-28 | Full Rebuild | Self-check QA gates, post-fix (G1, G2 without `--skip-coexistence` since no pre-existing HUMAN rows exist, G4 full cross-table, G5, placeholder-leak extended to also check for a leaked `BRD-` prefix, structured-fields-NULL%): G1=0, G2=0, G4=0, G5=0, placeholder-leak=0, structured-fields-NULL%=0% (well under 50% threshold) | All gates pass; proceeded to write category doc |
 
 ---
 
