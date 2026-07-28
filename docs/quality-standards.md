@@ -48,7 +48,14 @@ highest-GMV defects first; the long tail can remain `UNRESOLVED`.
 Since 2026-07-21, `script/targeted_qa_fix.sh` can run this loop on its own for the FIX/RE-MEASURE half — see
 [docs/superpowers/specs/2026-07-21-taxonomy-review-loop-design.md](superpowers/specs/2026-07-21-taxonomy-review-loop-design.md).
 `product_taxonomy._meta` tracks review state per entry (`review_confidence`: `unreviewed` → `unconfident` →
-`confident`, reached by two consecutive reviews agreeing on the same verdict). Each run reviews only
+`confident`). Since 2026-07-28, confidence is reached one of two ways: (1) a never-reviewed row's first Tier-2
+"correct" verdict, if Tier 1 is also fully clean on that row (no flag tripped, or every tripped flag has a
+matching `qa_gate_exceptions` entry) — promotes in one pass; or (2) two consecutive reviews on a row that
+already carries a prior verdict agreeing on the same outcome — the original rule, unchanged, for rows re-reviewed
+after being previously unconfident. A row fixed in a session is re-checked against Tier 1 immediately, in the
+same session, rather than waiting for a future pass. See
+[docs/superpowers/specs/2026-07-28-qa-fix-one-pass-confidence-design.md](superpowers/specs/2026-07-28-qa-fix-one-pass-confidence-design.md).
+Each run reviews only
 never-reviewed or `unconfident` entries (incremental scope, not a full re-scan) via a two-tier checklist: Tier
 1 SQL regex (duplicate brand tokens, placeholder/stub leaks, field-order violations, brand casing, excess
 content) flags cheaply; Tier 2 LLM judgment (checked against §3's D1-D5 dimensions and
