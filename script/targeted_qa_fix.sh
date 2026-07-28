@@ -363,25 +363,62 @@ Reminder: the actual content-fixing UPDATE (the one that changes canonical_name/
 not shown as a template above since it varies per defect) must also set meta_agent='CLAUDE_CODE' in that same
 statement. Don't wait until STEP 7 to remember this.
 
-STEP 5 — For every row you gave a real Tier 2 judgment this session and found correct (no fix needed), update
-its _meta by comparing this review's verdict against the stored previous verdict — agreement promotes to
-confident; disagreement, or a first-ever review, lands on unconfident. Do this in ONE bulk statement covering
-every such taxonomy_id, not one UPDATE per row — a prior session burned most of its turn budget on
+Same-session gate-verify (2026-07-28): immediately after applying a fix and resetting a row's _meta to
+{"is_reviewed": false}, re-run the same Tier 1 flag checks (stub_leak, duplicate_brand, wrong_field_order,
+brand_casing_mismatch, excess_content, canonical_field_mismatch, null_size, garbage_brand) against that row's
+new values, in this same session — do not wait for a future session's STEP 1C to confirm the fix held. A row
+that comes back fully clean on this immediate recheck qualifies for STEP 5's Path 1(b) promotion below, this
+session. A row that still trips a flag keeps _meta at {"is_reviewed": false}, unresolved — picked up again by
+STEP 2's worklist-wide sweep or a future STEP 1C pass, same as today.
+
+STEP 5 — Promote reviewed rows' _meta. Two distinct promotion paths apply — run both; they cover different
+rows and never conflict as long as you don't put the same taxonomy_id in both lists:
+
+PATH 1 (new, 2026-07-28) — never-reviewed rows and freshly-fixed rows, promoted in ONE pass, no waiting for a
+future session:
+  (a) A never-reviewed row (pt._meta IS NULL going into this session) that you Tier-2-judged 'correct' this
+      session AND that came back fully clean on Tier 1 (STEP 2's sweep) — where "fully clean" means no flag
+      tripped, OR every flag that did trip already has a matching row in
+      \`${PROJECT}.magpie_reference.qa_gate_exceptions\` for (gate_name = '<the tripped flag's name, e.g.
+      null_size>', master_table = '${table}', entity_id = '<the taxonomy_id>') — promotes straight to
+      'confident'. A never-reviewed row Tier-2-judged 'correct' but with an un-excepted Tier 1 flag instead
+      lands on 'unconfident' (the two signal types disagree).
+  (b) A row you fixed this session (STEP 4's same-session gate-verify): fully clean on the immediate post-fix
+      Tier 1 recheck (same "fully clean" definition as (a), including the qa_gate_exceptions carve-out) →
+      promotes straight to 'confident', this session. Still flagged on recheck → do not include it here (STEP
+      4 already left its _meta at {"is_reviewed": false}, unresolved).
+  Bulk statement for every taxonomy_id qualifying under (a) or (b) this session:
+  UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\`
+  SET _meta = TO_JSON_STRING(STRUCT(
+    true AS is_reviewed,
+    CURRENT_TIMESTAMP() AS last_reviewed_at,
+    'confident' AS review_confidence,
+    'correct' AS last_verdict
+  ))
+  WHERE taxonomy_id IN ('SKU-XXXXXX', /* every taxonomy_id qualifying under (a) or (b) this session */)
+
+PATH 2 (existing, unchanged) — every other row you gave a real Tier 2 judgment this session and found correct,
+that is NOT already covered by Path 1 (i.e. rows with a prior stored verdict already in _meta, being reviewed
+again — the fixed_pending_recheck-via-fresh-Tier-2-judgment case, or a previously unconfident row sampled
+again). Update its _meta by comparing this review's verdict against the stored previous verdict — agreement
+promotes to confident; disagreement lands on unconfident. Do this in ONE bulk statement covering every such
+taxonomy_id, not one UPDATE per row — a prior session burned most of its turn budget on
 one-UPDATE-per-taxonomy_id bookkeeping alone and only reviewed 133 of ~5,812 rows as a result:
-UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\` pt
-SET _meta = TO_JSON_STRING(STRUCT(
-  true AS is_reviewed,
-  CURRENT_TIMESTAMP() AS last_reviewed_at,
-  IF(JSON_VALUE(pt._meta, '$.last_verdict') = 'correct', 'confident', 'unconfident') AS review_confidence,
-  'correct' AS last_verdict
-))
-WHERE pt.taxonomy_id IN ('SKU-XXXXXX', 'SKU-YYYYYY', /* every taxonomy_id you Tier-2-judged as correct this session — the IF() expression re-reads each row's own prior _meta, so one statement handles all of them correctly even though their prior states differ */)
+  UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\` pt
+  SET _meta = TO_JSON_STRING(STRUCT(
+    true AS is_reviewed,
+    CURRENT_TIMESTAMP() AS last_reviewed_at,
+    IF(JSON_VALUE(pt._meta, '$.last_verdict') = 'correct', 'confident', 'unconfident') AS review_confidence,
+    'correct' AS last_verdict
+  ))
+  WHERE pt.taxonomy_id IN ('SKU-XXXXXX', 'SKU-YYYYYY', /* every taxonomy_id you Tier-2-judged as correct this session under Path 2 — the IF() expression re-reads each row's own prior _meta, so one statement handles all of them correctly even though their prior states differ */)
+
 This is metadata bookkeeping for the rows you actually reviewed (Tier 2 sample size, not the whole worklist),
-so the taxonomy_id list stays small enough to write out literally — never bulk-mark a Tier-1-clean row you
-did NOT Tier-2-sample (see STEP 3). Note last_verdict only ever records 'correct' in practice: rows you judge
-wrong either get fixed (STEP 4 resets their _meta to unreviewed so they're re-evaluated fresh next run) or, if
-not fixed this session, are simply left with their _meta untouched so the next run re-reviews them — nothing
-writes last_verdict='wrong' directly.
+so each path's taxonomy_id list stays small enough to write out literally — never bulk-mark a Tier-1-clean row you
+did NOT Tier-2-sample (see STEP 3), and never double-count a taxonomy_id in both Path 1 and Path 2's lists.
+Note last_verdict only ever records 'correct' in practice: rows you judge wrong either get fixed (STEP 4 resets
+their _meta to unreviewed so they're re-evaluated fresh next run) or, if not fixed this session, are simply
+left with their _meta untouched so the next run re-reviews them — nothing writes last_verdict='wrong' directly.
 
 STEP 6 — If, and only if, a fix genuinely requires minting a new taxonomy entry (e.g. splitting a bad
 multi-size stub into distinct real entries), claim a ${block_size}-slot SKU block atomically first (DECLARE

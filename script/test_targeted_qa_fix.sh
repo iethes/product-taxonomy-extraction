@@ -196,6 +196,18 @@ grep -qF "no Tier 2 sample slot spent" <<< "$prompt" || fail "STEP 1C must bulk-
 grep -qF "STEP 1C already bulk-promoted" <<< "$prompt" || fail "STEP 3 must exclude rows STEP 1C already resolved"
 echo "PASS: build_auto_discovery_prompt gate_report (STEP 1B)"
 
+# --- build_auto_discovery_prompt: one-pass confidence promotion (STEP 4 / STEP 5) ---
+prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "docs/categories/th_suncare.md" "200")
+grep -qF "Same-session gate-verify" <<< "$prompt" || fail "STEP 4 must add the immediate post-fix Tier 1 recheck instruction"
+grep -qF "do not wait for a future session's STEP 1C" <<< "$prompt" || fail "STEP 4's recheck must run this session, not a future one"
+grep -qF "PATH 1 (new, 2026-07-28)" <<< "$prompt" || fail "STEP 5 must add the new one-pass promotion path"
+grep -qF "PATH 2 (existing, unchanged)" <<< "$prompt" || fail "STEP 5 must keep the existing prior-verdict comparison path, labeled unchanged"
+grep -qF "IF(JSON_VALUE(pt._meta, '\$.last_verdict') = 'correct', 'confident', 'unconfident')" <<< "$prompt" || fail "STEP 5 Path 2 must retain the exact prior-verdict IF() comparison verbatim"
+grep -qF "fully clean on Tier 1" <<< "$prompt" || fail "STEP 5 Path 1(a) must define the never-reviewed promotion condition"
+grep -qF "qa_gate_exceptions\` for (gate_name = '<the tripped flag's name" <<< "$prompt" || fail "STEP 5 Path 1 must extend qa_gate_exceptions to Tier 1 flag names, not just qa_report.sh's five named gates"
+grep -qF "never double-count a taxonomy_id in both Path 1 and Path 2" <<< "$prompt" || fail "STEP 5 must warn against double-counting a taxonomy_id across both paths"
+echo "PASS: build_auto_discovery_prompt one-pass confidence promotion"
+
 # --- decide_next_step ---
 [[ "$(decide_next_step '{"status":"blocked","blockers":["x"]}')" == "BLOCKED" ]] || fail "blocked status"
 [[ "$(decide_next_step '{"status":"failed"}')" == "MARK_FAILED" ]] || fail "failed status"
