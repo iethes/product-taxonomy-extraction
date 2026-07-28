@@ -18,10 +18,10 @@
 | Field | Value |
 |-------|-------|
 | LLM Pass | ✅ Complete (Full Rebuild, first run) — single pass, no official-store tier exists for TikTok Shop (`merchant_badge` is uniformly `'Tiktok Shop'` for all 871 SG products, confirmed live — no Mall-equivalent signal) |
-| GMV Coverage | 95.88% of the top-95%-cumulative-GMV (GWP-zeroed) in-scope worklist (234/246 products); 234/871 of all SG products in the source table |
-| Last run | 2026-07-28 (this session) |
-| Current MAX taxonomy_id (this category) | SKU-188540 |
-| SKU block this category has claimed | SKU-188352–SKU-190351 (2,000 slots, `sku_block_registry`, scenario `custom_full_rebuild`) |
+| GMV Coverage | 239/246 (97.15%) of the top-95%-cumulative-GMV (GWP-zeroed) in-scope worklist, after the 2026-07-28 top-up session; 239/871 of all SG products in the source table |
+| Last run | 2026-07-28 (top-up session) |
+| Current MAX taxonomy_id (this category) | SKU-190845 |
+| SKU block this category has claimed | SKU-188352–SKU-190351 (2,000 slots, `custom_full_rebuild`) + SKU-190843–SKU-191042 (200 slots, `custom_topup`) |
 
 ---
 
@@ -29,8 +29,10 @@
 
 | Block | Usage |
 |-------|-------|
-| SKU-188352–SKU-190351 | Claimed block (2,000 slots) |
+| SKU-188352–SKU-190351 | Claimed block (2,000 slots, `custom_full_rebuild`) |
 | SKU-188352–SKU-188540 | Actually used (189 taxonomy entries) — 1,811 slots left unused in the block |
+| SKU-190843–SKU-191042 | Claimed block (200 slots, `custom_topup`, 2026-07-28) |
+| SKU-190843–SKU-190845 | Actually used (3 new taxonomy entries) — 197 slots left unused in the block |
 
 ---
 
@@ -112,22 +114,32 @@ cat supplements (multivitamin candy). The source table's `category_1/2/3` is uni
 non-food items were found in this table (unlike the `makanankucing_my` precedent, which required an
 explicit dog-food/litter/flea-treatment exclusion list).
 
-**Out of scope (left unmapped, 12 products, ~10.1K SGD GMV in the in-scope worklist):** all 12 are
-genuinely brand-unidentifiable from `sku_name` text — no image check could resolve a brand that isn't
-stated at all:
-- Generic freeze-dried treat listings with no discernible brand (`PetJoy.PJ`/`MomJoy MJ`/`Pet Joy
-  Shop` resellers — "Big bucket!!! Pet Food Freeze Dried Treats...", "Top Value!!! Freeze Dried
-  Chicken 500g...", "【SG ready stock】Freeze Dried Pet Treats..." ×2) — same "genuinely unbranded
-  commodity treat" pattern documented in `makanankucing_my.md`.
-- `[New Buyer Only] Yappy Pets Welcome Box for Cat and Dog` — a reseller's own promotional bundle box,
-  not a real product brand/line (`Yappy Pets` is the `merchant_name`, not a packaging brand — correctly
-  excluded per §11's merchant-name-is-not-a-brand-signal rule).
-- `【Combo Sets 】Cat food wet food mixed...` — multi-brand buyer-choice assortment, can't attribute to
-  one brand (same rule as documented multi-brand Cola listings elsewhere in this pipeline).
-- `NUTRILICK CAT CANDY SUPPLEMENT PROBIOTIC` — plausibly the same product as the (successfully mapped)
-  `Furvit`-branded "Nutri Lick" line, but this specific listing's title never states "Furvit"/"Furvite"
-  — left unmapped rather than guess.
-- Two generic unbranded cat-grass listings and two generic unbranded "cat strip" treat-stick listings.
+**Out of scope (left unmapped, 7 products, ~9.3K SGD GMV in the in-scope worklist, as of the 2026-07-28
+top-up session):** all 7 are genuinely brand-unidentifiable — confirmed via image, not just text, this
+session (the original 12-product list below included 5 that a fresh image check resolved; see QA History
+2026-07-28 top-up):
+- Generic freeze-dried treat listings with no discernible packaging-printed brand, only reseller
+  watermarks/composite marketing collages (`PetJoy.PJ`/`MomJoy MJ`/`PetJoy Trusted Local Pet Store`
+  resellers — "Big bucket!!! Pet Food Freeze Dried Treats...", "Top Value!!! Freeze Dried Chicken
+  500g...", "【SG ready stock】Freeze Dried Pet Treats..." ×2, "Pet Joy Shop Freeze Dried Pet Treats...")
+  — image-verified 2026-07-28: three of these five share one identical composite marketing image showing
+  small Korean-text foil pouches that don't match the 500g bulk-bin product actually being sold (classic
+  cover/banner-image mismatch per §6's caveat) — same "genuinely unbranded commodity treat" pattern
+  documented in `makanankucing_my.md`.
+- `[New Buyer Only] Yappy Pets Welcome Box for Cat and Dog` — image-verified 2026-07-28: a genuine
+  cross-brand bundle (Top Ration dry food + happi freeze-dried treats + nurturePRO pet wipes), not a
+  single-brand product; `Yappy Pets` is the `merchant_name`, not a packaging brand (§11).
+- `SG Fresh cat grass without soil organic cat grass...` — image-verified 2026-07-28: the image's "ALL
+  LUCKY" banner matches this listing's own `merchant_name` (`All-Lucky`) exactly — a merchant-name leak,
+  not a printed product brand (§11). Correctly excluded.
+
+**Resolved this session (moved out of the unmapped list, 2026-07-28 top-up):** 5 of the original 12 were
+image-verified to have a real packaging-printed brand distinct from the reseller/merchant name — see QA
+History for the full finding. `NUTRILICK CAT CANDY SUPPLEMENT PROBIOTIC` (→ Furvit Nutri Lick) and the
+two generic-looking cat-grass/cat-strip listings that turned out to be FAENBEI and Ishtar respectively are
+no longer in the out-of-scope list. `【Combo Sets 】Cat food wet food mixed...` also resolved — its image
+is 100% Uncle Tails-branded (box + cans + sticks), not a multi-brand assortment as originally assumed from
+text alone.
 
 **Edge cases:**
 - Cross-border brand entities: several brands in this SG TikTok worklist (`D'Zahara`, `Uncle Tails`,
@@ -225,6 +237,16 @@ section above for the full breakdown.
 | 2026-07-28 | Full Rebuild | Claimed SKU block `SKU-188352`–`SKU-190351` (2,000 slots) — re-verified live `MAX(block_end)` immediately before claiming (moved from 186351 to 188351 between the first check and the claim, confirming a parallel session was active) | Used `SKU-188352`–`SKU-188540` (189 of 2,000 slots), 1,811 unused |
 | 2026-07-28 | Full Rebuild | Self-check QA gates (G1 dual-mapped [LLM-scoped], G2 HUMAN+LLM coexistence, G5 provenance, placeholder-leak, structured-fields-NULL%) run per `docs/headless-runbook.md`'s QA-gate-as-code, scoped to `master_table='makanankucing_sg'` | All passed: 0 dual-mapped, 0 HUMAN+LLM coexistence (no HUMAN rows exist for this category), 0 provenance gaps, 0 placeholder-leak canonical names, 26% NULL product_line among non-multi-size entries (well under the 50% fail threshold) |
 | 2026-07-28 | Full Rebuild | GMV coverage: 234/246 (95.88% of in-scope GMV) of the top-95%-cumulative-GMV worklist mapped; 234/871 of all SG products in the source table | 12 remaining in-scope products (~10.1K SGD) are genuinely brand-unidentifiable — flagged for a future top-up pass |
+| 2026-07-28 | Top-up | Wrapper's live pre-check reported 13 still-NULL in-scope products; re-ran STEP 0's worklist query live per this session's instructions rather than trusting that number | Live worklist = 12 products (~10.1K SGD), not 13 — matched exactly the 12 already documented in Scope/Targeted QA Fix Brief, confirming the pre-check number was stale, not the doc |
+| 2026-07-28 | Top-up | The prior full-rebuild session's "genuinely brand-unidentifiable" conclusion for all 12 was based on `sku_name` text reasoning only — no product image had actually been checked for any of them. Downloaded + Pillow-converted all 12 product images (`curl` + WebP→PNG, same pattern as the original session) and read each one | 5 of 12 resolved via image: a real packaging-printed brand was visible and confirmed distinct from the reseller watermark/merchant name (cross-checked against live `merchant_name` per product to rule out a §11 merchant-name leak before accepting each read) |
+| 2026-07-28 | Top-up | Resolved: `NUTRILICK CAT CANDY SUPPLEMENT PROBIOTIC` (1729615000726374387) image = Furvit's "Cat Candy's Nutri Lick" boxes (Beef/Salmon/Chicken), merchant is unrelated "Komi Pets" | Mapped to existing `SKU-188486` (Furvit Candy Nutri Lick 5g x40) — brand+line match; exact pack format not independently reconfirmed for this specific listing, accepted per this session's coverage-first priority |
+| 2026-07-28 | Top-up | Resolved: `SG 60Pcs Cat Treats Cat Wet Food Treats Cat Strip...` (1730284236200511461) image clearly shows "FAENBEI" branded stick pouches, "60 PIECES PER BOX / every single 15g pack" — exact match to the category's existing FAENBEI 15g×60 precedent; merchant is unrelated "All-Lucky" | Mapped to existing `SKU-188373` (FAENBEI Chicken Egg Yolk/Salmon Antarctic Krill/Tuna Mussels 15g x60) |
+| 2026-07-28 | Top-up | Resolved: `SG Ready Stock Cat Strips Premium... 16g*30 Per Stick...` (1733369514871588475) image shows "Ishtar"-branded 4-flavor stick pouches (Tuna Roe, Cod Fish, Beef, Salmon Fish); merchant is unrelated "PetJoy.PJ" — an existing single-stick Ishtar entry (`SKU-188539`, pack_count=1) didn't match this 30-count multi-flavor box | Minted new entry `SKU-190843` "Ishtar Cat Snack Strips Tuna Cod Fish Beef Salmon 16g x30" (`is_multi_variant=TRUE`, brand reused: `BRD-SG-05334`) |
+| 2026-07-28 | Top-up | Resolved: `【Combo Sets 】Cat food wet food mixed...` (1730978220752536698) image is 100% "UNCLE TAILS PET'S MEAT RIGHTS"-branded across every item (30-pouch box + 9 cans + 6 snack sticks) — not a multi-brand buyer-choice assortment as the original text-only read assumed; merchant is unrelated "Moon Shadow Shop". Neither existing Uncle Tails entry (single-format snack sticks) matched this multi-item combo box | Minted new entry `SKU-190844` "Uncle Tails Complete Feeding Combo Pouch Soup Can Snack Stick Set" (`is_multi_size=TRUE`, brand reused: `BRD-MY-01124`) |
+| 2026-07-28 | Top-up | Resolved: `Cat Grass Freeze Dried Granules Snack Cat Food...` (1733321874134959739) image shows a `PetJoy.PJ` reseller watermark overlay AND a separate genuine container label (with ingredients/manufacturer/batch number/barcode) reading "PET&SNACKS" — distinct text from both the watermark and the `merchant_name`, so not a §11 leak. Checked global `brand_dict` first: no existing "Pet & Snacks"/"PET&SNACKS" entry under any spelling | Minted new brand `BRD-SG-14511` "Pet & Snacks" (computed `MAX+1` inside the `INSERT` statement per the collision-avoidance pattern from the original session; verified no `brand_id` duplicate post-insert) + new taxonomy entry `SKU-190845` "Pet & Snacks Freeze-Dried Cat Grass Nuggets 500g" |
+| 2026-07-28 | Top-up | Remaining 7 (~9.3K SGD) re-confirmed unresolvable after image check: 5 freeze-dried-treat listings show only reseller watermarks (PetJoy/MomJoy) or a composite marketing image whose pictured products (small Korean-text pouches) don't match the actual 500g-bulk item sold (cover-image mismatch, §6); Yappy Pets box confirmed genuine cross-brand bundle (Top Ration + happi + nurturePRO); the remaining cat-grass listing's "ALL LUCKY" image banner matches its own `merchant_name` exactly (`All-Lucky`) — a merchant-name leak, not a product brand | Left `taxonomy_id IS NULL`; Scope section and Targeted QA Fix Brief updated to reflect the narrowed list |
+| 2026-07-28 | Top-up | Self-check QA gates (G1 dual-mapped [LLM-scoped], G2 HUMAN+LLM coexistence — run *without* `--skip-coexistence` per this session's instructions, G4 cross-category, G5 provenance, placeholder-leak) run scoped to `master_table='makanankucing_sg'` | All passed: 0 dual-mapped, 0 HUMAN+LLM coexistence, 0 provenance gaps, 0 placeholder-leak, all 3 new `taxonomy_id`s confirmed inside the claimed `SKU-190843`–`SKU-191042` block |
+| 2026-07-28 | Top-up | Claimed SKU block `SKU-190843`–`SKU-191042` (200 slots, `custom_topup`) via the atomic DECLARE/BEGIN TRANSACTION pattern | Used `SKU-190843`–`SKU-190845` (3 of 200 slots), 197 unused |
 
 ---
 
@@ -235,9 +257,11 @@ section above for the full breakdown.
 **Verdict:** D6 in-scope NULL coverage gap (small) + two flagged data-quality items needing human
 judgment, not extraction work.
 
-- **Coverage gap** (12 products, ~10.1K SGD GMV): all genuinely brand-unidentifiable from text; see
-  Scope section for the full list. Not candidates for image-based resolution — the brand text simply
-  isn't in the sku_name for these, and several are explicitly multi-brand assortments.
+- **Coverage gap** (7 products, ~9.3K SGD GMV, updated 2026-07-28 after a top-up session's image check
+  resolved 5 of the original 12): the remaining 7 are genuinely unresolvable — reseller
+  watermark/composite-marketing-image only (no packaging-printed brand visible), a confirmed cross-brand
+  bundle, or a confirmed merchant-name leak. See Scope section for the full list. Not candidates for
+  further image-based resolution — this session already checked every one of them against its image.
 - **`Rich Choice` brand_dict duplicate**: `BRD-MY-01046` and `BRD-MY-01113` are both active,
   identically-named entries. Needs a merge decision (which ID is canonical, re-point any dependent
   rows) — out of scope for a taxonomy-extraction session to resolve unilaterally.
@@ -260,11 +284,11 @@ for this custom, non-NIQ source table.
 
 ---
 
-## Map Row Counts (as of this session)
+## Map Row Counts (as of the 2026-07-28 top-up session)
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 234 | Full Rebuild, first run — 229 bulk text-matched, 5 image-verified |
+| LLM | 239 | 234 from Full Rebuild (229 bulk text-matched, 5 image-verified) + 5 from the 2026-07-28 top-up session (all image-verified) |
 | HUMAN | 0 | No prior keyword-seed pass for this category |
-| NULL (unmapped, in-scope, live-worklist gap) | 12 (~10.1K SGD) | Genuinely brand-unidentifiable from text — see Scope section |
+| NULL (unmapped, in-scope, live-worklist gap) | 7 (~9.3K SGD) | Genuinely unresolvable after both text and image checks — see Scope section |
 | NULL (out-of-scope / below 95% GMV threshold) | 625 | Long-tail resellers below the GMV cutoff — may legitimately remain unresolved per `docs/quality-standards.md` §2 |
