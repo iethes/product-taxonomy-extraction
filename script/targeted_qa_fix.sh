@@ -309,6 +309,32 @@ WHERE m.master_table = '${table}'
   AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '$.review_confidence'), 'unreviewed') != 'confident')
   AND REGEXP_CONTAINS(LOWER(s.sku_name), r'แถม|1\+1|ฟรี|ซื้อ \d+ แถม|แพ็คคู่|ยกลัง|x\s*\d|buy\s*\d+\s*get\s*\d+|free')
 
+STEP 2c — Tier 1 also includes this product-grain sweep for the shared-bucket size/multiplier miss found in
+the shopee_sg_pet_food review (2026-07-28): a product's own sku_name states exactly one readable size (or
+exactly one pack multiplier) that its taxonomy_id's canonical_name doesn't carry — typically because the
+product got mapped into a generic is_multi_size=TRUE catch-all that also legitimately serves listings whose
+own titles state 2+ sizes (genuine buyer-choice-of-size). A single readable value is not ambiguous the way
+STEP 2b's promo language is — feed every hit straight into STEP 4's fix path, no Tier 2 judgment needed to
+detect it (deciding write-in-place vs. reroute in STEP 4 still needs the aggregation query shown there, not
+LLM judgment). Sanity-check a pack-multiplier hit against the product image before applying if the packaging
+language is a marketing name rather than a literal count (e.g. "value pack"):
+SELECT m.product_id, s.sku_name, pt.taxonomy_id, pt.canonical_name, pt.size, pt.is_multi_size, pt.pack_count,
+  REGEXP_EXTRACT(s.sku_name, r'(?i)(\d+(?:\.\d+)?\s*(?:kg|g|ml|l|oz|lb))\b') AS extracted_size,
+  REGEXP_EXTRACT(s.sku_name, r'(?i)(\d+)\s*(?:pcs|pc|packs|pack)\b') AS extracted_multiplier
+FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\` m
+JOIN \`${PROJECT}.magpie_reference.product_taxonomy\` pt ON pt.taxonomy_id = m.taxonomy_id
+JOIN \`${PROJECT}.master_clean_niq.${table}\` s ON s.product_id = m.product_id
+WHERE m.master_table = '${table}'
+  AND (pt._meta IS NULL OR IFNULL(JSON_VALUE(pt._meta, '\$.review_confidence'), 'unreviewed') != 'confident')
+  AND (
+    (ARRAY_LENGTH(REGEXP_EXTRACT_ALL(s.sku_name, r'(?i)\d+(?:\.\d+)?\s*(?:kg|g|ml|l|oz|lb)\b')) = 1
+     AND NOT REGEXP_CONTAINS(pt.canonical_name, r'(?i)\d+(?:\.\d+)?\s*(kg|g|ml|l|oz|lb)\b'))
+    OR
+    (ARRAY_LENGTH(REGEXP_EXTRACT_ALL(s.sku_name, r'(?i)\d+\s*(?:pcs|pc|packs|pack)\b')) = 1
+     AND COALESCE(pt.pack_count, 1) = 1
+     AND NOT REGEXP_CONTAINS(pt.canonical_name, r'(?i)x\d+\b'))
+  )
+
 STEP 3 — Tier 2: a bounded, GMV-prioritized sample only, not every un-flagged row. Order the rows Tier 1
 didn't flag by GMV (join master_clean_niq for gmv_monthly) and judge the top slice your remaining turn budget
 allows against docs/llm-extraction-rules.md in full (product_line §3, size §2, the new §11 signal-provenance
@@ -355,6 +381,36 @@ discipline (a reseller's overlay/logo, however large in the frame, is never the 
 the actual packaging counts), find or create the correct brand_dict entry, update product_taxonomy.brand_id,
 and correct canonical_name to start with the real brand — unlike case (b) above, both fields are wrong here
 and both need fixing.
+
+STEP 2c's fix needs one aggregation query first — never write a single size/multiplier value onto a
+taxonomy_id shared by products whose real values genuinely differ:
+SELECT pt.taxonomy_id,
+  COUNT(DISTINCT REGEXP_EXTRACT(s.sku_name, r'(?i)(\d+(?:\.\d+)?\s*(?:kg|g|ml|l|oz|lb))\b')) AS distinct_sizes,
+  COUNT(DISTINCT REGEXP_EXTRACT(s.sku_name, r'(?i)(\d+)\s*(?:pcs|pc|packs|pack)\b')) AS distinct_multipliers
+FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\` m
+JOIN \`${PROJECT}.magpie_reference.product_taxonomy\` pt ON pt.taxonomy_id = m.taxonomy_id
+JOIN \`${PROJECT}.master_clean_niq.${table}\` s ON s.product_id = m.product_id
+WHERE m.master_table = '${table}' AND pt.taxonomy_id IN (/* every taxonomy_id STEP 2c flagged */)
+GROUP BY 1
+Run this over the WHOLE bucket (every product currently mapped to that taxonomy_id), not just the flagged
+rows, since a bucket can also hold genuinely multi-size titles (2+ size tokens in their own sku_name) that
+STEP 2c correctly left unflagged.
+- distinct_sizes = 1 (or distinct_multipliers = 1) across the whole bucket → every mapped product genuinely
+  carries the same value; is_multi_size=TRUE (or pack_count left at 1) was simply wrong, or the size was never
+  captured for what is really a single-SKU entry. Write in place: UPDATE product_taxonomy SET size = '<value>'
+  (or pack_count = <value>, canonical_name updated to end in the established 'x{N}' suffix — never
+  '(N packs of M)', per CLAUDE.md's common-pitfalls table), is_multi_size = FALSE (safe here precisely because
+  distinct_sizes=1 means no genuinely multi-size product is stranded on this id), meta_agent = 'CLAUDE_CODE',
+  _meta = '{"is_reviewed": false}' WHERE taxonomy_id = '...'.
+- distinct_sizes >= 2 (or distinct_multipliers >= 2) → the bucket is a real catch-all serving genuinely
+  different values; do not touch its size/pack_count/is_multi_size/canonical_name. For each distinct value,
+  find an existing taxonomy_id already carrying that exact brand + product_line + variant + size (or +
+  pack_count), or mint one (STEP 6 SKU block claim) with a canonical_name following the established template,
+  then reroute only the affected products: UPDATE product_taxonomy_map SET taxonomy_id = '<matching/new id>',
+  meta_agent = 'CLAUDE_CODE' WHERE product_id IN (<products carrying that one value>) AND
+  master_table = '${table}'. Leave every product whose own sku_name states 2+ sizes mapped to the original
+  bucket — only the single-value products move, and the original bucket's own _meta only needs resetting if
+  its canonical_name/size/is_multi_size actually changed (it doesn't, in this branch).
 
 UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\`
 SET _meta = '{"is_reviewed": false}'
