@@ -1,0 +1,201 @@
+# makanananjing_sg — Category Context
+
+> Custom (non-NIQ) source: `sincere-hearth-273704.makanananjing.9_makanananjing_sg_daily`
+> (TikTok Shop Singapore, daily grain summed to monthly). Not a `master_clean_niq` table — different
+> schema (daily grain, no `month`/`model_id` columns the way NIQ tables have). Unlike the sibling
+> `makanananjing_my`/`makanankucing_my` MY tables, this table **does** carry `merchant_id`/
+> `merchant_name`/`merchant_badge` columns — but `merchant_badge` is uniformly `'Tiktok Shop'` for all
+> 1,370 source rows (no per-brand official-store tier the way Shopee Mall works), so the Pass-1
+> official-store-allowlist strategy still doesn't apply here in practice, even though the "no merchant
+> data" premise in the session prompt was technically incorrect. Taxonomy state is keyed under
+> `master_table = 'makanananjing_sg'`, not the source table name.
+>
+> **Platform/country note:** the source is 100% `ecommerce_platform = 'Tiktok'`, `country = 'SG'`
+> (685 distinct products, all TikTok Shop). `product_taxonomy_map`/`product_brand_map` rows for this
+> table are written with `platform = 'TikTok Shop'` (the documented ARCHITECTURE.md/data-dictionary.md
+> enum value, confirmed as the live convention already used for TikTok Shop rows in `product_brand_map`
+> across ID/TH/VN/PH/MY — SG had 2,122 pre-existing TikTok Shop brand-map rows before this session,
+> none for this specific product set), `country = 'SG'`.
+
+---
+
+## Status
+
+| Field | Value |
+|-------|-------|
+| LLM Pass | ✅ Complete (Full Rebuild, first run) |
+| GMV Coverage | 85.98% of total table GMV (198/685 products mapped); 94.9% cumulative-GMV in-scope worklist fully worked (198 mapped + 11 legitimately excluded/unresolved of 209) |
+| Last run | 2026-07-28 |
+| Current MAX taxonomy_id (this category) | SKU-186545 — **query BQ directly before trusting this**, per CLAUDE.md's SKU Block Management warning |
+
+---
+
+## SKU Blocks Assigned
+
+| Block | Usage |
+|-------|-------|
+| SKU-186352–SKU-188351 | Claimed block (2,000 slots, `sku_block_registry`, scenario `custom_full_rebuild`) |
+| SKU-186352–SKU-186545 | Actually used (194 taxonomy entries) — remainder (186546–188351) left unused for future top-ups |
+
+---
+
+## Brand Scope
+
+54 distinct brands mapped (47 reused from existing global `brand_dict` — nearly the entire brand
+universe for this category was already seeded, likely via prior SG pet-food brand work — plus 7 newly
+minted `BRD-SG-14499`–`BRD-SG-14505` local brands with no prior `brand_dict` presence: Sourcesage Club,
+FREZ, Barsk, Chonk Club, Mercifur, Bethel Pet, Dr. Pat Pat). Top brands by mapped GMV:
+
+1. **Taki Pets** — `BRD-SG-01350` — 7 products, $10,910.72 SGD
+2. **Sourcesage Club** — `BRD-SG-14499` (new) — 33 products, $8,812.91 — single-ingredient air-dried/dehydrated animal-part chews, one entry per cut/species
+3. **Dr.Shiba** — `BRD-GLOBAL-00298` — 6 products, $3,544.93
+4. **Absolute Holistic** — `BRD-GLOBAL-00902` — 15 products, $3,088.00
+5. **Food For The Good** — `BRD-SG-01098` — 11 products, $2,812.10
+6. **Wanpy** — `BRD-SG-02024` — 13 products, $2,588.02
+7. **Singapaw** — `BRD-SG-01506` — 6 products, $2,577.53
+8. **Pawlicious** — `BRD-SG-04278` — 13 products, $2,513.05
+9. **Bronco** — `BRD-SG-01185` — 5 products, $2,038.51
+10. **FREZ** — `BRD-SG-14500` (new) — 7 products, $1,783.33
+11. **Absolute Bites** — `BRD-SG-00740` — 7 products, $1,178.69
+
+Remaining 43 brands (Royal Canin, Ziwi Peak, Taste Of The Wild, aTwoValley, Barsk, Happi Skippi,
+Loveabowl, Stella & Chewy's, Underdog, Cesar, Bow Wow, NurturePro, The Better, Vitakraft, OMAKASE,
+JerHigh, Notti, Hoya Barkery, Hill's SCIENCE DIET, Probalance, Knine Culture, Chonk Club, Kyndred Paws,
+Urban Waggo, Orijen, Petio, Boneve, Holuah!, BIG BROWN DOG, Kooky Kibble, Mercifur, SmartBones, Solid
+Gold, BelliFull, Platinum Choice, Joberill, Atasco, Bethel Pet, Pedigree, Dr. Pat Pat, SoulMate, Top
+Ration) each contribute 1-4 products, $46–$402 GMV — long tail.
+
+`BRD-UNBRANDED` used for 4 genuine cross-brand "[LIVE EXCLUSIVE BUNDLE]" grab-bags (no dominant brand
+identifiable from title/image) and 1 generic dental-chew private-label listing, $2,769.31 combined.
+
+No official-store allowlist — `merchant_badge` carries no per-brand tier signal on this source table
+(see header note); routing was bulk text-matching on `sku_name`, corroborated by `merchant_id` grouping
+where the same seller's sibling listings established a brand name that an individual listing's title
+omitted (e.g. 3 of "The sourcesage club"'s 33 listings lack the "Sourcesage Club" token in-title but
+share the identical merchant_id and product-naming convention as the 30 that do carry it), plus 6
+targeted product-image reads for cases where text signals were genuinely ambiguous or absent.
+
+---
+
+## Scope — What's In vs Out
+
+**In scope:** dog dry food, dog wet food (tray/can), dog treats (jerky, air-dried, freeze-dried,
+dehydrated single-ingredient chews), dental chews/sticks, dog nutritional supplements (joint, gut,
+skin/coat, calming). Dual-species "for Dogs & Cats" listings kept in scope (no cat-exclusive listings
+were found in this worklist at all — every "cat" mention co-occurred with dog/puppy/canine text).
+
+**Out of scope (left NULL):**
+- **Diagnostic/medical, not food**: Pawllergy Test Kit (food/environmental allergy sensitivity test,
+  $3,971.56 — 2nd-highest GMV item in the worklist; a real, deliberate NULL, not a coverage miss).
+- **Human products (general-merch contamination)**: Health+ Orofill Revive 60s Softgel — image-confirmed
+  human wellness supplement (JML brand, vaginal/eye/skin dryness), $493.85. This source table has no
+  fixed `category_1`/`category_2` mislabeling issue like the MY sibling tables, but individual listings
+  from mixed-catalog TikTok sellers still leak through.
+- **Brand genuinely unreadable (UNRESOLVED, not force-mapped)**: 8 products, $1,196.01 combined — 5 from
+  merchant "Sniff Sniff SG" (dehydrated duck/pork/beef treats with no brand token in `sku_name`; one
+  image-checked and showed only the loose product with no packaging/label at all), 1 "Wild Kangaroo &
+  Apples..." dry food listing, 1 "Freeze Dried Chicken for Cats & Dogs..." topper, 1 "steamed vacuumed
+  packed snack..." multi-species assortment. Per `docs/product-lifecycle.md` §5, UNRESOLVED (leave NULL)
+  is the correct output when brand cannot be confidently determined from text or image — not forced into
+  a generic catch-all.
+
+**Edge cases:**
+- **Sourcesage Club vs Sniff Sniff SG naming-convention collision**: both sellers use near-identical
+  "[cut] (single ingredient dog treats, dog dental chew)" title phrasing for air-dried/dehydrated animal
+  parts. Distinguished by `merchant_id`/`merchant_name` (not used as a naming signal per
+  `llm-extraction-rules.md` §11 — the brand *name* "Sourcesage Club" comes from 30 of that merchant's own
+  listing titles; merchant identity was only used to decide which un-suffixed listings belong to that
+  already-text-established brand, and conversely to correctly withhold the Sniff Sniff SG listings from
+  it since that merchant's titles never carry any brand token).
+- **`[Chewbarka]` bracket suffix**: appears on aTwoValley, Notti, and Mercifur listings. Confirmed via
+  `merchant_name = 'Chewbarka'` to be a multi-brand reseller's own store tag, not a product brand —
+  correctly excluded from `product_line`/`canonical_name`, real brand taken from the rest of the title.
+- **`【Mi Pet Lover】` bracket prefix**: same pattern — a reseller tag on a Food For The Good listing,
+  stripped.
+- **Knine Culture "Rabbit Ears" (2 listings, different `merchant_id`s) vs Sourcesage Club "Rabbit Ears
+  With Fur"**: image-verified Knine Culture has a genuine printed brand logo on packaging ("KNINE CULTURE
+  — EAT SLEEP PLAY TRAIN BOND"), distinguishing it from the Sourcesage Club product of the same animal
+  part sold by a different seller — kept as two separate taxonomy entries under two different brands, not
+  merged.
+- **Bethel Pet**: `sku_name` was fully generic ("Grinding teeth snack; beef flavor bone-shaped dental
+  stick") with no brand text at all — image-read revealed the real packaging brand "Bethel Pet" and pack
+  structure (10g/stick, 8 sticks/pack). New brand minted from the image read, not the title.
+- **Multi-size / multi-variant selector listings**: several titles state a size range ("454g/1kg/2.5kg/
+  4kg", "500g-1.5kg", "2kg/12kg") or an explicit flavor-count selector ("6 Flavors Available", "20
+  Flavours"). Per `llm-extraction-rules.md` §2 (amended 2026-07-22), these got `is_multi_size=TRUE` /
+  `is_multi_variant=TRUE` with `size=NULL` and **no** "Multiple Sizes"/"Multiple Variants" text in
+  `canonical_name` — the flag alone conveys that semantic (verified via the placeholder-leak QA gate,
+  which regexes for exactly that banned phrasing).
+
+---
+
+## Taxonomy Design Notes
+
+**Extraction method:** bulk text-matching on `sku_name`, grouped by (brand, product_line, variant, size,
+pack_count) into 194 taxonomy entries covering 198 products (194 ≠ 198 because 4 pairs of near-duplicate
+reseller/repeat listings collapsed onto a shared entry, e.g. two identical "Sourcesage Club Air Dried
+Ostrich Flat Tendon" listings from different sellers, two identical Bronco Pate Tray Wet Food 16-tray
+bundles). 6 individual product images were read where `sku_name` text was insufficient to determine
+brand or product identity (Taki Pets bulk-pack composition, Bethel Pet, Knine Culture rabbit-ears
+authenticity check, Sniff Sniff SG brand-absence confirmation, Health+ Orofill Revive scope
+determination, one multi-species generic-snack scope check) — all other products were resolved from
+`sku_name` text alone per the bulk-first, coverage-priority mandate for Full Rebuild sessions.
+
+**product_line:** derived from the on-label product line/flavor description in `sku_name` after
+stripping the brand token, promo tags (`[PROMO]`, `*PROMO*`, `[CLEARANCE]`, percentage-off tags), reseller
+bracket tags (`[Chewbarka]`, `【Mi Pet Lover】`), and size/pack tokens. `sub_line` left NULL throughout (no
+listings had a genuine third-level naming tier beyond product_line + variant). `variant` populated for
+~20 entries with a clearly stated single flavor/type (e.g. "Beef" on Bethel Pet's dental stick, "Salmon
+Floss" on a Taki Pets treat); left NULL for true single-SKU products with no flavor axis.
+
+**Size/pack extraction:** regex over `sku_name` for `\d+(kg|g|ml|L|lb|oz)` and explicit multiplier
+patterns (`[Bundle of N]`, `[N Trays]`, `NxM` — e.g. Absolute Holistic's `[Carton Deal] ... (16x100g)` →
+size=100g, pack_count=16). Listings whose sizes are seller-side option selectors ("227g/1.5kg/9.9kg",
+"2.5\"|50x9g / 4\"|20x25g") were set `is_multi_size=TRUE`, `size=NULL` rather than guessing one value.
+
+**Known difficult products:**
+- `1730813571110897076` — "[Assorted] Single Protein Natural Flavour Gently Dehydrated Dog Treats by
+  BigBrownDog..." — text explicitly names "BigBrownDog" twice but doesn't match the existing brand_dict
+  spelling ("BIG BROWN DOG", `BRD-SG-02875`) exactly; matched by normalization, not a new brand.
+- Sourcesage Club's 33-entry catalog is one taxonomy entry per (animal origin × cut), with no
+  size/pack stated on almost any listing — a category where "single ingredient chew" genuinely has no
+  weight/count on the packaging per the seller's own listings; left `size=NULL`, `pack_count=1` (not
+  `is_multi_size`, since these are not selector listings — each is a distinct single-SKU product, just
+  without a stated weight).
+
+---
+
+## QA History
+
+| Date | Pass | Finding | Resolution |
+|------|------|---------|------------|
+| 2026-07-28 | Full Rebuild (first run) | Confirmed 0 pre-existing `product_taxonomy_map` rows for `master_table='makanananjing_sg'` — genuine first run (STEP 1 re-verify) | Proceeded per Full Rebuild scenario |
+| 2026-07-28 | Full Rebuild | Session prompt's premise "no merchant/brand/official-store data in this source table" was factually wrong — `merchant_id`/`merchant_name`/`merchant_badge` all exist on this table, unlike the MY sibling tables the prompt template was written for | Verified `merchant_badge` is uniformly `'Tiktok Shop'` (1,370/1,370 source rows) — no per-brand tier signal exists in practice, so the prompt's operational conclusion (skip Pass-1 official-store allowlist) held despite the wrong premise. `merchant_name`/`merchant_id` were still used (per `llm-extraction-rules.md` §11's allowed scope) to disambiguate two sellers using near-identical product-naming conventions — see Scope § Edge cases |
+| 2026-07-28 | Full Rebuild | `image` column format differs from `docs/headless-runbook.md`'s documented "direct CDN URL" — it's a Python-repr'd list of dicts with `url_list` arrays (TikTok CDN, webp, multiple resolutions) | Confirmed the `curl -sL -o <file> "<url_list[0]>"` → `Read` pattern still works after extracting the first URL; used for 6 targeted ambiguous-case verifications |
+| 2026-07-28 | Full Rebuild | Cross-`master_table` true-composite-key collision check (`platform='TikTok Shop', country='SG'`) run **before** writing, against all 209 in-scope product_ids — 0 collisions found (no other category has touched these TikTok Shop SG product_ids) | No action needed; confirmed clean via `docs/categories/makanananjing_my.md`'s established pre-write-check precedent |
+| 2026-07-28 | Full Rebuild | `product_brand_map` has 0 rows for any of these 209 product_ids (`platform='TikTok Shop', country='SG'`) — Stage 03 brand resolution has never run for this product set, mirroring the documented gap for `shopee_id_*` tables in `docs/categories/STATUS.md` | Not a blocker for Phase 5 — `product_taxonomy`/`product_taxonomy_map` brand assignment is independent of `product_brand_map`; noted for awareness, not remediated this session |
+| 2026-07-28 | Full Rebuild | Self-check QA gates (G1, G2 without `--skip-coexistence` since no pre-existing HUMAN rows exist, G4 full cross-table, G5, placeholder-leak, structured-fields-NULL%): G1=0, G2=0, G4=0, G5=0, placeholder-leak=0, structured-fields-NULL%=0% (well under 50% threshold) | All gates pass; proceeded to write category doc |
+
+---
+
+## Targeted QA Fix Brief
+
+> Scope for a future `targeted_qa_fix.sh` / NULL-coverage session — not executed this session.
+
+**Verdict:** D6 in-scope NULL coverage is minimal (8 genuinely brand-unreadable products, $1,196.01
+combined — correctly UNRESOLVED, not a defect) — no urgent coverage gap. A D1/D2 precision pass would
+sharpen the Sourcesage Club catalog (33 entries with no image verification beyond spot-checks) and the
+generic multi-variant/multi-size catch-alls (Wanpy, FREZ, Food For The Good, Absolute Holistic/Bites,
+Pawlicious, OMAKASE — ~15 entries where a single flavor/size selector listing was routed to one
+catch-all entry rather than per-flavor image verification). No cross-category collision risk identified
+this session (no sibling `makanankucing_sg` category exists yet to collide with, unlike the MY pair).
+
+---
+
+## Map Row Counts (as of last run)
+
+| Source | Count | Notes |
+|--------|-------|-------|
+| LLM | 198 | Full Rebuild, first run |
+| HUMAN | 0 | No prior keyword seed for this table |
+| NULL (unmapped) | 11 in-scope (of 209 worklist) + 476 below the 95%-cumulative-GMV threshold | Below-threshold long tail not evaluated this session per Rule A/B scope (`docs/quality-standards.md` §2) |
