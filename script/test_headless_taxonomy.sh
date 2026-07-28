@@ -94,6 +94,12 @@ echo "$prompt" | grep -q "older QA History session sizes" || fail "build_topup_p
 echo "$prompt" | grep -q "priority for this session is closing the coverage gap quickly, not per-row precision" || fail "build_topup_prompt must state the coverage-over-precision priority"
 echo "$prompt" | grep -q "script/targeted_qa_fix.sh is the dedicated follow-up tool" || fail "build_topup_prompt must point precision work at targeted_qa_fix.sh"
 echo "$prompt" | grep -q "G1 (no dual-mapping), G2 (no HUMAN+LLM coexistence), G4 (no cross-category mapping), and G5 (provenance) are structural invariants and must still pass" || fail "build_topup_prompt must state hard gates are never optional even under a speed-first approach"
+# 2026-07-29: multiple live top-up sessions (shopee_th_baby_diapers, shopee_th_coffee) blocked on discovering
+# product_taxonomy_map row counts far below what the category doc claimed, treating the mismatch itself as a
+# data-loss incident requiring human investigation. Directive: trust live BQ state, don't block on this alone.
+echo "$prompt" | grep -qF "is not, by itself, a blocker" || fail "build_topup_prompt must not treat a doc/live row-count mismatch alone as a blocker"
+echo "$prompt" | grep -qF "Trust live BigQuery state as ground truth" || fail "build_topup_prompt must explicitly instruct trusting live BQ state over category-doc claims"
+echo "$prompt" | grep -qF "Do not escalate to status='blocked'" || fail "build_topup_prompt must forbid escalating to status='blocked' over a doc/live mismatch"
 echo "PASS: build_topup_prompt"
 
 # --- decide_queue_signal ---

@@ -166,6 +166,11 @@ Known pitfall from prior sessions: \`bq query\` silently truncates displayed res
 STEP 0 — Get the live worklist (do not trust any number in this prompt or in ${table}.md):
 ${query}
 
+A live product_taxonomy_map row count far below what ${table}.md's own documentation claims is not, by itself, a blocker.
+Trust live BigQuery state as ground truth and proceed with the top-up as normal.
+Categories can be reset or cleaned up outside this pipeline's own sessions, and investigating why counts differ is out of scope for this scenario.
+Do not escalate to status='blocked' over a doc/live mismatch alone. Every product STEP 0's live query returns is this session's real, current worklist.
+
 STEP 1 — Bulk-first reuse-before-mint. The priority for this session is closing the coverage gap quickly, not per-row precision — quality correctness (exact product_line wording, variant capture, pack-count edge cases, D1-D5 of docs/quality-standards.md) is a separate, later concern: script/targeted_qa_fix.sh is the dedicated follow-up tool for that, scoped by GMV impact. Do not spend this session's turns chasing it.
 
 Do NOT process the live worklist one product at a time — that under-uses this session's budget and is why a prior top-up run on this exact category only resolved 31 of 790 rows (it read one image per product and then self-limited to match this category's older QA History session sizes, which reflect the OLD targeted_qa_fix.sh workflow's smaller 200-slot/30-turn scope, not this scenario's real budget). Instead:
