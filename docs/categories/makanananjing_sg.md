@@ -23,10 +23,10 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass | ✅ Complete (Full Rebuild, first run) |
-| GMV Coverage | 85.98% of total table GMV (198/685 products mapped); 94.9% cumulative-GMV in-scope worklist fully worked (198 mapped + 11 legitimately excluded/unresolved of 209) |
-| Last run | 2026-07-28 |
-| Current MAX taxonomy_id (this category) | SKU-186547 — **query BQ directly before trusting this**, per CLAUDE.md's SKU Block Management warning |
+| LLM Pass | ✅ Complete (Full Rebuild, first run) + top-up 2026-07-28 |
+| GMV Coverage | 87.11% of total table GMV (201/685 products mapped); 94.9% cumulative-GMV in-scope worklist fully worked (201 mapped + 8 legitimately excluded/unresolved of 209) |
+| Last run | 2026-07-28 (top-up session) |
+| Current MAX taxonomy_id (this category) | SKU-190645 — **query BQ directly before trusting this**, per CLAUDE.md's SKU Block Management warning |
 
 ---
 
@@ -36,16 +36,19 @@
 |-------|-------|
 | SKU-186352–SKU-188351 | Claimed block (2,000 slots, `sku_block_registry`, scenario `custom_full_rebuild`) |
 | SKU-186352–SKU-186545 | First pass, 194 taxonomy entries |
-| SKU-186546–SKU-186547 | Post-write precision fix (split 2 over-merged entries, see QA History) — 196 taxonomy entries actually used total; remainder (186548–188351) left unused for future top-ups |
+| SKU-186546–SKU-186547 | Post-write precision fix (split 2 over-merged entries, see QA History) — 196 taxonomy entries actually used total; remainder (186548–188351) left unused |
+| SKU-190643–SKU-190842 | Top-up session 2026-07-28 (200 slots, `sku_block_registry`, scenario `custom_topup`) — 3 taxonomy entries used (190643–190645); remainder left unused for future top-ups |
 
 ---
 
 ## Brand Scope
 
-54 distinct brands mapped (47 reused from existing global `brand_dict` — nearly the entire brand
-universe for this category was already seeded, likely via prior SG pet-food brand work — plus 7 newly
-minted `BRD-SG-14499`–`BRD-SG-14505` local brands with no prior `brand_dict` presence: Sourcesage Club,
-FREZ, Barsk, Chonk Club, Mercifur, Bethel Pet, Dr. Pat Pat). Top brands by mapped GMV:
+56 distinct brands mapped (49 reused from existing global `brand_dict` plus 8 newly minted local brands
+with no prior `brand_dict` presence: `BRD-SG-14499`–`BRD-SG-14505` from the first-run session
+(Sourcesage Club, FREZ, Barsk, Chonk Club, Mercifur, Bethel Pet, Dr. Pat Pat) and `BRD-SG-14510`
+(小七妈妈 / Xiao Qi Ma Ma) from the 2026-07-28 top-up session — see QA History). Two more top-up
+products reused existing global brands not previously mapped in this category: Addiction
+(`BRD-SG-00986`) and Luffy's Pawfect Picks (`BRD-SG-10950`). Top brands by mapped GMV:
 
 1. **Taki Pets** — `BRD-SG-01350` — 7 products, $10,910.72 SGD
 2. **Sourcesage Club** — `BRD-SG-14499` (new) — 33 products, $8,812.91 — single-ingredient air-dried/dehydrated animal-part chews, one entry per cut/species
@@ -92,13 +95,15 @@ were found in this worklist at all — every "cat" mention co-occurred with dog/
   human wellness supplement (JML brand, vaginal/eye/skin dryness), $493.85. This source table has no
   fixed `category_1`/`category_2` mislabeling issue like the MY sibling tables, but individual listings
   from mixed-catalog TikTok sellers still leak through.
-- **Brand genuinely unreadable (UNRESOLVED, not force-mapped)**: 8 products, $1,196.01 combined — 5 from
-  merchant "Sniff Sniff SG" (dehydrated duck/pork/beef treats with no brand token in `sku_name`; one
-  image-checked and showed only the loose product with no packaging/label at all), 1 "Wild Kangaroo &
-  Apples..." dry food listing, 1 "Freeze Dried Chicken for Cats & Dogs..." topper, 1 "steamed vacuumed
-  packed snack..." multi-species assortment. Per `docs/product-lifecycle.md` §5, UNRESOLVED (leave NULL)
-  is the correct output when brand cannot be confidently determined from text or image — not forced into
-  a generic catch-all.
+- **Brand genuinely unreadable (UNRESOLVED, not force-mapped)**: 6 products, $531.19 combined — all from
+  merchant "Sniff Sniff SG" (Dehydrated Pork Ears, Duck Gizzards & Hearts, Pork Chops, Duck Trachea, Duck
+  Feet, Beef Tendon — dehydrated single-ingredient treats with no brand token in `sku_name`; all 6 images
+  checked 2026-07-28, each shows only the loose product with no packaging/label at all). Per
+  `docs/product-lifecycle.md` §5, UNRESOLVED (leave NULL) is the correct output when brand cannot be
+  confidently determined from text or image — not forced into a generic catch-all.
+  **Corrected 2026-07-28**: the first-run session's doc text undercounted this bucket at "5 from Sniff
+  Sniff SG" (actually 6) and had folded 3 *other* products into the same "unresolved" bucket without
+  individually verifying their images — those 3 turned out to be resolvable on re-check; see QA History.
 
 **Edge cases:**
 - **Sourcesage Club vs Sniff Sniff SG naming-convention collision**: both sellers use near-identical
@@ -177,6 +182,9 @@ size=100g, pack_count=16). Listings whose sizes are seller-side option selectors
 | 2026-07-28 | Full Rebuild | `product_brand_map` has 0 rows for any of these 209 product_ids (`platform='TikTok Shop', country='SG'`) — Stage 03 brand resolution has never run for this product set, mirroring the documented gap for `shopee_id_*` tables in `docs/categories/STATUS.md` | Not a blocker for Phase 5 — `product_taxonomy`/`product_taxonomy_map` brand assignment is independent of `product_brand_map`; noted for awareness, not remediated this session |
 | 2026-07-28 | Full Rebuild | Pre-report review found 2 of the 4 taxonomy entries that collapsed 2 products onto 1 entry were genuine over-merges, not true duplicates: (1) Absolute Bites "Single Ingredient Air Dried Treats" merged a "Small Pack (35g-240g)" listing and a "Big Pack (150g-900g)" listing into one entry — different seller-labeled pack tiers, not the same product; (2) OMAKASE's generic multi-variant catch-all merged a regular listing with a "[MEDIUM Packs] WHOLESALE" listing — different pack tier. (The other 2 merges — Sourcesage Club Ostrich Flat Tendon reseller dup, Bronco 16-tray Pate Tray dup — were verified genuine.) Also found the 5 `BRD-UNBRANDED` entries had the raw brand_id leaking into `canonical_name` (e.g. "BRD-UNBRANDED Live Exclusive Bundle Medium Dog") — a placeholder-leak-class defect the QA gate's regex didn't catch since it doesn't check for a `BRD-` prefix | Split the 2 over-merged entries: minted `SKU-186546` (Absolute Bites Big Pack) and `SKU-186547` (OMAKASE Wholesale Medium Pack) from the unused block remainder, re-pointed the 2 affected `product_taxonomy_map` rows, renamed the original 2 entries to disambiguate ("(Small Pack)" / drop the wholesale qualifier). Stripped the `BRD-UNBRANDED ` prefix from all 5 affected `canonical_name` values via `REGEXP_REPLACE`. Re-ran QA gates after fix (see below) |
 | 2026-07-28 | Full Rebuild | Self-check QA gates, post-fix (G1, G2 without `--skip-coexistence` since no pre-existing HUMAN rows exist, G4 full cross-table, G5, placeholder-leak extended to also check for a leaked `BRD-` prefix, structured-fields-NULL%): G1=0, G2=0, G4=0, G5=0, placeholder-leak=0, structured-fields-NULL%=0% (well under 50% threshold) | All gates pass; proceeded to write category doc |
+| 2026-07-28 | Top-up (custom_topup) | Re-ran the live 95%-cumulative-GMV (GWP-zeroed) worklist query rather than trusting the wrapper's "11 products" figure — result was the identical 11 products the same-day Full Rebuild session had already evaluated and left NULL (2 OOS: Pawllergy Test Kit, Health+ Orofill Revive; 9 in the "brand genuinely unreadable" bucket). Not a new coverage gap — the wrapper can't distinguish "deliberately excluded" from "never evaluated" since both read as `taxonomy_id IS NULL` | Applied the category doc's already-documented OOS verdicts to the 2 OOS products without re-litigating them. Re-verified all 9 "unresolved" products by fetching and reading each product image directly (not just trusting the prior session's text) rather than assuming the prior verdict was exhaustive |
+| 2026-07-28 | Top-up (custom_topup) | Image re-verification found 3 of the 9 "unresolved" products actually have a legible on-package brand the first-run session missed: (1) `1732640443239138793` "Wild Kangaroo & Apples..." — packaging clearly printed "ADDICTION" (existing brand `BRD-SG-00986`, no prior taxonomy entry in this category); (2) `1731236091961050927` "Freeze Dried Chicken for Cats & Dogs..." — jar label printed "LUFFY'S PAWFECT PICKS" (existing brand `BRD-SG-10950`, no prior entry); (3) `1735440315142473603` "steamed vacuumed packed snack..." — Chinese-language packaging printed "小七妈妈" (no `brand_dict` entry existed for any transliteration). Cross-`master_table` composite-key collision check (`platform='TikTok Shop', country='SG'`) run before writing — 0 collisions, consistent with this category's established pre-write-check precedent. The remaining 6 (all merchant "Sniff Sniff SG") were independently re-confirmed as genuinely unbranded — each image shows only the loose dehydrated product, no packaging at all | Minted brand `BRD-SG-14510` (小七妈妈) in `brand_dict`. Claimed a fresh 200-slot block `SKU-190643`–`SKU-190842` (`sku_block_registry`, scenario `custom_topup`) rather than reusing the first-run session's unused remainder, per this session's explicit claim procedure. Wrote 3 new `product_taxonomy` entries (`SKU-190643` Addiction Wild Kangaroo & Apples Sensitive Care, `is_multi_size=TRUE` since sku_name states two sizes "1.8kg, 9kg" with no signal to resolve which one this specific listing sells; `SKU-190644` Luffy's Pawfect Picks Freeze-Dried Chicken, size left NULL — genuinely unstated in text/image/schema, not a selector listing, same precedent as the Sourcesage Club catalog; `SKU-190645` 小七妈妈 Steamed Pet Snack 30g, `is_multi_variant=TRUE` since sku_name lists many flavors) and 3 `product_taxonomy_map` rows (`source='LLM'`, `source_listing='image_verified'`, `brand_from_image` populated, `meta_agent='CLAUDE_CODE'`). All via `bq query` DML, no streaming API, no existing rows touched or deleted |
+| 2026-07-28 | Top-up (custom_topup) | Self-check QA gates post-write, scoped to `master_table='makanananjing_sg'`, **without** `--skip-coexistence` (coexistence is a genuine bug at this point per this session's instructions, not an expected mid-rebuild state) | G1 (dual-mapped) = 0, G2 (HUMAN+LLM coexistence) = 0, G4 (cross-category — all mapped `taxonomy_id`s fall inside either the `186352–188351` or `190643–190842` claimed blocks) = 0, G5 (provenance: `meta_agent`/`source` both set) = 0. All gates pass. Total `product_taxonomy_map` rows for this category: 201 (all `source='LLM'`, all `meta_agent='CLAUDE_CODE'`) |
 
 ---
 
@@ -184,8 +192,9 @@ size=100g, pack_count=16). Listings whose sizes are seller-side option selectors
 
 > Scope for a future `targeted_qa_fix.sh` / NULL-coverage session — not executed this session.
 
-**Verdict:** D6 in-scope NULL coverage is minimal (8 genuinely brand-unreadable products, $1,196.01
-combined — correctly UNRESOLVED, not a defect) — no urgent coverage gap. A D1/D2 precision pass would
+**Verdict:** D6 in-scope NULL coverage is minimal (2 OOS products, $4,465.41 combined — correctly excluded;
+6 genuinely brand-unreadable products, $531.19 combined — correctly UNRESOLVED) — no urgent coverage gap.
+A D1/D2 precision pass would
 sharpen the Sourcesage Club catalog (33 entries with no image verification beyond spot-checks) and the
 generic multi-variant/multi-size catch-alls (Wanpy, FREZ, Food For The Good, Absolute Holistic/Bites,
 Pawlicious, OMAKASE — ~15 entries where a single flavor/size selector listing was routed to one
@@ -198,6 +207,6 @@ this session (no sibling `makanankucing_sg` category exists yet to collide with,
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 198 | Full Rebuild, first run |
+| LLM | 201 | 198 Full Rebuild (first run) + 3 top-up (2026-07-28) |
 | HUMAN | 0 | No prior keyword seed for this table |
-| NULL (unmapped) | 11 in-scope (of 209 worklist) + 476 below the 95%-cumulative-GMV threshold | Below-threshold long tail not evaluated this session per Rule A/B scope (`docs/quality-standards.md` §2) |
+| NULL (unmapped) | 8 in-scope (of 209 worklist) + 476 below the 95%-cumulative-GMV threshold | 2 OOS (Pawllergy Test Kit, Health+ Orofill Revive) + 6 genuinely brand-unreadable (Sniff Sniff SG). Below-threshold long tail not evaluated this session per Rule A/B scope (`docs/quality-standards.md` §2) |
