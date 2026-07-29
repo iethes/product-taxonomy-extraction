@@ -61,7 +61,7 @@ Status section for what this means for a session picking up the next ID category
 | sg_hair_conditioner_or_treatment | ⏳ Keyword only | |
 | sg_laundry_detergent | ⏳ Keyword only | |
 | sg_fabric_softener | ⏳ Keyword only | |
-| sg_household_cleaner | ⏳ Keyword only | |
+| sg_household_cleaner | ✅ Complete | LLM Pass 1+2 complete Jul 29 (first pass — no prior HUMAN keyword-seed rows existed despite this row's prior "Keyword only" label), 95.45% GMV coverage, SKU-204029–205891 (of claimed block SKU-204029–206028, 137 slots unused) |
 | sg_toothpaste | ✅ Complete | LLM Pass 1+2 complete Jul 16, 92.3% GMV coverage, SKU-072001–074000 |
 | sg_diapers | ⏳ Keyword only | |
 | sg_infant_milk | ⏳ Keyword only | |
@@ -77,7 +77,7 @@ Status section for what this means for a session picking up the next ID category
 | sg_baby_accessories | ⏳ Keyword only | |
 | sg_vitamin_mineral_health_supplements | ✅ Complete | LLM Pass 1+2 complete Jul 29, 95.1% GMV coverage, SKU-199329–201328 + SKU-203529–204028 (two disjoint blocks, primary exhausted mid-Pass-2); 477 per-brand `(unresolved)` catch-alls for fragmented long-tail (category has unusually low product-line duplication vs. other categories) |
 
-| **Total SG:** 7/23 LLM complete (sg_toothpaste, sg_coffee, sg_carbonated_drink, sg_liquid_soap, sg_hand_and_body_moisturiser, sg_vitamin_mineral_health_supplements, sg_beverages) — keyword seed provides ~50–70% GMV coverage for the rest
+| **Total SG:** 8/23 LLM complete (sg_toothpaste, sg_coffee, sg_carbonated_drink, sg_liquid_soap, sg_hand_and_body_moisturiser, sg_vitamin_mineral_health_supplements, sg_beverages, sg_household_cleaner) — keyword seed provides ~50–70% GMV coverage for the rest
 
 ---
 
