@@ -11,11 +11,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ❌ Not started (this session) |
-| LLM Pass 2 | ❌ Not started (this session) |
-| GMV Coverage | 0% before this session |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 95.45% (2026-06), 1,923 / 17,476 products mapped |
 | Last run | 2026-07-29 |
-| Current MAX taxonomy_id | Query BQ live — do not trust a static number here |
+| Current MAX taxonomy_id | Query BQ live — do not trust a static number here (this run used up to SKU-205891) |
 
 ---
 
@@ -23,7 +23,8 @@
 
 | Block | Usage |
 |-------|-------|
-| (assigned in Step 3, this session) | Full Rebuild, ~2000 slots |
+| SKU-204029–205891 | Full Rebuild: Pass 1 OFFICIAL (204029–204759, 731 entries) + Pass 2 RESELLER (204760–205891, 1,132 entries) |
+| SKU-205892–206028 | Unused remainder of claimed 2,000-slot block |
 
 ---
 
@@ -365,6 +366,9 @@ under a brand also known for descaling products; skin/personal cleansers miscate
 |------|------|---------|------------|
 | 2026-07-29 | Pre-run research | STATUS.md incorrectly shows "⏳ Keyword only" for this category; live check found 0 HUMAN and 0 LLM rows | Documented as finding; proceeding as genuine first run per wrapper pre-check |
 | 2026-07-29 | Pre-run research | Initial unfiltered brand-GMV ranking suspected of appliance-cluster contamination (Tineco, Dyson, Shark, Roborock, etc.) | Spot-checked sku_names — confirmed legitimate cleaning-solution products, not appliances; brand list retained as-is |
+| 2026-07-29 | Pass 1 | "Challs Asia Official Store" carries Buster + 4 unrelated small brands (Alkimi, Knaus, Max Clean, Max) not in the 118-brand scope | Treated as legitimate parent/distributor store per Decision-style precedent; only Buster-brand (+ any independently Rule-A-qualifying) listings pulled in, not the whole store |
+| 2026-07-29 | Pass 2 | `BRD-TH-01500` ("999", rank #6 brand by GMV) confirmed as a systematic false-positive in `product_brand_map` — all 22 hits are generic listings whose sku_name merely contains "99.9%" germ-kill marketing text, mis-scanned as brand token "999" | Brand re-resolved via text-scan/BRD-UNBRANDED instead of trusting the recorded brand_id for this specific brand_id in this table |
+| 2026-07-29 | Pass 1+2 | Rule A (top-95%-GMV) coverage gap fully closed (0 remaining); overall GMV coverage 95.45% | QA gates (dual-mapped, HUMAN+LLM coexistence, placeholder-leak, structured-fields NULL%, provenance, taxonomy_id range) all pass at 0 violations |
 
 ---
 
@@ -386,6 +390,6 @@ under a brand also known for descaling products; skin/personal cleansers miscate
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 0 | Pre-session baseline; updated after Pass 1/2 |
+| LLM | 1,923 | Pass 1 (757) + Pass 2 (1,166) |
 | HUMAN | 0 | No keyword seed ever ran for this category |
-| NULL (unmapped) | 17,476 | Full category, pre-session |
+| NULL (unmapped) | 15,553 | Long-tail below Rule A ∪ B scope; 95.45% GMV coverage achieved, may legitimately remain UNRESOLVED |
