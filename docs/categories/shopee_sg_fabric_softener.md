@@ -25,6 +25,7 @@ existed despite the label, same drift pattern seen on `sg_beverages`/`sg_househo
 |-------|-------|
 | SKU-208049–208309 | Pass 1 + Pass 2 combined (261 taxonomy entries, 358 products mapped) |
 | SKU-208310–210048 | Unused remainder of claimed 2,000-slot block |
+| SKU-210607–210806 | Top-up session 2026-07-29: 1 taxonomy entry (SKU-210607), 1 product mapped; 199 slots unused |
 
 ---
 
@@ -219,6 +220,7 @@ Mall-badged pool.
 | 2026-07-29 | Pass 1+2 | 35 products in the worklist are wrong-format/wrong-category for this category (ironing/wrinkle spray, starch spray, Kispray/Rapika, laundry pods/capsules, dish soap/bathroom cleaner mislabeled under Cosway, stain remover, foot softener, ironing board cover, one cross-category bundle) | Excluded via keyword filter, documented in Scope section; left `taxonomy_id` NULL |
 | 2026-07-29 | QA gates | G1/G2/G3-placeholder-leak/structured-fields/G5 all ran at 0 violations post-insert | Shipped without a fix iteration needed |
 | 2026-07-29 | D6 | 34 remaining Rule-A in-scope NULLs, top-GMV checked individually — all 34 confirmed as the same OOS classes above, none is a genuine coverage miss | No further action; documented as legitimately-NULL |
+| 2026-07-29 | Top-up | Re-ran the live worklist query (product-grain dedup + anti-join, since the model-grain STEP 0 query as originally given would have caused G1 dual-mapping) — found 35 live NULLs, not the 192 quoted in the prompt. 34/35 confirmed via sku_name + category path (all "Fabric Conditioners & Softeners" per Shopee's own taxonomy) + image read for the 2 ambiguous ones (Aromantic dryer sheets, Assos Active Wear Cleanser) as the same OOS classes already documented (ironing/wrinkle spray, starch spray, Cosway dish soap/bathroom cleaner, laundry pods/capsules, Kispray/Rapika/Rapika Biang, ironing board cover, stain remover, foot softener, one Cosway 3-way ambiguous option listing). Assos "Active Wear Cleanser" image-confirmed as a detergent (bottle literally labeled "Detergent"), not a softener — added to OOS list. | 1 genuine gap found: Aromantic Fabric Softener Dryer Sheets Lavender (product `41907713420`, Aromantic_SG Shopee Mall) — dryer-sheets format is explicitly in-scope per this file's Scope section. Minted SKU-210607 (brand routed to existing BRD-GLOBAL-00294 "AROMA" via BRAND_FIELD-sourced product_brand_map — trusted per brand-extraction.md, no mismatch flag), mapped the 1 product. "Buy 2 Get 3" (same product) → pack_count=5 per the buy-N-get-M rule. Claimed SKU-210607–210806 (200-slot block, mostly unused). Post-write QA gates (G1/G2/placeholder-leak/structured-fields/G5) all 0. Coverage was already complete at session start relative to the true live worklist — the 192 figure quoted in the prompt did not reflect current state. |
 
 **Known gap for a future `targeted_qa_fix.sh` pass (not this session's scope, coverage was prioritized over
 precision per the headless runbook):** several long-tail single-appearance brands (SOFSIL, Bluna, SHIRO, UIC,
@@ -235,9 +237,9 @@ image-verification pass on the highest-GMV of these.
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 358 | Pass 1 + Pass 2 combined (single bulk-routed pass, 261 distinct taxonomy entries) |
+| LLM | 359 | Pass 1 + Pass 2 (358) + top-up session 2026-07-29 (+1, SKU-210607) |
 | HUMAN | 0 | No prior keyword-seed pass ran for this table |
-| NULL (unmapped, in-scope) | 34 | All confirmed out-of-scope product-type contamination (ironing spray, laundry pods, stain remover, etc.) — see Scope and QA History |
+| NULL (unmapped, in-scope) | 34 | All confirmed out-of-scope product-type contamination (ironing spray, laundry pods, stain remover, Assos Active Wear Cleanser [detergent], etc.) — see Scope and QA History |
 
 ---
 
