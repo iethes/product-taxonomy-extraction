@@ -8,9 +8,9 @@
 |-------|-------|
 | LLM Pass 1 | ✅ Complete |
 | LLM Pass 2 | ✅ Complete |
-| GMV Coverage | 94.0% (2026-06) |
-| Last run | 2026-07-29 (Full Rebuild, first-run) |
-| Current MAX taxonomy_id | SKU-214276 (this category's own block; overall table MAX may be higher from concurrent sessions) — query BQ live before any future insert, never trust this file |
+| GMV Coverage | 96.2% (2026-06, after 2026-07-29 top-up session) |
+| Last run | 2026-07-29 (Top-up coverage session; prior: Full Rebuild, first-run) |
+| Current MAX taxonomy_id | SKU-215615 (this category's own block; overall table MAX may be higher from concurrent sessions) — query BQ live before any future insert, never trust this file |
 
 **Note on STATUS.md drift:** `docs/categories/STATUS.md` lists `sg_laundry_detergent` as "⏳ Keyword
 only," but live `product_taxonomy_map` has **zero** rows total (source='HUMAN' or 'LLM') for
@@ -33,8 +33,13 @@ returned. Safe to proceed without a pre-existing-row reconciliation step.
 | SKU-213207–215206 | Claimed block (2,000 slots, scenario `full_rebuild`) |
 | SKU-213207–214276 | Used — Pass 1 (572 official-store products) + Pass 2 (525 remaining in-scope products) built together as one grouped match-or-create pass, 1,070 entries minted (1,068 after 2 placeholder-leak deletions, see QA History) |
 | SKU-214277–215206 | Unused remainder (930 slots) |
+| SKU-215407–215653 | Claimed block (247 slots, scenario `taxonomy_topup`, 2026-07-29 top-up session) |
+| SKU-215407–215615 | Used — 209 new taxonomy entries from the 2026-07-29 top-up session (210 map rows; 1 pair of identical Tide-Pods listings from 2 sellers shares one entry) |
+| SKU-215616–215653 | Unused remainder (38 slots) |
 
-New `brand_dict` entries created this session (brands found via `product_specs`/`sku_name` with no existing entry): `BRD-SG-14513` (Fairy), `BRD-SG-14514` (Top — real Lion Corp SG detergent brand, 47 products), `BRD-SG-14515` (Dr. Beckmann), `BRD-SG-14516` (essence).
+New `brand_dict` entries created 2026-07-29 (Full Rebuild session; brands found via `product_specs`/`sku_name` with no existing entry): `BRD-SG-14513` (Fairy), `BRD-SG-14514` (Top — real Lion Corp SG detergent brand, 47 products), `BRD-SG-14515` (Dr. Beckmann), `BRD-SG-14516` (essence).
+
+New `brand_dict` entries created 2026-07-29 (top-up session): `BRD-SG-14517` (8X), `BRD-SG-14518` (DOZEE), `BRD-SG-14519` (Bluekey), `BRD-SG-14520` (Kerzon), `BRD-SG-14521` (Happy Home), `BRD-SG-14522` (Pure51/Esspur51).
 
 ---
 
@@ -337,6 +342,7 @@ same per-product category/type gate at extraction time, not pre-filtered.
 | 2026-07-29 | Post-write QA gates (final) | G1 dual-mapped(LLM)=0, G2 HUMAN+LLM coexistence=0, placeholder-leak=0, structured-fields (product_line NULL%, excl. is_multi_size)=0%, G5 provenance (NULL meta_agent/source)=0, platform/country populated on all rows=0 missing | All gates pass; universe refresh eligible (not run this session — separate step per headless-runbook.md) |
 | 2026-07-29 | Post-write coverage | 94.0% GMV coverage (2026-06): 4,114 of 17,651 rows mapped by product count; 1,068 final taxonomy entries (1,070 minted minus 2 deleted) from 1,095 map rows (1,097 minus 2 deleted) | 26 products left unmapped: 13 genuine scope-exclusions (documented above) + 13 brand-unresolvable listings (mystery/generic-private-label resellers, e.g. "Shopee x DuoDuo Brand Box", "DOZEE 10KG Laundry Detergent") — legitimately UNRESOLVED per product-lifecycle.md §5 |
 | 2026-07-29 | Known gaps for `targeted_qa_fix.sh` | ~23% of entries have NULL `size` (legitimately size-ambiguous bundle/kit listings in many cases, not individually verified); some nested nested nested-multiplier bundle patterns ("Bundle of 10 Packs + 1 Box") left at `pack_count=1` rather than computed; a handful of Miele professional-appliance model numbers produced garbled size text (e.g. "0302L") | Flagged for D4/D5 sweep, low GMV impact (long-tail products) |
+| 2026-07-29 | Top-up coverage session | Live pre-check found 247 rows / 225 distinct products still unmapped within the top-95%-cumulative-GMV (GWP-zeroed) worklist despite the prior Full Rebuild's 94.0% coverage claim. Live `product_taxonomy_map`/`product_taxonomy` state was verified against the doc first (1,095 LLM rows, 1,068 dict entries in SKU-213207–214276, 0 orphans, registry claim intact) — matched exactly, so this was a genuine incremental gap, not a repeat of the pipeline-wide HUMAN-row data-loss incident tracked elsewhere. Bulk text-only (no image reads) brand+size+pack extraction via Python regex against `sku_name`, same crude-but-consistent style as the prior Pass 1+2 build. 15 products (31 raw rows) excluded as genuinely out of scope: dishwasher/dish-soap (Finish, P&G Joy), body soap (ANGGUN), pure fabric softener (Comfort), appliance descaler (Karcher), unlabeled industrial soda ash (DChemie), cross-category kit bundles (2× Poddo, 1× Dynamo, 1× Fasclean 8-in-1 set — matches this category's own "Poddo x3/Dynamo" precedent), scent booster beads (P&G Lenor — matches existing precedent), and 3 Tide/Gain/Arm&Hammer buyer-choice "Multiple Variant(s)" listings (matches this category's own SKU-213859/213862 placeholder-leak precedent — can't determine what the buyer actually receives). Found and fixed during construction: (1) a naive brand-token-stripping regex ate substrings inside unrelated words for short brand tokens like "IN"/"KA" (e.g. "Stain"→"Sta", "Bleaching"→"Bleachg") — fixed with `\b` word-boundary matching; (2) 3 products where `product_brand_map`'s resolved brand didn't match what `sku_name` actually said (a "KA"-resolved product that was really Fresh HY, a "Walch"-resolved product that was really KA, one dropped to `BRD-UNDEFINED` since neither text nor the resolved brand could be confirmed) — corrected per llm-extraction-rules.md §7/§11 (sku_name text is authoritative over `product_brand_map`). 6 new `brand_dict` entries minted for real recognizable brands with no existing entry: `BRD-SG-14517` (8X), `BRD-SG-14518` (DOZEE), `BRD-SG-14519` (Bluekey), `BRD-SG-14520` (Kerzon), `BRD-SG-14521` (Happy Home), `BRD-SG-14522` (Pure51/Esspur51). | Claimed SKU-215407–215653 (247 slots, scenario `taxonomy_topup`); used SKU-215407–215615 (209 new taxonomy entries, 210 map rows after deduping 1 identical Tide-Pods pair sold by 2 sellers); 38 unused slots (SKU-215616–215653) left in the block. GMV coverage 94.0% → 96.2% (2026-06); LLM map rows 1,095 → 1,305. Post-write QA gates: G1 dual-mapped=0, G2 HUMAN+LLM coexistence=0, placeholder-leak=0, structured-fields NULL%=0, G5 provenance=0, G4 cross-category=0. Live worklist re-check after write: 0 rows remaining except the 15 documented exclusions above. Per-row wording precision (exact product_line polish) intentionally deprioritized per this session's coverage-first mandate — deferred to `targeted_qa_fix.sh`. |
 
 ---
 
@@ -359,6 +365,6 @@ same per-product category/type gate at extraction time, not pre-filtered.
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 1,095 | Pass 1 (572 official-store) + Pass 2 (525 remaining in-scope), minus 2 deleted placeholder-leak rows |
+| LLM | 1,305 | Pass 1 (572 official-store) + Pass 2 (525 remaining in-scope) minus 2 deleted placeholder-leak rows, + 210 top-up rows (2026-07-29 top-up session) |
 | HUMAN | 0 | Confirmed via live query 2026-07-29 — no keyword-seed pass ever ran |
-| NULL (unmapped) | ~13,537 (distinct products, 2026-06, outside the in-scope worklist) + 26 in-worklist exclusions (13 scope, 13 brand-unresolved) | Long-tail below GMV threshold / out-of-category, plus documented exclusions above |
+| NULL (unmapped) | ~13,327 (distinct products, 2026-06, outside the in-scope worklist) + 41 in-worklist exclusions (13 original-pass scope exclusions + 13 original-pass brand-unresolved + 15 top-up-session scope exclusions) | Long-tail below GMV threshold / out-of-category, plus documented exclusions above |
