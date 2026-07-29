@@ -2,6 +2,10 @@
 
 Last updated: Jun 24 2026
 
+> **Frozen as of 2026-07-29.** Live per-category status now lives in BigQuery:
+> `SELECT category_key, status, live_map_rows, orphan_map_rows FROM sincere-hearth-273704.magpie_reference.category_brief WHERE task_type = 'BRIEF'`.
+> This file is a historical snapshot from before that migration — do not trust it for current state.
+
 ---
 
 ## TH Categories — LLM Extraction Status
