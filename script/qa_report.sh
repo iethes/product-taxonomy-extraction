@@ -84,7 +84,7 @@ else echo "[FAIL] duplicate product+taxon:  ${DUP_PAIR}"; FAIL=1; fi
 # parenthetical. The looser r'\(all[\s)]' pattern (used until 2026-07-21) false-positived on real product
 # descriptors like "(All Skin Types)" or "(All Natural)", which are legitimate label text, not a
 # generic-stub marker. "Multiple Sizes"/"Multiple Variants" added 2026-07-22: despite being sanctioned in
-# an earlier th_softdrink precedent (paired with is_multi_size/is_multi_variant=TRUE), it's banned here
+# an earlier shopee_th_softdrink precedent (paired with is_multi_size/is_multi_variant=TRUE), it's banned here
 # unconditionally, flag or no flag — the is_multi_size/is_multi_variant column already conveys that
 # semantic; redundantly restating it as generic text in canonical_name is the same ungrounded-stub problem
 # as "All variant"/"All size". Existing entries using this text must be corrected to drop it, not exempted.

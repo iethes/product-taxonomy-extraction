@@ -233,7 +233,7 @@ resellers or non-Mall sellers — treat as **Pass 2 heavy**, not Pass 1.
 ## Scope — What's In vs Out
 
 **In scope — all 7 `category_4_EN` buckets are legitimately face makeup, no mixed-content contamination
-found** (unlike `th_body_wash`/`th_liquid_milk`): Foundation (`Base`, 29,629 products, 1.11T IDR — largest
+found** (unlike `shopee_th_body_wash`/`shopee_th_liquid_milk`): Foundation (`Base`, 29,629 products, 1.11T IDR — largest
 sub-type), Face Powder (`Bedak`, 31,122 products, 430B), Blush (12,934, 27.3B), Make Up Base & Primer
 (12,606, 16.6B), Concealer & Corrector (6,937, 15.2B), BB & CC Cream (10,497, 14.1B), Bronzer/Contour/
 Highlighter (8,926, 11.5B).
@@ -270,7 +270,7 @@ categories; verify against sku_name/image per `llm-extraction-rules.md` §1 befo
 
 **Known difficult products:**
 - Multi-shade "pick your shade" reseller listings (buyer selects 1 of N shades in a single sku_name) —
-  apply the same `is_multi_variant=TRUE` treatment as `th_softdrink`'s multi-variant pattern, or route to
+  apply the same `is_multi_variant=TRUE` treatment as `shopee_th_softdrink`'s multi-variant pattern, or route to
   the specific shade if the option list resolves it unambiguously.
 - Brands sold under diacritic store names (`gouté`, `Guèle`, `Rosé All Day`) — canonical_name and
   brand_dict lookups should use the ASCII raw `brand` field spelling for consistency with the rest of the

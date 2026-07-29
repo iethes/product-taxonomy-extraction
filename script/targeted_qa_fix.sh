@@ -259,7 +259,7 @@ STEP 2 — Tier 1: run this SQL sweep over that same worklist to flag mechanical
 spending any LLM judgment. canonical_field_mismatch mirrors script/qa_report.sh's independent
 "canonical_name fields" gate exactly — added after a live run passed its own Tier 1 sweep but still failed
 that wrapper-side gate on 81 rows, because this check wasn't in Tier 1 yet. stub_leak also catches "Multiple
-Sizes"/"Multiple Variants" — an earlier th_softdrink precedent sanctioned this phrasing when paired with
+Sizes"/"Multiple Variants" — an earlier shopee_th_softdrink precedent sanctioned this phrasing when paired with
 is_multi_size/is_multi_variant=TRUE, but it's banned unconditionally now: the is_multi_size/is_multi_variant
 column already conveys that semantic, so restating it as generic text in canonical_name is the same
 ungrounded-stub problem as "All variant"/"All size" — flag or no flag, the text itself is the defect:
@@ -362,7 +362,7 @@ Tier 2 broadly; sample as much as your GMV-prioritized budget genuinely allows.
 
 STEP 4 — Apply fixes. Prefer bulk SQL per defect class over one-row-at-a-time corrections wherever the fix
 is mechanical — e.g. a single REGEXP_REPLACE UPDATE can strip a duplicated brand substring across every
-affected row in one statement (this repo has precedent: docs/categories/th_moisturizer_for_face.md's
+affected row in one statement (this repo has precedent: docs/categories/shopee_th_moisturizer_for_face.md's
 "Brand-Brand naming bug" fix used exactly this pattern). Read an individual product's image only when the fix
 itself requires re-deriving a value (e.g. confirming the real size after a G2G-style false match). Every row
 you change must have its _meta reset in the same session (_meta is STRING-typed, storing serialized JSON text —

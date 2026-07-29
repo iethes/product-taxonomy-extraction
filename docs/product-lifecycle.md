@@ -236,7 +236,7 @@ trust), we keep it and skip the check.
 
 Real examples caught this way: a *Vaseline* official store listing *Citra*
 products; a *Banana Boat* listing selling *Sunplay*. See
-[docs/categories/th_suncare.md](categories/th_suncare.md).
+[docs/categories/shopee_th_suncare.md](categories/shopee_th_suncare.md).
 
 ---
 

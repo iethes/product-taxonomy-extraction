@@ -125,7 +125,7 @@ attempt #1 precedent (187,902-row official pool, correctly blocked).
 
 **Out of scope (leave NULL):**
 - Cloth diapers, swim diapers/pants (different use case, verify per listing)
-- Disposal tape stickers / roll-and-tie accessories (mirrors `ม้วนทิ้ง` exclusion documented for `th_baby_diapers`)
+- Disposal tape stickers / roll-and-tie accessories (mirrors `ม้วนทิ้ง` exclusion documented for `shopee_th_baby_diapers`)
 - Adult diapers (wrong category — none expected in this table's `category_3`, but verify if encountered)
 
 **Edge cases:**

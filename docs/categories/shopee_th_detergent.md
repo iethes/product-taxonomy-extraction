@@ -147,9 +147,9 @@ correctly, no per-category_3 filter needed.
 ### Reference
 
 - Extraction rules: `docs/llm-extraction-rules.md` §1 (pack) + §2 (size)
-- Prior art (pack multiplier): th_liquid_milk, th_pet_food sessions (see `docs/llm-extraction-rules.md`
+- Prior art (pack multiplier): shopee_th_liquid_milk, shopee_th_pet_food sessions (see `docs/llm-extraction-rules.md`
   changelog)
-- Prior art (bundle): th_softdrink QA sessions
+- Prior art (bundle): shopee_th_softdrink QA sessions
 - SKU-010xxx = detergent block (191 entries used, 809 remain at 010191–010999) — new entries for this session
   go in a freshly claimed 200-slot block, never reuse 010191–010999 without re-verifying it's still free.
 

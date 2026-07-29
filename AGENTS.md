@@ -11,7 +11,7 @@ Read in this order:
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md) — data model and BigQuery layout
 2. [`docs/data-dictionary.md`](docs/data-dictionary.md) — every table and column
 3. [`docs/llm-extraction-rules.md`](docs/llm-extraction-rules.md) — mandatory extraction rules
-4. The category file in [`docs/categories/th_{category}.md`](docs/categories/) for your target category
+4. The category file in [`docs/categories/shopee_th_{category}.md`](docs/categories/) for your target category
 
 ---
 

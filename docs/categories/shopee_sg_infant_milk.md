@@ -174,7 +174,7 @@ Genuinely a first pass — no prior map rows of either source exist for this tab
   silent, image was not.
 - `[Bundle of N]`/`(Bundle of N)` sometimes conflicts with an inline `SIZE x M` fragment in the same title
   (e.g. `[Bundle of 4] ... 900g x3 + Timmy & Tammy Books`) — the bracketed `[Bundle of N]` count was trusted
-  over the inline fragment, consistent with the `th_moisturizer_for_body` bracket-format precedent in
+  over the inline fragment, consistent with the `shopee_th_moisturizer_for_body` bracket-format precedent in
   llm-extraction-rules.md §1.
 - GWP text patterns (`[GWP]`, `+ Free {other item}`, `GWP Bundle of N [GWP] {product}`) almost always wrap a
   genuine, real-product listing (the free item is a toy/appliance bonus, not a different milk product) —

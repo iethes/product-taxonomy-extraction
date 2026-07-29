@@ -90,7 +90,7 @@ FROM AI.SEARCH(
 
 Embedding calls have no output-token cost and are roughly an order of magnitude cheaper per item than a generative extraction call, regardless of how complex the input text is.
 
-**Feasibility:** High — supported natively in BigQuery, no separate ML infra to stand up. **Difficulty:** Medium — mainly threshold-tuning per category (some categories will need a tighter distance cutoff than others) and validating against a category with known-good ground truth (e.g. `th_body_wash`, which already has full LLM extraction to compare against). **Cost:** $ — embedding-only, no generation cost; the catalog side (~15–68K rows) is embedded once and reused for every incoming product.
+**Feasibility:** High — supported natively in BigQuery, no separate ML infra to stand up. **Difficulty:** Medium — mainly threshold-tuning per category (some categories will need a tighter distance cutoff than others) and validating against a category with known-good ground truth (e.g. `shopee_th_body_wash`, which already has full LLM extraction to compare against). **Cost:** $ — embedding-only, no generation cost; the catalog side (~15–68K rows) is embedded once and reused for every incoming product.
 
 **Piloted 2026-07-18 — blocked, do not re-attempt this exact design without reading the findings first.**
 Full pilot against `shopee_th_toothpaste` (real data, self-hosted `multilingual-e5-large` embeddings, not the

@@ -173,7 +173,7 @@ ORDER BY gmv DESC;        -- highest-GMV stubs first → fix these first
 - **D3 also fails the other direction:** `canonical_name` containing "Multiple Sizes" or
   "Multiple Variants" is a D1 Tier-C-style generic stub, same defect class as "All variant"/"All size" —
   banned unconditionally, even when `is_multi_size`/`is_multi_variant` is correctly set to `TRUE`
-  (superseding an earlier th_softdrink precedent that sanctioned this phrasing). The flag column
+  (superseding an earlier shopee_th_softdrink precedent that sanctioned this phrasing). The flag column
   already conveys the multi-size/multi-variant semantic; restating it as generic text in
   `canonical_name` adds nothing and is exactly the kind of ungrounded catch-all naming D1 exists to
   catch.

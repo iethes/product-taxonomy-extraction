@@ -134,4 +134,4 @@ The reliability gap you saw wasn't "API worse than Claude Code" in general — i
 
 - **Re-measure your actual prompt token counts** with `client.messages.count_tokens(...)` against your real system prompt and a real product image — the worked example above uses assumed numbers.
 - **Confirm cache hit rate inside a real batch run** via `usage.cache_read_input_tokens` rather than assuming the 90% figure holds across a multi-hour batch.
-- **Prototype the schema-enforced single-call design on one already-completed category** (e.g. `th_body_wash`, which has full LLM extraction and a scorecard in `docs/categories/STATUS.md`) and compare its D1–D6 scores against the existing Claude-Code-produced results before rolling out further — that's your apples-to-apples reliability check.
+- **Prototype the schema-enforced single-call design on one already-completed category** (e.g. `shopee_th_body_wash`, which has full LLM extraction and a scorecard in `docs/categories/STATUS.md`) and compare its D1–D6 scores against the existing Claude-Code-produced results before rolling out further — that's your apples-to-apples reliability check.

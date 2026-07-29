@@ -177,7 +177,7 @@ external scripts or need any API key beyond your own session auth.
 for vision — `WebFetch` returns text, not pixels. `master_clean_niq.shopee_{country}_{category}` has an
 undocumented `image` column (a direct CDN URL, not listed in `ARCHITECTURE.md`/`data-dictionary.md`'s schema
 tables) that sometimes has literal embedded double-quotes corrupting naive parsing — strip those first. The
-working pattern, confirmed in the `sg_facial_moisturiser` session: `curl -sL -o /tmp/img.jpg "<url>"` then use
+working pattern, confirmed in the `shopee_sg_facial_moisturiser` session: `curl -sL -o /tmp/img.jpg "<url>"` then use
 the `Read` tool on the local file — reading a local file renders it for vision; reading a remote URL does not.
 Do this two-step curl-then-Read for every image check. If `master_clean_niq` genuinely lacks the `image` column
 for a given table, that is a real blocker — but check this table and this column before concluding images are
@@ -348,7 +348,7 @@ The rest of this section describes the first-run procedure.
 
 **Worked example: `shopee_sg_shampoo`.** Attempt #1 (2026-07-15) claimed a real block (`SKU-069001`–
 `SKU-070000`, still `ACTIVE`, zero rows written) and correctly stopped itself before writing anything — see
-`docs/categories/sg_shampoo.md`'s QA History for what it found (2,255 undocumented existing `HUMAN` rows,
+`docs/categories/shopee_sg_shampoo.md`'s QA History for what it found (2,255 undocumented existing `HUMAN` rows,
 ambiguous extraction-ownership instructions, a 187,902-row official-store pool too large to vision-read in one
 session). The category file and the prompt below are both corrected as a result. **Do not run the `claude -p`
 step without deciding to actually kick off SG's first taxonomy extraction** — it's a real, costly LLM session
@@ -364,7 +364,7 @@ that writes to production once it starts.
 2. Invoke `claude -p` — corrected prompt, addressing all three blockers attempt #1 found:
    ```bash
    claude -p --output-format json --permission-mode bypassPermissions --max-turns 200 "
-   Full Rebuild session for shopee_sg_shampoo. Read docs/categories/sg_shampoo.md in full, including the Scale
+   Full Rebuild session for shopee_sg_shampoo. Read docs/categories/shopee_sg_shampoo.md in full, including the Scale
    and 'Existing HUMAN rows' sections — both are load-bearing, not background.
 
    You perform extraction yourself, directly, using your own multimodal reading of product images and text.
@@ -374,7 +374,7 @@ that writes to production once it starts.
    You have been pre-assigned SKU block SKU-069001–SKU-070000 (already claimed in sku_block_registry, status
    ACTIVE) — use only this range, never query MAX(taxonomy_id) yourself.
 
-   Pass 1: build taxonomy ONLY from the Official Store Allowlist merchant names listed in sg_shampoo.md — not
+   Pass 1: build taxonomy ONLY from the Official Store Allowlist merchant names listed in shopee_sg_shampoo.md — not
    all 187,902 Shopee-Mall-badged rows, just those specific merchant names.
 
    Pass 2: route the remaining official-store-eligible-but-unmatched and reseller products primarily via bulk
@@ -389,12 +389,12 @@ that writes to production once it starts.
    "Amos Professional PURE SMART Line dandruff care Shampoo FRESH 500ml", set product_line = "PURE SMART Line
    dandruff care Shampoo" and variant = "FRESH", not NULL/NULL with that text only living in canonical_name.
    This was gotten wrong in a prior run against this exact category (100% NULL on all 3 fields) — read
-   sg_shampoo.md's Taxonomy Design Notes for the full finding before starting.
+   shopee_sg_shampoo.md's Taxonomy Design Notes for the full finding before starting.
 
    2,255 existing source='HUMAN' rows exist in product_taxonomy_map for this category. Do NOT delete any of
    them yourself. The wrapper deletes HUMAN rows after your run, but only the ones that duplicate a product
    you've also mapped with an LLM row — never a blanket delete of every HUMAN row in the category (see
-   sg_shampoo.md's "Existing HUMAN rows" section for the exact scope).
+   shopee_sg_shampoo.md's "Existing HUMAN rows" section for the exact scope).
 
    Write via bq query DML only, never the streaming API.
 

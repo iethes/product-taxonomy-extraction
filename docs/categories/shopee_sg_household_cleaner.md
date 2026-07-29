@@ -167,7 +167,7 @@ Brands below the tail (Melaleuca) are excluded from scope — long tail, may rem
 **`BRD-UNDEFINED` note (rank #1, 20.03% of category GMV):** no brand assignment at all in
 `product_brand_map` — these products have no official store by definition, so all of this GMV routes
 through Pass 2. `product_taxonomy_map` does not require `brand_id` agreement with `product_brand_map`
-(per `docs/llm-extraction-rules.md`'s th_softdrink/th_drinking_water precedents) — where `sku_name` or
+(per `docs/llm-extraction-rules.md`'s shopee_th_softdrink/shopee_th_drinking_water precedents) — where `sku_name` or
 the product image identifies a real brand for a `BRD-UNDEFINED` product, map it to that brand's real
 taxonomy entry, not a generic catch-all. Never name an entry "Undefined ..." — the placeholder-leak QA
 gate bans that token in `canonical_name`; use `"{Real Brand} (unresolved)"` only if the product-level

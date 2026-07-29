@@ -51,7 +51,7 @@ assigned.
 a single coherent vertical — Water (785,707), Juice & Juice Vinegar (488,047), Energy & Isotonic Drinks
 (352,815), Traditional & Herbal Drinks (240,708), Others (92,392), Drink Toppings (7,224) — all genuinely
 beverage subcategories. **No keyword pre-filter gate was needed on the brand-GMV ranking** (llm-extraction-rules.md
-§8 applies only to mixed-content source tables like `th_body_wash`'s hand-wash contamination; this table has none).
+§8 applies only to mixed-content source tables like `shopee_th_body_wash`'s hand-wash contamination; this table has none).
 
 **Known brand_id noise (do not propagate into extraction):** `&Honey` (BRD-GLOBAL-00237) is a haircare brand
 in `brand_dict` that PRODUCT_NAME_SCAN mismatched onto honey-flavored juice/drink products (token collision on
