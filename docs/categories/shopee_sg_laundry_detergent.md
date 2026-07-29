@@ -6,11 +6,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD — measured post-write |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 94.0% (2026-06) |
 | Last run | 2026-07-29 (Full Rebuild, first-run) |
-| Current MAX taxonomy_id | Query BQ live before insert — never trust this file |
+| Current MAX taxonomy_id | SKU-214276 (this category's own block; overall table MAX may be higher from concurrent sessions) — query BQ live before any future insert, never trust this file |
 
 **Note on STATUS.md drift:** `docs/categories/STATUS.md` lists `sg_laundry_detergent` as "⏳ Keyword
 only," but live `product_taxonomy_map` has **zero** rows total (source='HUMAN' or 'LLM') for
@@ -30,7 +30,11 @@ returned. Safe to proceed without a pre-existing-row reconciliation step.
 
 | Block | Usage |
 |-------|-------|
-| (claimed in STEP 3, recorded here after claim) | Full Rebuild — Pass 1 + Pass 2 |
+| SKU-213207–215206 | Claimed block (2,000 slots, scenario `full_rebuild`) |
+| SKU-213207–214276 | Used — Pass 1 (572 official-store products) + Pass 2 (525 remaining in-scope products) built together as one grouped match-or-create pass, 1,070 entries minted (1,068 after 2 placeholder-leak deletions, see QA History) |
+| SKU-214277–215206 | Unused remainder (930 slots) |
+
+New `brand_dict` entries created this session (brands found via `product_specs`/`sku_name` with no existing entry): `BRD-SG-14513` (Fairy), `BRD-SG-14514` (Top — real Lion Corp SG detergent brand, 47 products), `BRD-SG-14515` (Dr. Beckmann), `BRD-SG-14516` (essence).
 
 ---
 
@@ -325,6 +329,14 @@ same per-product category/type gate at extraction time, not pre-filtered.
 | 2026-07-29 | Pre-run research | Cross-table composite-key collision check: 0 of the 1,123-product in-scope worklist already has a `product_taxonomy_map` row under any other `master_table` | No reconciliation needed before insert |
 | 2026-07-29 | Pre-run research | `raw_niq_history.shopee_sg_laundry_detergent` does not exist as a BigQuery dataset (same finding as `shopee_sg_beverages`) | Size/pack fallback uses this table's own `product_specs` column instead |
 | 2026-07-29 | Pre-run research | 2026-06 row count (17,651) is lower than April/May (32k–34k) — the month specified by this run's wrapper prompt | Noted in session findings, not treated as a blocker; wrapper specified this month explicitly |
+| 2026-07-29 | Pass 1+2 build | Bulk regex-based extraction (brand/size/pack/variant from `sku_name_EN` + `product_specs` Brand field) used for both passes given the 1,123-product worklist scale — Pass 1 (572 official-store products) and Pass 2 (551 remaining) processed together as one grouped match-or-create pass (Pass 2 naturally reused Pass 1's entries where brand+line+size+pack matched, minted new ones otherwise); only text signals were used, no vision reads (rich `sku_name_EN` text was sufficient) | Coverage-first per Full Rebuild philosophy; exact wording polish deferred to `targeted_qa_fix.sh` |
+| 2026-07-29 | Pass 1+2 build | Found and fixed 3 extraction bugs during construction: (1) a bare digit in "4-in-1"/"5-in-1" format descriptors was misread as a pods/pcs size count (28.6% of products contained this pattern) — fixed by blanking `\d+-in-\d+` before running size/pack regexes; (2) the generic-stub `"{Brand} (unresolved)"` product_line fallback caused a duplicated brand name in `canonical_name` (e.g. "Persil Persil (unresolved)") — fixed by stripping the leading brand token when building the display name only (stored `product_line` field keeps the brand per llm-extraction-rules.md §3); (3) `raw_niq_history` does not exist for this table (same finding as `shopee_sg_beverages`) — used this table's own `product_specs` column instead | All fixed before insert |
+| 2026-07-29 | Pass 1+2 build | Manually reviewed 16 auto-flagged softener/non-laundry keyword hits and excluded 13 genuinely out-of-scope products (pure fabric softeners: Miele, Comfort, Downy; dishwasher/dish-soap: Finish x2, IN; body soap: glow; scent booster: P&G Lenor; ambiguous cross-category kit bundles: Poddo x3, Dynamo, Yuri) — kept 4 Yuri "Gift:"-tagged GWP freebies and 1 bio-home genuinely-multi-use product as in-scope | Applied product-lifecycle.md §4.2 category/type gate per product before extraction |
+| 2026-07-29 | Post-write QA gates | Live schema drift found: `product_taxonomy_map.confidence` is `STRING` in production, not `FLOAT64` as ARCHITECTURE.md/data-dictionary.md document (same drift class as the `shopee_sg_beverages` session's `brand_dict` finding) | Insert DML adjusted to quote confidence as a string literal |
+| 2026-07-29 | Post-write QA gates | First gate run found 2 placeholder-leak violations: `SKU-213859`/`SKU-213862`, both literally containing "Multiple Variants" in `canonical_name`, sourced from 2 reseller listings genuinely offering buyer's-choice between two *different* brands (Tide vs. Gain) in one SKU | Deleted both taxonomy entries and their 2 map rows — matches the `th_softdrink` precedent for multi-brand buyer-choice listings (leave unmapped, not a forced/generic name) rather than rename into something misleading |
+| 2026-07-29 | Post-write QA gates (final) | G1 dual-mapped(LLM)=0, G2 HUMAN+LLM coexistence=0, placeholder-leak=0, structured-fields (product_line NULL%, excl. is_multi_size)=0%, G5 provenance (NULL meta_agent/source)=0, platform/country populated on all rows=0 missing | All gates pass; universe refresh eligible (not run this session — separate step per headless-runbook.md) |
+| 2026-07-29 | Post-write coverage | 94.0% GMV coverage (2026-06): 4,114 of 17,651 rows mapped by product count; 1,068 final taxonomy entries (1,070 minted minus 2 deleted) from 1,095 map rows (1,097 minus 2 deleted) | 26 products left unmapped: 13 genuine scope-exclusions (documented above) + 13 brand-unresolvable listings (mystery/generic-private-label resellers, e.g. "Shopee x DuoDuo Brand Box", "DOZEE 10KG Laundry Detergent") — legitimately UNRESOLVED per product-lifecycle.md §5 |
+| 2026-07-29 | Known gaps for `targeted_qa_fix.sh` | ~23% of entries have NULL `size` (legitimately size-ambiguous bundle/kit listings in many cases, not individually verified); some nested nested nested-multiplier bundle patterns ("Bundle of 10 Packs + 1 Box") left at `pack_count=1` rather than computed; a handful of Miele professional-appliance model numbers produced garbled size text (e.g. "0302L") | Flagged for D4/D5 sweep, low GMV impact (long-tail products) |
 
 ---
 
@@ -347,6 +359,6 @@ same per-product category/type gate at extraction time, not pre-filtered.
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | TBD | Recorded after Pass 1 + Pass 2 write |
+| LLM | 1,095 | Pass 1 (572 official-store) + Pass 2 (525 remaining in-scope), minus 2 deleted placeholder-leak rows |
 | HUMAN | 0 | Confirmed via live query 2026-07-29 — no keyword-seed pass ever ran |
-| NULL (unmapped) | TBD | Long-tail below GMV threshold / out-of-category |
+| NULL (unmapped) | ~13,537 (distinct products, 2026-06, outside the in-scope worklist) + 26 in-worklist exclusions (13 scope, 13 brand-unresolved) | Long-tail below GMV threshold / out-of-category, plus documented exclusions above |
