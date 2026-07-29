@@ -68,7 +68,7 @@ Status section for what this means for a session picking up the next ID category
 | sg_health_food_drink | ⏳ Keyword only | |
 | sg_coffee | ✅ Complete | LLM Pass 1+2 complete Jul 20, 93.85% GMV coverage, SKU-098346–100345 + SKU-102346–102519; created brand_dict entry BRD-SG-13379 (Super) |
 | sg_carbonated_drink | ✅ Complete | LLM Pass 1+2 complete Jul 22, 94.4% GMV coverage, SKU-110406–110728; 6 real alcoholic beer listings correctly left out of scope despite category-table presence |
-| sg_beverages | ⏳ Keyword only | |
+| sg_beverages | ✅ Complete | LLM Pass 1+2 complete Jul 29 (first pass — no prior HUMAN keyword-seed rows existed despite this row's prior "Keyword only" label), 95.1% GMV coverage, SKU-206029–207476 (of claimed block SKU-206029–208028, 1,551 slots unused) |
 | sg_beer_and_lager | ⏳ Keyword only | |
 | sg_breakfast_cereals | ✅ Pass 1+2 + 2026-06 top-up complete (95.8% GMV) | SKU-080151–080422, SKU-171652–172069 (two disjoint ranges — see sg_breakfast_cereals.md); D1-D5 precision gaps in top-up tail flagged for targeted_qa_fix.sh |
 | sg_pet_food | ⏳ Keyword only | |
@@ -77,7 +77,7 @@ Status section for what this means for a session picking up the next ID category
 | sg_baby_accessories | ⏳ Keyword only | |
 | sg_vitamin_mineral_health_supplements | ✅ Complete | LLM Pass 1+2 complete Jul 29, 95.1% GMV coverage, SKU-199329–201328 + SKU-203529–204028 (two disjoint blocks, primary exhausted mid-Pass-2); 477 per-brand `(unresolved)` catch-alls for fragmented long-tail (category has unusually low product-line duplication vs. other categories) |
 
-| **Total SG:** 6/23 LLM complete (sg_toothpaste, sg_coffee, sg_carbonated_drink, sg_liquid_soap, sg_hand_and_body_moisturiser, sg_vitamin_mineral_health_supplements) — keyword seed provides ~50–70% GMV coverage for the rest
+| **Total SG:** 7/23 LLM complete (sg_toothpaste, sg_coffee, sg_carbonated_drink, sg_liquid_soap, sg_hand_and_body_moisturiser, sg_vitamin_mineral_health_supplements, sg_beverages) — keyword seed provides ~50–70% GMV coverage for the rest
 
 ---
 
@@ -157,3 +157,4 @@ Status section for what this means for a session picking up the next ID category
 | SKU-135196–137195 | shopee_sg_hand_and_body_moisturiser LLM P1 (135196–135776) + P2 specific (135777–136776) + P2 per-brand catch-alls (136777–136922) | ACTIVE (136923–137195 unused remainder) |
 | SKU-199329–201328 | shopee_sg_vitamin_mineral_health_supplements LLM P1 (199329–200645) + P2 specific (200646–201230) | ACTIVE (201231–201328 unused remainder) |
 | SKU-203529–204028 | shopee_sg_vitamin_mineral_health_supplements P2 supplemental block, per-brand catch-alls (203529–203854) | ACTIVE (203855–204028 unused remainder) |
+| SKU-206029–208028 | shopee_sg_beverages LLM P1 (206029–206232) + P2 (206233–207476) | ACTIVE (207477–208028 unused remainder) |

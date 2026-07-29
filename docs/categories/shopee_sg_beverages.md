@@ -6,11 +6,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ❌ Not started |
-| LLM Pass 2 | ❌ Not started |
-| GMV Coverage | 0% (2026-06) — first LLM pass |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 95.1% (2026-06) |
 | Last run | 2026-07-29 |
-| Current MAX taxonomy_id | SKU-203854 (as of session start; see SKU Blocks Assigned for this category's own block) |
+| Current MAX taxonomy_id | SKU-207476 (this category's own block; overall table MAX may be higher from concurrent sessions) |
 
 **Note on STATUS.md drift:** `docs/categories/STATUS.md` lists `sg_beverages` as "⏳ Keyword only," but live
 `product_taxonomy_map` has **zero** rows for `master_table = 'shopee_sg_beverages'` (source='HUMAN' or 'LLM').
@@ -24,7 +24,9 @@ trivially 0, and there is no HUMAN-row cleanup step needed after this run.
 
 | Block | Usage |
 |-------|-------|
-| *(filled in after STEP 3 atomic claim)* | Full Rebuild — Pass 1 OFFICIAL + Pass 2 RESELLER |
+| SKU-206029–206232 | Pass 1 OFFICIAL (204 entries, from 207 official-store products across 48 allowlisted merchants) |
+| SKU-206233–207476 | Pass 2 RESELLER (1,244 entries, from 1,465 remaining in-scope products via bulk regex + word-overlap consolidation) |
+| SKU-207477–208028 | Unused remainder of claimed 2,000-slot block |
 
 ---
 
@@ -401,6 +403,10 @@ entirely through Pass 2 reseller matching).
 |------|------|---------|------------|
 | 2026-07-29 | Pre-run research | STATUS.md says "Keyword only" but live `product_taxonomy_map` has 0 rows for this table | Documented; no HUMAN cleanup needed, first genuine pass |
 | 2026-07-29 | Pre-run research | `&Honey` and `12/+＝` are brand_id noise (token collision / garbled-watermark) affecting rank-97/rank-81 brand buckets | Flagged for extraction-time re-derivation; not a blocker |
+| 2026-07-29 | Pre-run research | Broader brand_id noise discovered during extraction: several single-common-English-word brand_dict entries (Apple, Apple Cider, Lemon, TEA, All, IN, Core, Get, Care, Bean, Keto, Royal, AQUA, Sparkle, Naturally) are PRODUCT_NAME_SCAN false positives, not real brand identities | Added to a blocklist; brand resolution fell back to official-store identity (Pass 1) or first-capitalized-token heuristic (Pass 2) instead of trusting these upstream brand_ids |
+| 2026-07-29 | Pass 1+2 build | Bulk regex-based extraction (brand/size/pack from `sku_name_EN`) was used for both passes given the ~1,672-product in-scope worklist scale — Pass 1 read all 207 official-store products' text directly (no vision reads needed; `sku_name_EN` was rich enough); Pass 2 applied the same pipeline plus a word-overlap consolidation pass (Jaccard ≥0.55 within same brand/size/pack bucket) to reduce near-duplicate entries from resellers' varying phrasing (1,370→1,244 entries) | Coverage-first per Full Rebuild philosophy; exact `product_line` wording polish deferred to `targeted_qa_fix.sh` per its documented scope |
+| 2026-07-29 | Post-run QA gates | G1 dual-mapped=0, G2 HUMAN+LLM coexistence=0, placeholder-leak=0, structured-fields (product_line NULL%) among LLM=0%, G5 provenance=0 | All gates pass; universe refresh eligible |
+| 2026-07-29 | Post-run coverage | 95.1% GMV coverage (2026-06); 340/1,244 Pass-2 entries and several Pass-1 entries have NULL `size` (~23% each pass) — legitimately size-ambiguous multi-flavor/combo listings in many cases, but not individually verified | Flagged for `targeted_qa_fix.sh` D4 sweep |
 
 ---
 
@@ -423,9 +429,9 @@ entirely through Pass 2 reseller matching).
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 0 | Pre-run — updated after this session |
-| HUMAN | 0 | Confirmed via live query 2026-07-29 — no keyword-seed pass ever ran |
-| NULL (unmapped) | 15,028 (distinct products, 2026-06) | Full category, pre-run |
+| LLM | 1,672 | Pass 1 (207) + Pass 2 (1,465), this session |
+| HUMAN | 0 | Confirmed via live query 2026-07-29 — no keyword-seed pass ever ran; none created by this session either |
+| NULL (unmapped) | ~13,356 (distinct products, 2026-06, outside the 1,672-product in-scope worklist) | Long-tail below GMV threshold / out-of-category — legitimately left unmapped per quality-standards.md §2 |
 
 **Scale (2026-06-01, `master_clean_niq.shopee_sg_beverages`):**
 - Total rows (all months, source table): 276,841
