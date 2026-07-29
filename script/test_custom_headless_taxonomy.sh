@@ -52,15 +52,20 @@ echo "$prompt" | grep -q "next_start + 1999" || fail "build_first_run_prompt sho
 echo "$prompt" | grep -q "'custom_full_rebuild'" || fail "build_first_run_prompt should tag the SKU block scenario"
 echo "$prompt" | grep -q "meta_agent='CLAUDE_CODE'" || fail "build_first_run_prompt should require meta_agent on every row"
 echo "$prompt" | grep -q "G1 (no dual-mapping)" || fail "build_first_run_prompt should carry the hard-gate invariants"
+echo "$prompt" | grep -qF "category_key = 'makanananjing.makanananjing_my'" || fail "build_first_run_prompt should check category_brief by dataset.category, not a fixed master_clean_niq prefix"
+echo "$prompt" | grep -qF "bq load" || fail "build_first_run_prompt must instruct bq load for the brief write"
+echo "$prompt" | grep -qv "git add docs/categories" || fail "build_first_run_prompt must not instruct a git commit anymore"
 echo "PASS: build_first_run_prompt"
 
 # --- build_topup_prompt ---
 prompt=$(build_topup_prompt "makanankucing" "9_makanankucing_my_daily" "makanankucing_my" "1832" "1832")
 echo "$prompt" | grep -q "master_table = 'makanankucing_my'" || fail "build_topup_prompt should key writes by CATEGORY"
-echo "$prompt" | grep -q "docs/categories/makanankucing_my.md" || fail "build_topup_prompt should reference the existing category file"
 echo "$prompt" | grep -q "'custom_topup'" || fail "build_topup_prompt should tag the SKU block scenario"
 echo "$prompt" | grep -q "next_start + 1832 - 1" || fail "build_topup_prompt should size the SKU block claim from block_size"
 echo "$prompt" | grep -q "WITHOUT --skip-coexistence" || fail "build_topup_prompt should require the strict coexistence gate"
+echo "$prompt" | grep -qF "category_key = 'makanankucing.makanankucing_my'" || fail "build_topup_prompt should read category_brief by dataset.category"
+echo "$prompt" | grep -qF "'TAXONOMY'" || fail "build_topup_prompt's history insert must be tagged TAXONOMY"
+echo "$prompt" | grep -qv "git add docs/categories" || fail "build_topup_prompt must not instruct a git commit anymore"
 echo "PASS: build_topup_prompt"
 
 echo "ALL PASS"

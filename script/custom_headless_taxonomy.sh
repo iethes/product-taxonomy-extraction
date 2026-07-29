@@ -127,8 +127,7 @@ docs/brand-extraction.md, and docs/categories/_TEMPLATE.md. Note: data-dictionar
 master_clean_niq tables — \`${PROJECT}.${dataset}.${table}\` is NOT in that dataset and has a
 different schema (daily grain summed to monthly here, no month/model_id/merchant columns). Treat its
 column set as exactly what STEP 0's query below returns, not what data-dictionary.md describes. Also
-check docs/categories/STATUS.md to confirm '${category}' hasn't already been completed by someone else
-since this prompt was written.
+run: SELECT status, updated_at FROM \`${PROJECT}.magpie_reference.category_brief\` WHERE category_key = '${dataset}.${category}' AND task_type = 'BRIEF' to confirm '${category}' hasn't already been completed by someone else since this prompt was written.
 
 You perform extraction yourself, directly, using your own multimodal reading of product images and
 text. You do not invoke external scripts or subprocesses and do not need any API key beyond your own
@@ -191,10 +190,16 @@ and variant are optional — populate only where a real signal exists.
 
 Write via bq query DML only, never the streaming API. Set meta_agent='CLAUDE_CODE' on every row.
 
-STEP 5 — Write docs/categories/${category}.md following _TEMPLATE.md's structure, documenting what you
-actually found this session (brand scope, SKU blocks assigned, scale) — this is written post-hoc here
-since there's no pre-existing brand/merchant data to research upfront. Then commit it:
-git add docs/categories/${category}.md && git commit -m 'Add category context for ${category}, generated during custom Full Rebuild'
+STEP 5 — Write a BRIEF row into \`${PROJECT}.magpie_reference.category_brief\` following _TEMPLATE.md's
+structure, documenting what you actually found this session (brand scope, SKU blocks assigned, scale) —
+this is written post-hoc here since there's no pre-existing brand/merchant data to research upfront.
+Never inline the markdown into a SQL string literal — it will contain backticks, quotes, and pipes.
+Instead:
+  1. Write it to /tmp/${category}_brief.ndjson as a single-line JSON object: {"category_key": "${dataset}.${category}", "task_type": "BRIEF", "source_dataset": "${dataset}", "master_table": "${category}", "source_table_fqn": "${PROJECT}.${dataset}.${table}", "country": "<2-3 letter country code>", "status": "active", "brief_markdown": "<your full markdown, JSON-string-escaped>", "updated_at": "<CURRENT_TIMESTAMP in ISO 8601 UTC>", "meta_agent": "CLAUDE_CODE"}
+  2. Load it: bq load --source_format=NEWLINE_DELIMITED_JSON --replace \`${PROJECT}:magpie_reference._stage_category_brief_${category}\` /tmp/${category}_brief.ndjson category_key:STRING,task_type:STRING,source_dataset:STRING,master_table:STRING,source_table_fqn:STRING,country:STRING,status:STRING,brief_markdown:STRING,updated_at:TIMESTAMP,meta_agent:STRING
+  3. Merge it in: bq query --use_legacy_sql=false "MERGE \`${PROJECT}.magpie_reference.category_brief\` t USING \`${PROJECT}.magpie_reference._stage_category_brief_${category}\` s ON t.category_key = s.category_key AND t.task_type = 'BRIEF' WHEN MATCHED THEN UPDATE SET source_dataset=s.source_dataset, master_table=s.master_table, source_table_fqn=s.source_table_fqn, country=s.country, status=s.status, brief_markdown=s.brief_markdown, updated_at=s.updated_at, meta_agent=s.meta_agent WHEN NOT MATCHED THEN INSERT (category_key, task_type, source_dataset, master_table, source_table_fqn, country, status, brief_markdown, updated_at, meta_agent) VALUES (s.category_key, s.task_type, s.source_dataset, s.master_table, s.source_table_fqn, s.country, s.status, s.brief_markdown, s.updated_at, s.meta_agent)"
+  4. Drop the staging table: bq rm -f -t \`${PROJECT}:magpie_reference._stage_category_brief_${category}\`
+  Never use the streaming API (insert_rows_json) — CLAUDE.md's 90-minute streaming buffer rule.
 
 STEP 6 — Before declaring status, self-check using the exact QA-gate queries from
 docs/headless-runbook.md's QA-gate-as-code section, scoped to master_table = '${category}'. Report the
@@ -223,8 +228,9 @@ current, re-run the worklist query yourself in STEP 0 below and use its live res
 worklist.
 
 BEFORE ANYTHING ELSE, read in full: CLAUDE.md, ARCHITECTURE.md, docs/llm-extraction-rules.md,
-docs/quality-standards.md, docs/headless-runbook.md, docs/brand-extraction.md, and
-docs/categories/${category}.md (the existing category file — its brand scope and scope rules are
+docs/quality-standards.md, docs/headless-runbook.md, docs/brand-extraction.md, and the existing
+category brief — run: SELECT brief_markdown FROM \`${PROJECT}.magpie_reference.category_brief\` WHERE
+category_key = '${dataset}.${category}' AND task_type = 'BRIEF' (its brand scope and scope rules are
 already documented there; do not rediscover them from scratch). Note: \`${PROJECT}.${dataset}.${table}\`
 is NOT in master_clean_niq and has a different schema (daily grain summed to monthly, no
 month/model_id/merchant columns) — treat its column set as exactly what STEP 0's query below returns.
@@ -238,9 +244,9 @@ SCOPE DECISION (already made, do not re-litigate or block on it): as of this ses
 ecommerce_platform='Tiktok' rows are IN SCOPE for '${category}' alongside the existing Shopee rows —
 this is the first category to mix platforms under one master_table. The worklist query below writes
 'platform' into each row and joins product_taxonomy_map on (product_id, platform) precisely so Shopee
-and Tiktok products never collide. If ${category}.md still describes this category as Shopee-only,
-that text is stale — treat Tiktok as in scope regardless, and feel free to update that section in STEP
-4 while you're in the file for QA History.
+and Tiktok products never collide. If the existing brief still describes this category as Shopee-only,
+that text is stale — treat Tiktok as in scope regardless, and feel free to note the platform-scope
+update in STEP 4's run-log entry.
 
 KNOWN, ACCEPTED DATA ISSUE (do not fix, do not block on it): Tiktok rows' price/gmv_daily figures in
 this source table are corrupted by an inconsistent scale factor and mixed daily/monthly grain. This
@@ -253,7 +259,7 @@ you pass --max_rows=100000 or --format=csv — always use one of those on the ST
 sanity-check the row count against what you expect rather than assuming a short result means a short
 true set.
 
-STEP 0 — Get the live worklist (do not trust any number in this prompt or in ${category}.md):
+STEP 0 — Get the live worklist (do not trust any number in this prompt or in the category brief):
 ${query}
 
 STEP 1 — Bulk-first reuse-before-mint. The priority for this session is closing the coverage gap
@@ -299,9 +305,14 @@ registry table is what prevents two sessions colliding on the same ID range.
 STEP 3 — Write via bq query DML only, never the streaming API. Set meta_agent='CLAUDE_CODE' on every
 row you write. Never delete an existing row.
 
-STEP 4 — Append a dated row to ${category}.md's '## QA History' table (columns: Date | Pass | Finding |
-Resolution) summarizing what you did and found this session. Commit the updated file:
-git add docs/categories/${category}.md && git commit -m 'Top-up coverage session for ${category}: update QA History'
+STEP 4 — Record a dated run-log entry summarizing what you did and found this session, via a single
+parameterized INSERT (never build the SQL string by concatenating your own finding text into it
+directly — that breaks on quotes/backticks; use --parameter so bq handles escaping):
+bq query --use_legacy_sql=false --project_id=${PROJECT} \
+  --parameter="category_key:STRING:${dataset}.${category}" \
+  --parameter="task_date:DATE:<today, YYYY-MM-DD>" \
+  --parameter="brief_markdown:STRING:<your summary of what you did and found this session>" \
+  "INSERT INTO \`${PROJECT}.magpie_reference.category_brief\` (category_key, task_type, task_date, brief_markdown, updated_at, meta_agent) VALUES (@category_key, 'TAXONOMY', @task_date, @brief_markdown, CURRENT_TIMESTAMP(), 'CLAUDE_CODE')"
 
 STEP 5 — Before declaring status, self-check using the exact QA-gate queries from
 docs/headless-runbook.md's QA-gate-as-code section, run WITHOUT --skip-coexistence (HUMAN+LLM
