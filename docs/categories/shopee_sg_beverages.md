@@ -8,9 +8,9 @@
 |-------|-------|
 | LLM Pass 1 | ✅ Complete |
 | LLM Pass 2 | ✅ Complete |
-| GMV Coverage | 96.8% (2026-06, after 2026-07-29 top-up) |
-| Last run | 2026-07-29 (top-up + correction pass) |
-| Current MAX taxonomy_id | SKU-210600 (this category's own block; overall table MAX may be higher from concurrent sessions) |
+| GMV Coverage | 96.8%+ (2026-06, after 2026-07-29 top-up + second top-up session) |
+| Last run | 2026-07-29 (second top-up session — 1 product resolved, 4 confirmed legitimately OOS) |
+| Current MAX taxonomy_id | SKU-210807 (this category's own block; overall table MAX may be higher from concurrent sessions) |
 
 **Note on STATUS.md drift:** `docs/categories/STATUS.md` lists `sg_beverages` as "⏳ Keyword only," but live
 `product_taxonomy_map` has **zero** rows for `master_table = 'shopee_sg_beverages'` (source='HUMAN' or 'LLM').
@@ -28,7 +28,8 @@ trivially 0, and there is no HUMAN-row cleanup step needed after this run.
 | SKU-206233–207476 | Pass 2 RESELLER (1,244 entries, from 1,465 remaining in-scope products via bulk regex + word-overlap consolidation) |
 | SKU-207477–208028 | Unused remainder of claimed 2,000-slot block |
 | SKU-210049–210356 | 2026-07-29 top-up, initial pass (308-slot claim, scenario `taxonomy_topup`) — 208 entries written at SKU-210049–210256, then superseded by the correction pass below and left **orphaned** (no map row references them; not deleted). SKU-210257–210356 never used |
-| SKU-210357–210606 | 2026-07-29 top-up, correction pass (250-slot claim, scenario `taxonomy_topup`) — 244 live entries at SKU-210357–210600 (current MAX for this category). SKU-210601–210606 unused remainder |
+| SKU-210357–210606 | 2026-07-29 top-up, correction pass (250-slot claim, scenario `taxonomy_topup`) — 244 live entries at SKU-210357–210600. SKU-210601–210606 unused remainder |
+| SKU-210807–211006 | 2026-07-29 second top-up session (200-slot claim, scenario `taxonomy_topup`) — 1 live entry at SKU-210807 (Allre Pre-Meal Effervescent Tablet, current MAX for this category). SKU-210808–211006 unused remainder |
 
 ---
 
@@ -414,6 +415,7 @@ entirely through Pass 2 reseller matching).
 | 2026-07-29 | Top-up self-review (advisor) found reuse-matching defects before declaring done | Two structural bugs in the matcher, not just imprecision: (1) brand regex required exact-spacing match, so `"100 Plus"`/`"REDBULL"` text failed to match curated brand names `"100PLUS"`/`"Red Bull"` and silently fell through to a wrong same-parent-company brand bucket (e.g. `F&N 100 Plus 500ml x24` → matched into the `F&N`-brand-id "Ice Mountain" water sub-family — a real type conflict, isotonic drink vs bottled water); (2) `(brand_id, size, pack)` alone picked the *first* candidate with no check that the candidate was actually the same product — merged distinct Yeo's flavors (Lychee → matched "Coconut Milk Beverage"), distinct Traditional Medicinals teas (8 flavors → 2 wrong entries), and picked up false-positive token overlap from merchant-name leakage ("Stop and Compare Supermarket" appearing in both the worklist title and a prior session's leaked canonical_name), expiry-date fragments, and brand-wide marketing boilerplate ("halal", "no preservatives", "Finland") | Fixed brand-matching to allow flexible digit/letter spacing; fixed a decimal-pack extraction bug (`12x1.5L` was parsed as pack=1, not 12); added token-overlap scoring requiring ≥1 genuine non-boilerplate shared word between worklist title and candidate `canonical_name`, with merchant name/expiry-date/marketing-boilerplate stripped from the comparison — rejects to mint-fresh on zero overlap |
 | 2026-07-29 | Top-up correction pass | Re-ran the full match with the fixed algorithm: reuse dropped to 52 (39 of the original 91 were wrong-product matches, now correctly re-routed), mint rows consolidated into 244 new entries (up from 208, since many previously-merged products are genuinely distinct). Claimed a second block (SKU-210357–SKU-210606, 250 slots) for the additional entries rather than reuse the first (avoids reconciling partial overlap) | 244 new `product_taxonomy` INSERT rows (SKU-210357–SKU-210600) + 269 `product_taxonomy_map` UPDATE rows (correcting `taxonomy_id` on rows written this session only — no pre-existing rows touched, no deletes). The original 208 SKU-210049–210256 entries are now orphaned (no map row references them) — left in place as harmless unused entries, not deleted |
 | 2026-07-29 | Top-up post-correction QA gates | Re-ran STEP 0 verbatim post-write: gap fell from 308 to exactly the 5 intentional-NULL non-beverage products (`3662052687`, `29720643558`, `795355146`, `43414114180`, `54256250306`), confirming full resolution of the addressable worklist. Gates: G1 dual-mapped(LLM)=0, G2 HUMAN+LLM coexistence=0 (checked without `--skip-coexistence`), placeholder-leak=0, structured-fields (product_line NULL%) among LLM=0%, provenance(NULL meta_agent/source)=0, platform/country populated on all new rows=0 missing. Category-total LLM map rows now 1,975 (was 1,672) | All gates pass; universe refresh eligible (not run this session — separate step) |
+| 2026-07-29 | Second top-up session (re-verification) | Re-ran STEP 0 live (not trusting the wrapper's pre-check or the prior row above): worklist returned the same 5 product_ids. 4 of the 5 were genuine non-beverage exclusions on re-check (FIQ Herbs capsules, Risell Horse Placenta tablets — swallowed pill form, no dissolve-in-water signal; Organic Pearl Barley 2x500g — confirmed via image as whole dry grain for cooking, not a drink-mix powder, distinct from this category's existing barley-grass-*powder* drink entries; Okinawa Spring Turmeric 1000 Tablets — swallowed pill form). The 5th, `43414114180` ("Allre... 气泡锭/餐前发泡锭 Pre-Meal Effervescent Tablet Low Calorie & Sugar-Free"), was a genuine miss: image confirmed a dissolve-in-water effervescent tube (即冲即饮), the same product class as existing in-scope entries (Nuun Hydration tablets, Helmig's Curcumin Effervescent, GlucosCare). Brand `ALLRE` already exists as `BRD-SG-07183`; no existing taxonomy entry matched (new brand, no reuse candidate) | Claimed SKU block SKU-210807–SKU-211006 (200 slots, scenario `taxonomy_topup`). Minted 1 new entry SKU-210807 "Allre Pre-Meal Effervescent Tablet Low Calorie Sugar-Free x20" (pack_count=20, size unresolved — no explicit weight/volume in title or legible on label) and mapped `43414114180` to it (source=LLM, confidence='0.7', platform='Shopee', country='SG'). Re-ran STEP 0 post-write: gap now exactly the 4 confirmed non-beverage products, all legitimately NULL. Gates re-run: G1=0, G2=0, placeholder-leak=0, structured-fields NULL%=0, provenance=0 — all pass. Universe refresh not run this session (separate step) |
 
 ---
 
@@ -436,9 +438,9 @@ entirely through Pass 2 reseller matching).
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 1,975 | Pass 1 (207) + Pass 2 (1,465) initial build, + 303 from the 2026-07-29 top-up/correction session |
-| HUMAN | 0 | Confirmed via live query 2026-07-29 — no keyword-seed pass ever ran; none created by this session either |
-| NULL (unmapped) | ~13,053 (distinct products, 2026-06, outside the top-95%-cumulative-GMV in-scope worklist) | Long-tail below GMV threshold / out-of-category, plus 5 confirmed non-beverage products (supplement capsules/tablets, raw barley) — legitimately left unmapped per quality-standards.md §2 |
+| LLM | 1,976 | Pass 1 (207) + Pass 2 (1,465) initial build, + 303 from the 2026-07-29 top-up/correction session, + 1 from the 2026-07-29 second top-up session |
+| HUMAN | 0 | Confirmed via live query 2026-07-29 — no keyword-seed pass ever ran; none created by any session either |
+| NULL (unmapped) | ~13,052 (distinct products, 2026-06, outside the top-95%-cumulative-GMV in-scope worklist) | Long-tail below GMV threshold / out-of-category, plus 4 confirmed non-beverage products (supplement capsules/tablets, raw pearl barley) — legitimately left unmapped per quality-standards.md §2 |
 
 **Scale (2026-06-01, `master_clean_niq.shopee_sg_beverages`):**
 - Total rows (all months, source table): 276,841
