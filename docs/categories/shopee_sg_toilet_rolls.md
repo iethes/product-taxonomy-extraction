@@ -6,11 +6,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD after run |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 75.0% overall / 97.6% of in-scope brand GMV (June 2026) |
 | Last run | 2026-07-29 |
-| Current MAX taxonomy_id | See sku_block_registry claim below (queried live, not from STATUS.md) |
+| Current MAX taxonomy_id | SKU-201396 (this category's block) |
 
 Prior to this session: **zero** `product_taxonomy_map` rows of any source (`LLM` or `HUMAN`) existed for
 `master_table = 'shopee_sg_toilet_rolls'` — this is a true from-scratch first run, not even a keyword-seed
@@ -30,7 +30,8 @@ until Stage 04 catches up.
 
 | Block | Usage |
 |-------|-------|
-| (claimed live in Step 3, see session output) | Full Rebuild — Pass 1 + Pass 2 |
+| SKU-201329–201396 | Full Rebuild — Pass 1 (46 entries) + Pass 2 catch-alls (22 entries) = 68 taxonomy entries |
+| SKU-201397–203328 | Unused remainder |
 
 ---
 
@@ -233,6 +234,9 @@ June 2026 data (8,602 rows) surfaced real contamination, not just theoretical ri
 | 2026-07-29 | Pre-run verification | Unfiltered brand-GMV ranking put NOMIEO at #4 ($33,691) almost entirely from facial-tissue-box GMV, not toilet-roll GMV | Applied in-category product-type filter before ranking (excluding facial tissue/kitchen towel/wet wipes/toilet cleaner GMV); NOMIEO fell to #28, outside 95% scope |
 | 2026-07-29 | Pre-run verification | `marketshare_universe_niq` has zero rows for month 2026-06 pipeline-wide (max month = 2026-05) | Confirmed not a blocker for this session's scope (extraction + QA-gate-as-code only, no universe dependency); noted for whoever runs universe refresh later |
 | 2026-07-29 | Pre-run verification | Zappy ranked in the 95% brand scope on GWP-zeroed GMV, but 100% of its GMV is a wet-wipes product type ("Flushable Toilet Tissue Wipes"), not toilet-roll — a first-pass wet-wipes exclusion regex missed the "Toilet Tissue Wipes" phrasing entirely | Refined regex to catch it; had to add a "contains 'roll'" carve-out so genuine Kleenex toilet-roll bundles with a "+ Free ... Flushable Wipes" GWP freebie mention weren't wrongly zeroed too. Zappy dropped out of brand scope and Pass 1 allowlist entirely |
+| 2026-07-29 | Full Rebuild | AOG (rank 10, $7,992 GMV) had no `brand_dict` entry despite being in the 95% scope | Created `BRD-SG-14512` (AOG) |
+| 2026-07-29 | Full Rebuild | JIJI.SG (a reseller/marketplace name, not a paper brand) had 2 products explicitly naming other in-scope brands in sku_name ("(JIJI.SG) MANHUA...", "(JIJI.SG) BOTARE...") | Rerouted to the real brand's taxonomy (Manhua, Botare) instead of a JIJI.SG-brand entry, both in Pass 2 bulk routing and in the blank-brand detection sweep |
+| 2026-07-29 | Full Rebuild | Result: 68 taxonomy entries, 752 LLM map rows, 75.0% overall / 97.6% in-scope-brand GMV coverage. All QA-gate-as-code checks pass (0 dual-mapped, 0 coexistence, 0 placeholder-leak, 5% structured-fields-missing, 0 provenance gaps). Per-row precision (exact product_line wording on every reseller catch-all, finer variant/size splitting) intentionally deferred to `targeted_qa_fix.sh` per Full Rebuild's coverage-first mandate | Category ready to ship pending a human decision on universe refresh timing (blocked on Stage 04 catching up to June 2026, not on this session's work) |
 
 ---
 
@@ -251,4 +255,23 @@ invoked.
 
 ## Map Row Counts (as of last run)
 
-To be filled in after Step 7 self-check.
+| Source | Count | Notes |
+|--------|-------|-------|
+| LLM | 752 | Pass 1 (58 official-store products, 46 taxonomy entries) + Pass 2 (694 products: 16 no-official-store-brand catch-alls, 6 Pass-1-brand reseller catch-alls, blank-brand text-detected routing) |
+| HUMAN | 0 | None existed before this session |
+| NULL (unmapped) | 3,517 | Mostly the blank-brand long tail (3,215 products, ~$9 GMV avg, no text signal to identify brand) plus below-95%-threshold-brand and out-of-category products |
+
+## QA-Gate Self-Check (Step 7, headless-runbook.md QA-gate-as-code)
+
+| Check | Result |
+|-------|--------|
+| A — dual-mapped LLM products | 0 |
+| B — HUMAN+LLM coexistence | 0 |
+| C — placeholder-leak canonical names | 0 |
+| D — structured-fields-missing % (product_line NULL, excl. is_multi_size) | 5% (well under 50% threshold) |
+| G5 — provenance completeness (meta_agent/source NULL) | 0 |
+| platform/country populated on every map row | 0 missing |
+
+All gates pass. 68 taxonomy entries created (SKU-201329–201396): 46 from Pass 1 (7 official-store brands:
+Vinda, Kleenex, Scott, Hearttex, IUIGA, PASEO, Tempo), 16 catch-alls for brands with no official store, 6
+reseller catch-alls for the Pass-1 brands' long-tail resellers.
