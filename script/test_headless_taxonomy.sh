@@ -70,6 +70,12 @@ echo "$prompt" | grep -q "G1 (no dual-mapping), G2 (no HUMAN+LLM coexistence), G
 # was wrong.
 echo "$prompt" | grep -q "HUMAN rows.*normal and expected" || fail "build_first_run_prompt must say existing HUMAN keyword-seed rows are normal for a first run, not a discrepancy"
 echo "$prompt" | grep -q "existing LLM rows" || fail "build_first_run_prompt must call out existing LLM rows specifically as the real red flag"
+echo "$prompt" | grep -q "category_key = 'master_clean_niq.shopee_th_conditioner'" || fail "build_first_run_prompt's STATUS check must query category_brief by the correct category_key"
+echo "$prompt" | grep -q "task_type = 'BRIEF'" || fail "build_first_run_prompt's STATUS check must scope to task_type='BRIEF'"
+echo "$prompt" | grep -qF "bq load" || fail "build_first_run_prompt must instruct loading the brief via bq load, not an inline blob"
+echo "$prompt" | grep -qF "MERGE \`${PROJECT}.magpie_reference.category_brief\`" || fail "build_first_run_prompt must instruct MERGE-ing the staged brief into category_brief"
+echo "$prompt" | grep -qF "Never use the streaming API" || fail "build_first_run_prompt must forbid the streaming API for the brief write"
+echo "$prompt" | grep -qv "git add docs/categories" || fail "build_first_run_prompt must not instruct a git commit of a category file anymore"
 echo "PASS: build_first_run_prompt"
 
 # --- build_topup_prompt ---
@@ -100,6 +106,12 @@ echo "$prompt" | grep -q "G1 (no dual-mapping), G2 (no HUMAN+LLM coexistence), G
 echo "$prompt" | grep -qF "is not, by itself, a blocker" || fail "build_topup_prompt must not treat a doc/live row-count mismatch alone as a blocker"
 echo "$prompt" | grep -qF "Trust live BigQuery state as ground truth" || fail "build_topup_prompt must explicitly instruct trusting live BQ state over category-doc claims"
 echo "$prompt" | grep -qF "Do not escalate to status='blocked'" || fail "build_topup_prompt must forbid escalating to status='blocked' over a doc/live mismatch"
+echo "$prompt" | grep -qF "category_key = 'master_clean_niq.shopee_th_suncare'" || fail "build_topup_prompt must read the brief by the correct category_key"
+echo "$prompt" | grep -qF "task_type = 'BRIEF'" || fail "build_topup_prompt must scope its brief read to task_type='BRIEF'"
+echo "$prompt" | grep -qF -- "--parameter=" || fail "build_topup_prompt's QA history insert must use bq query --parameter, not string concatenation"
+echo "$prompt" | grep -qF "'TAXONOMY'" || fail "build_topup_prompt's history insert must be tagged task_type='TAXONOMY'"
+echo "$prompt" | grep -qF "INSERT INTO" || fail "build_topup_prompt must instruct an INSERT for the run-log row"
+echo "$prompt" | grep -qv "git add docs/categories" || fail "build_topup_prompt must not instruct a git commit of a category file anymore"
 echo "PASS: build_topup_prompt"
 
 # --- decide_queue_signal ---

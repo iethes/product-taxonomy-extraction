@@ -96,7 +96,7 @@ Full Rebuild session for ${table}, month ${month}. This is a first-run invocatio
 pre-check found 0 existing \`product_taxonomy_map\` rows for this table. No category context file exists yet
 for this table — you are creating one as part of this run, not reading a pre-existing one.
 
-BEFORE ANYTHING ELSE, read in full: CLAUDE.md, ARCHITECTURE.md, docs/data-dictionary.md, docs/llm-extraction-rules.md, docs/quality-standards.md, docs/headless-runbook.md, docs/brand-extraction.md, and docs/categories/_TEMPLATE.md (the last one because you are about to fill it in — not in the original doc list, but required for this run specifically). Also check docs/categories/STATUS.md to confirm ${table} hasn't already been completed by someone else since this prompt was written.
+BEFORE ANYTHING ELSE, read in full: CLAUDE.md, ARCHITECTURE.md, docs/data-dictionary.md, docs/llm-extraction-rules.md, docs/quality-standards.md, docs/headless-runbook.md, docs/brand-extraction.md, and docs/categories/_TEMPLATE.md (the last one because you are about to fill it in — not in the original doc list, but required for this run specifically). Also run: SELECT status, updated_at FROM \`${PROJECT}.magpie_reference.category_brief\` WHERE category_key = 'master_clean_niq.${table}' AND task_type = 'BRIEF' to confirm ${table} hasn't already been completed by someone else since this prompt was written. No row, or a row with status IN ('not_started', 'reset_pending_redo'), means proceeding as a first run is still correct.
 
 You perform extraction yourself, directly, using your own multimodal reading of product images and text. You do not invoke external scripts or subprocesses and do not need any API key beyond your own session auth — CLAUDE.md's ANTHROPIC_API_KEY note is about a different, external pipeline that does not exist in this repo.
 
@@ -115,7 +115,12 @@ STEP 2 — Research and write docs/categories/${table}.md, following _TEMPLATE.m
 - Official Store Allowlist: query DISTINCT merchant_name WHERE merchant_badge = 'Shopee Mall', per brand in scope. Exclude known multi-brand retailers per docs/llm-extraction-rules.md §4 (Sasa, Watsons, Boots, BEAUTRIUM, Tsuruha for beauty; BigC, Lotuss, Tops, Villa Market for grocery; check the full list in that doc for this category's vertical). Note parent-company stores (P&G, Unilever, Lion-style) as Pass-1-eligible for all brands they carry, not excluded as multi-brand.
 - Scale: total row count, official-store row count, distinct product count. If official-store row count alone is large (tens of thousands+), say so explicitly — Pass 1 must still scope to the allowlist only, not the full Mall-badged pool.
 - Existing map rows (from Step 1): document the real counts, not an assumption.
-- Write the file, then commit it: git add docs/categories/${table}.md && git commit -m 'Add category context for ${table}, generated during headless Full Rebuild'
+- Write your markdown to a local BRIEF row in \`${PROJECT}.magpie_reference.category_brief\` — never inline the markdown into a SQL string literal (it will contain backticks, quotes, and pipe characters that break a literal). Instead:
+  1. Write it to /tmp/${table}_brief.ndjson as a single-line JSON object: {"category_key": "master_clean_niq.${table}", "task_type": "BRIEF", "source_dataset": "master_clean_niq", "master_table": "${table}", "country": "<2-3 letter country code parsed from ${table}>", "status": "active", "brief_markdown": "<your full markdown, JSON-string-escaped>", "updated_at": "<CURRENT_TIMESTAMP in ISO 8601 UTC>", "meta_agent": "CLAUDE_CODE"}
+  2. Load it into a staging table: bq load --source_format=NEWLINE_DELIMITED_JSON --replace \`${PROJECT}:magpie_reference._stage_category_brief_${table}\` /tmp/${table}_brief.ndjson category_key:STRING,task_type:STRING,source_dataset:STRING,master_table:STRING,country:STRING,status:STRING,brief_markdown:STRING,updated_at:TIMESTAMP,meta_agent:STRING
+  3. Merge it in: bq query --use_legacy_sql=false "MERGE \`${PROJECT}.magpie_reference.category_brief\` t USING \`${PROJECT}.magpie_reference._stage_category_brief_${table}\` s ON t.category_key = s.category_key AND t.task_type = 'BRIEF' WHEN MATCHED THEN UPDATE SET source_dataset=s.source_dataset, master_table=s.master_table, country=s.country, status=s.status, brief_markdown=s.brief_markdown, updated_at=s.updated_at, meta_agent=s.meta_agent WHEN NOT MATCHED THEN INSERT (category_key, task_type, source_dataset, master_table, country, status, brief_markdown, updated_at, meta_agent) VALUES (s.category_key, s.task_type, s.source_dataset, s.master_table, s.country, s.status, s.brief_markdown, s.updated_at, s.meta_agent)"
+  4. Drop the staging table: bq rm -f -t \`${PROJECT}:magpie_reference._stage_category_brief_${table}\`
+  Never use the streaming API (insert_rows_json) for this — CLAUDE.md's 90-minute streaming buffer rule.
 
 STEP 3 — Claim your SKU block atomically. Query the real current ceiling first, then use this exact pattern (DECLARE before BEGIN TRANSACTION — reversing that order is a real syntax error in BigQuery scripting, found
 the hard way in an earlier session):
@@ -157,16 +162,16 @@ prior run, but the wrapper's live pre-check just found ${gap_count} products sti
 (GWP-zeroed) threshold with no taxonomy_id — do NOT trust that number as still-current, re-run the worklist
 query yourself in STEP 0 below and use its live result as your actual worklist.
 
-BEFORE ANYTHING ELSE, read in full: CLAUDE.md, ARCHITECTURE.md, docs/llm-extraction-rules.md, docs/quality-standards.md, docs/headless-runbook.md, docs/brand-extraction.md, and docs/categories/${table}.md (the existing category file — its brand scope, official store allowlist, and scope rules are already documented there; do not rediscover them from scratch).
+BEFORE ANYTHING ELSE, read in full: CLAUDE.md, ARCHITECTURE.md, docs/llm-extraction-rules.md, docs/quality-standards.md, docs/headless-runbook.md, docs/brand-extraction.md, and the existing category brief — run: SELECT brief_markdown FROM \`${PROJECT}.magpie_reference.category_brief\` WHERE category_key = 'master_clean_niq.${table}' AND task_type = 'BRIEF' (its brand scope, official store allowlist, and scope rules are already documented there; do not rediscover them from scratch).
 
 You perform extraction yourself, directly, using your own multimodal reading of product images and text. You do not invoke external scripts or subprocesses and do not need any API key beyond your own session auth — CLAUDE.md's ANTHROPIC_API_KEY note is about a different, external pipeline that does not exist in this repo.
 
 Known pitfall from prior sessions: \`bq query\` silently truncates displayed results to 100 rows unless you pass --max_rows=100000 or --format=csv — always use one of those on the STEP 0 query below, and sanity-check the row count against what you expect rather than assuming a short result means a short true set.
 
-STEP 0 — Get the live worklist (do not trust any number in this prompt or in ${table}.md):
+STEP 0 — Get the live worklist (do not trust any number in this prompt or in the category brief):
 ${query}
 
-A live product_taxonomy_map row count far below what ${table}.md's own documentation claims is not, by itself, a blocker.
+A live product_taxonomy_map row count far below what the category brief's own documentation claims is not, by itself, a blocker.
 Trust live BigQuery state as ground truth and proceed with the top-up as normal.
 Categories can be reset or cleaned up outside this pipeline's own sessions, and investigating why counts differ is out of scope for this scenario.
 Do not escalate to status='blocked' over a doc/live mismatch alone. Every product STEP 0's live query returns is this session's real, current worklist.
@@ -195,8 +200,12 @@ Never query MAX(taxonomy_id) directly and assume it's safe to use — this atomi
 
 STEP 3 — Write via bq query DML only, never the streaming API. Set meta_agent='CLAUDE_CODE' on every row you write. Never delete an existing row.
 
-STEP 4 — Append a dated row to ${table}.md's '## QA History' table (columns: Date | Pass | Finding | Resolution) summarizing what you did and found this session. Commit the updated file:
-git add docs/categories/${table}.md && git commit -m 'Top-up coverage session for ${table}: update QA History'
+STEP 4 — Record a dated run-log entry summarizing what you did and found this session, via a single parameterized INSERT (never build the SQL string by concatenating your own finding text into it directly — that breaks on quotes/backticks; use --parameter so bq handles escaping):
+bq query --use_legacy_sql=false --project_id=${PROJECT} \
+  --parameter="category_key:STRING:master_clean_niq.${table}" \
+  --parameter="task_date:DATE:<today, YYYY-MM-DD>" \
+  --parameter="brief_markdown:STRING:<your summary of what you did and found this session>" \
+  "INSERT INTO \`${PROJECT}.magpie_reference.category_brief\` (category_key, task_type, task_date, brief_markdown, updated_at, meta_agent) VALUES (@category_key, 'TAXONOMY', @task_date, @brief_markdown, CURRENT_TIMESTAMP(), 'CLAUDE_CODE')"
 
 STEP 5 — Before declaring status, self-check using the exact QA-gate queries from docs/headless-runbook.md's QA-gate-as-code section, run WITHOUT --skip-coexistence (HUMAN+LLM coexistence should be a genuine bug at this point, not an expected mid-rebuild state, since this category already shipped once). Report the actual numbers in findings.
 
