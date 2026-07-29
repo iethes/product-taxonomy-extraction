@@ -8,9 +8,9 @@
 |-------|-------|
 | LLM Pass 1 | ✅ Complete |
 | LLM Pass 2 | ✅ Complete |
-| GMV Coverage | 95.6% (2026-06) |
-| Last run | 2026-07-29 |
-| Current MAX taxonomy_id | Query BQ live — never trust this file (was SKU-211748 at end of this run) |
+| GMV Coverage | 97.32% (2026-06) |
+| Last run | 2026-07-29 (top-up) |
+| Current MAX taxonomy_id | Query BQ live — never trust this file (was SKU-215250 at end of this run) |
 
 **Prior state note:** `docs/categories/STATUS.md` line 67 labeled this category "⏳ Keyword only," but a
 live check on 2026-07-29 found **zero** `product_taxonomy_map` rows of any source (HUMAN or LLM) for
@@ -37,6 +37,9 @@ map rows for *this* table to orphan or duplicate against (the specific hazard th
 | SKU-211568–211598 | Pass 1 continuation: Enfagrow A+ / Enfamil Official Store (31 entries, 43 map rows) — this merchant name has a trailing space in the source data (`'Enfagrow A+ Official Store '`) that caused it to be silently missed by the initial exact-match allowlist query; caught and backfilled during Pass 2 triage |
 | SKU-211599–211748 | Pass 2 bulk reseller routing (150 new entries; 72 more products reused existing Pass 1/1b entries via text match) |
 | SKU-211749–213206 | Unused remainder of claimed block |
+| SKU-215207–215406 | Top-up 2026-07-29 claimed block (200 slots, registry scenario `taxonomy_topup`) |
+| SKU-215207–215250 | Top-up: 44 new entries covering 46 products (2 entries each cover 2 products with matching brand+line+size) |
+| SKU-215251–215406 | Unused remainder of top-up block |
 
 ---
 
@@ -222,6 +225,7 @@ Genuinely a first pass — no prior map rows of either source exist for this tab
 | 2026-07-29 | Pass 1→1b | `Enfagrow A+ Official Store` (brand_id BRD-GLOBAL-00030/BRD-SG-01010) returned 0 rows on the initial exact-match allowlist pull — merchant_name has an undocumented trailing space, same bug class as the Wyeth store caught earlier in the same session | Re-pulled all 43 products under the correct (space-suffixed) name and processed as Pass 1: +31 entries, +43 map rows (SKU-211568–211598) |
 | 2026-07-29 | Pass 2 | 314 in-scope (top-95%-cumulative-GMV) products remained unmapped after Pass 1; reseller titles far less structured than official-store titles, ~20 long-tail brands outside the brand-level 95% scope | Bulk text-matched via the same brand-line parser (reuse-before-mint against the Pass 1 dictionary): 72 products reused existing entries, 218 minted 150 new entries (SKU-211599–211748); unresolvable brand/line combos got `"{Brand} (unresolved)"` catch-alls rather than guesses |
 | 2026-07-29 | Post-run QA | G1 (dual-mapped LLM) = 0, G2 (HUMAN+LLM coexistence) = 0, placeholder-leak = 0, structured-fields (product_line NULL among non-multi-size entries) = 0%, G5 (provenance) = 0 | All gates pass; 95.6% GMV coverage (2026-06), 542 taxonomy entries / 740 map rows total |
+| 2026-07-29 | Top-up | Wrapper's live pre-check (94 products) re-verified live in STEP 0: 94 rows, 94 distinct products. Pre-write live-state check (per the pipeline-wide data-loss memory) confirmed no drift since the Full Rebuild — 740 LLM map rows, 542 dict entries, 0 orphans, 0 HUMAN rows — so this was a genuine small residual gap, not further data loss. `product_brand_map` resolved brand_id disagreed with `sku_name` text for several products (parent-brand routing: Similac/PediaSure products routed to `BRD-GLOBAL-00056` Abbott instead of their sub-brand, matching this category's own established Pass-1/2 precedent of minting Abbott-brand entries with product-specific canonical names) — verified via a precedent query (`taxonomy_brand` vs `resolved brand_id` agreement was 100% across all 740 existing map rows) before trusting it, per the receiving-code-review discipline of checking advice against primary evidence. One product (`16596244110`, "Nestle Nan OptiPro 4... 850g") resolved to Abbott despite unambiguously Nestle NAN text — flagged as a suspected `product_brand_map` data-quality error in its new entry's `product_line` field rather than silently overridden; not investigated further (out of scope for this session). Two "Nan" (`BRD-GLOBAL-00969`) vs "Nestle" (`BRD-GLOBAL-00059`) brand buckets exist in this category's dict for overlapping Optipro/SupremePro H.A. sub-lines with no reliable text signal distinguishing them — every ambiguous case was resolved via `product_brand_map`, never guessed from title wording. | Bulk-matched via brand+line+size text against the existing 542-entry dictionary: 47 products reused existing entries, 46 products minted 44 new entries (`SKU-215207–215250`, 2 entries each cover 2 products with matching brand+line+size text). 1 product (`56208107207`, Tefal cookware GWP set) correctly left `NULL`, matching this doc's pre-existing exclusion note. `product_taxonomy_map` 740→833 rows. Live worklist re-checked post-write: 0 remaining gap (excluding the 1 known Tefal exclusion). GMV coverage (2026-06) 95.6%→97.32%. Full gate check (G1/G2/G4-orphan/G5/placeholder-leak, exact queries from `docs/headless-runbook.md`) all 0 post-write. Universe refresh NOT run this session — separate step per instructions. |
 
 ---
 
@@ -243,6 +247,6 @@ Genuinely a first pass — no prior map rows of either source exist for this tab
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 740 | Pass 1 (407) + Pass 1b Enfagrow/Enfamil (43) + Pass 2 (290) |
+| LLM | 833 | Pass 1 (407) + Pass 1b Enfagrow/Enfamil (43) + Pass 2 (290) + Top-up 2026-07-29 (93) |
 | HUMAN | 0 | None existed prior to this session, none created by it |
-| NULL (unmapped) | 3,468 (of 4,208 distinct products, month 2026-06) | Below the 95%-cumulative-GMV / official-store in-scope set — long tail, GMV coverage 95.6% |
+| NULL (unmapped) | 3,375 (of 4,208 distinct products, month 2026-06) | Below the 95%-cumulative-GMV / official-store in-scope set — long tail, GMV coverage 97.32% (1 known non-milk exclusion, `56208107207`, is the only remaining in-threshold gap) |
