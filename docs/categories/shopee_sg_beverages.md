@@ -27,6 +27,8 @@ trivially 0, and there is no HUMAN-row cleanup step needed after this run.
 | SKU-206029–206232 | Pass 1 OFFICIAL (204 entries, from 207 official-store products across 48 allowlisted merchants) |
 | SKU-206233–207476 | Pass 2 RESELLER (1,244 entries, from 1,465 remaining in-scope products via bulk regex + word-overlap consolidation) |
 | SKU-207477–208028 | Unused remainder of claimed 2,000-slot block |
+| SKU-210049–210356 | 2026-07-29 top-up, initial pass (308-slot claim, scenario `taxonomy_topup`) — 208 entries written at SKU-210049–210256, then superseded by the correction pass below and left **orphaned** (no map row references them; not deleted). SKU-210257–210356 never used |
+| SKU-210357–210606 | 2026-07-29 top-up, correction pass (250-slot claim, scenario `taxonomy_topup`) — 244 live entries at SKU-210357–210600 (current MAX for this category). SKU-210601–210606 unused remainder |
 
 ---
 
