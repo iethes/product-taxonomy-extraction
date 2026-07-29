@@ -11,117 +11,59 @@ source script/targeted_qa_fix.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-# --- resolve_category_file ---
-tmpdir=$(mktemp -d)
-mkdir -p "$tmpdir/docs/categories"
-touch "$tmpdir/docs/categories/th_widget.md"
-pushd "$tmpdir" >/dev/null
-
-result=$(resolve_category_file "shopee_th_widget") || fail "should find th_widget.md via shopee_ stripping"
-[[ "$result" == "docs/categories/th_widget.md" ]] || fail "expected docs/categories/th_widget.md, got $result"
-
-touch "docs/categories/shopee_sg_widget.md"
-result=$(resolve_category_file "shopee_sg_widget") || fail "should find an exact match first"
-[[ "$result" == "docs/categories/shopee_sg_widget.md" ]] || fail "expected exact match, got $result"
-
-if resolve_category_file "no_such_table" >/dev/null 2>&1; then
-  fail "should fail for a table with no category file"
-fi
-
-popd >/dev/null
-rm -rf "$tmpdir"
-echo "PASS: resolve_category_file"
+# --- category_key_for ---
+[[ "$(category_key_for "shopee_th_widget")" == "master_clean_niq.shopee_th_widget" ]] || fail "category_key_for should prefix with master_clean_niq"
+echo "PASS: category_key_for"
 
 # --- has_real_brief ---
-tmpdir=$(mktemp -d)
+no_brief='# Category
+## QA History'
+[[ "$(has_real_brief "$no_brief")" == "false" ]] || fail "no Brief section -> false"
 
-cat > "$tmpdir/no_brief.md" <<'EOF'
-# Category
-## QA History
-EOF
-[[ "$(has_real_brief "$tmpdir/no_brief.md")" == "false" ]] || fail "no Brief section -> false"
-
-cat > "$tmpdir/template_brief.md" <<'EOF'
-## Targeted QA Fix Brief
+template_brief='## Targeted QA Fix Brief
 
 > Scope note here.
 
 **Verdict:** {defect class, e.g. "D1 Tier-C generic stubs"}
 
-{Fix description}
-EOF
-[[ "$(has_real_brief "$tmpdir/template_brief.md")" == "false" ]] || fail "unfilled template Verdict -> false"
+{Fix description}'
+[[ "$(has_real_brief "$template_brief")" == "false" ]] || fail "unfilled template Verdict -> false"
 
-cat > "$tmpdir/real_brief.md" <<'EOF'
-## Targeted QA Fix Brief
+real_brief='## Targeted QA Fix Brief
 
 > Scope note here.
 
 **Verdict:** D5 pack-count errors on 12 products
 
-Fix these specific pack-count mistakes...
-EOF
-[[ "$(has_real_brief "$tmpdir/real_brief.md")" == "true" ]] || fail "filled Verdict -> true"
-
-rm -rf "$tmpdir"
+Fix these specific pack-count mistakes...'
+[[ "$(has_real_brief "$real_brief")" == "true" ]] || fail "filled Verdict -> true"
 echo "PASS: has_real_brief"
 
-# --- append_qa_history_row ---
-tmpdir=$(mktemp -d)
-cat > "$tmpdir/cat.md" <<'EOF'
-# Category
-
-## QA History
-
-| Date | Pass | Finding | Resolution |
-|------|------|---------|------------|
-| 2026-07-20 | Pass 1 | old finding | old resolution |
-
----
-
-## Other section
-EOF
-
-append_qa_history_row "$tmpdir/cat.md" 'new finding with a | pipe
-and a newline' "new resolution" "2026-07-23 12:00 UTC" || fail "append_qa_history_row should succeed on a well-formed file"
-
-grep -qF "| 2026-07-20 | Pass 1 | old finding | old resolution |" "$tmpdir/cat.md" || fail "prior row must survive untouched"
-grep -qF "2026-07-23 12:00 UTC" "$tmpdir/cat.md" || fail "new row must be inserted"
-grep -qF 'new finding with a \| pipe and a newline' "$tmpdir/cat.md" || fail "pipe must be escaped and newline collapsed to a space"
-
-new_row_line=$(grep -n "2026-07-23 12:00 UTC" "$tmpdir/cat.md" | cut -d: -f1)
-divider_line=$(grep -n '^---$' "$tmpdir/cat.md" | head -1 | cut -d: -f1)
-[[ "$new_row_line" -lt "$divider_line" ]] || fail "new row must land before the QA History divider, not after"
-
-rm -rf "$tmpdir"
-echo "PASS: append_qa_history_row"
-
-tmpdir=$(mktemp -d)
-cat > "$tmpdir/no_history.md" <<'EOF'
-# Category
-No history section here.
-EOF
-if append_qa_history_row "$tmpdir/no_history.md" "f" "r" "2026-07-23 12:00 UTC"; then
-  fail "append_qa_history_row should fail when there's no '## QA History' heading"
-fi
-rm -rf "$tmpdir"
-echo "PASS: append_qa_history_row missing heading"
+# --- qa_history_insert_query ---
+q=$(qa_history_insert_query "master_clean_niq.shopee_th_detergent")
+echo "$q" | grep -q "INSERT INTO" || fail "qa_history_insert_query should build an INSERT statement"
+echo "$q" | grep -q "'QA_HISTORY'" || fail "qa_history_insert_query should tag the row task_type='QA_HISTORY'"
+echo "$q" | grep -q "@category_key" || fail "qa_history_insert_query should use a bound parameter for category_key, not string interpolation"
+echo "$q" | grep -q "@task_date" || fail "qa_history_insert_query should use a bound parameter for task_date"
+echo "$q" | grep -q "@brief_markdown" || fail "qa_history_insert_query should use a bound parameter for the finding/resolution text"
+echo "$q" | grep -q "'CLAUDE_CODE'" || fail "qa_history_insert_query should hardcode meta_agent='CLAUDE_CODE'"
+echo "PASS: qa_history_insert_query"
 
 # --- build_prompt ---
-prompt=$(build_prompt "shopee_th_detergent" "docs/categories/shopee_th_detergent.md")
+prompt=$(build_prompt "shopee_th_detergent" "master_clean_niq.shopee_th_detergent")
 grep -q "shopee_th_detergent" <<< "$prompt" || fail "build_prompt should mention the table name"
-grep -q "docs/categories/shopee_th_detergent.md" <<< "$prompt" || fail "build_prompt should mention the category file path"
+grep -q "master_clean_niq.shopee_th_detergent" <<< "$prompt" || fail "build_prompt should mention the category_key"
 grep -q "'targeted_qa_fix'" <<< "$prompt" || fail "build_prompt should claim a targeted_qa_fix block"
 grep -q "status='blocked'" <<< "$prompt" || fail "build_prompt should document the blocked outcome"
 grep -q "Do NOT run the universe refresh yourself" <<< "$prompt" || fail "build_prompt should forbid self-refresh"
 grep -q "never creates coverage for products with" <<< "$prompt" || fail "build_prompt must state this script never creates coverage for taxonomy_id IS NULL products"
 grep -q "headless_taxonomy.sh" <<< "$prompt" || fail "build_prompt should point NULL-coverage work at headless_taxonomy.sh instead"
 grep -q "qa_history_entry" <<< "$prompt" || fail "build_prompt output schema must include qa_history_entry"
-grep -q "Do not edit docs/categories/shopee_th_detergent.md or run git yourself" <<< "$prompt" || fail "build_prompt STEP 6 must not have the agent edit the file or commit directly"
+grep -q "Do not write to.*category_brief.*yourself" <<< "$prompt" || fail "build_prompt STEP 6 must not have the agent write to category_brief directly"
 echo "PASS: build_prompt"
 
 # --- build_prompt: gate_report parameter (STEP 1B) ---
-prompt=$(build_prompt "shopee_th_detergent" "docs/categories/shopee_th_detergent.md" "200" "[FAIL] canonical_name fields:    5")
+prompt=$(build_prompt "shopee_th_detergent" "master_clean_niq.shopee_th_detergent" "200" "[FAIL] canonical_name fields:    5")
 grep -q "STEP 1B" <<< "$prompt" || fail "build_prompt should insert a STEP 1B pre-fix gate report block"
 grep -qF "[FAIL] canonical_name fields:    5" <<< "$prompt" || fail "build_prompt must interpolate the passed gate_report verbatim"
 grep -q "informational only" <<< "$prompt" || fail "build_prompt's STEP 1B must frame the gate report as informational, not scope-expanding"
@@ -129,9 +71,9 @@ grep -q "this session does exactly what the Brief says, nothing more" <<< "$prom
 echo "PASS: build_prompt gate_report (STEP 1B)"
 
 # --- build_auto_discovery_prompt ---
-prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "docs/categories/shopee_th_suncare.md" "200")
+prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "master_clean_niq.shopee_th_suncare" "200")
 grep -q "shopee_th_suncare" <<< "$prompt" || fail "build_auto_discovery_prompt should mention the table"
-grep -q "docs/categories/shopee_th_suncare.md" <<< "$prompt" || fail "build_auto_discovery_prompt should mention the category file"
+grep -q "master_clean_niq.shopee_th_suncare" <<< "$prompt" || fail "build_auto_discovery_prompt should mention the category_key"
 grep -q "review_confidence" <<< "$prompt" || fail "build_auto_discovery_prompt must reference the _meta review_confidence field"
 grep -q "all variants?|all sizes?" <<< "$prompt" || fail "build_auto_discovery_prompt's Tier 1 sweep must include the extended stub-leak regex"
 grep -q "docs/llm-extraction-rules.md" <<< "$prompt" || fail "build_auto_discovery_prompt must instruct reading the extraction rules (incl. new §11)"
@@ -171,11 +113,11 @@ grep -qF "pt.is_bundle IS NOT TRUE" <<< "$prompt" || fail "build_auto_discovery_
 grep -q "product type genuinely matches" <<< "$prompt" || fail "STEP 3 must require an explicit type-conflict check, not just naming/structure judgment"
 grep -q "brand_id resolves to BRD-UNDEFINED/BRD-UNBRANDED while canonical_name clearly states a real" <<< "$prompt" || fail "STEP 4 must branch wrong_field_order's fix between reordering text and correcting brand_id"
 grep -q "qa_history_entry" <<< "$prompt" || fail "build_auto_discovery_prompt output schema must include qa_history_entry"
-grep -q "Do not edit docs/categories/shopee_th_suncare.md or run git yourself" <<< "$prompt" || fail "build_auto_discovery_prompt STEP 9 must not have the agent edit the file or commit directly"
+grep -q "Do not write to.*category_brief.*yourself" <<< "$prompt" || fail "build_auto_discovery_prompt STEP 9 must not have the agent write to category_brief directly"
 echo "PASS: build_auto_discovery_prompt"
 
 # --- build_auto_discovery_prompt: gate_report parameter (STEP 1B, fix-direction) ---
-prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "docs/categories/shopee_th_suncare.md" "200" "[FAIL] garbled brand text:       4")
+prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "master_clean_niq.shopee_th_suncare" "200" "[FAIL] garbled brand text:       4")
 grep -q "STEP 1B" <<< "$prompt" || fail "build_auto_discovery_prompt should insert a STEP 1B pre-fix gate report block"
 grep -qF "[FAIL] garbled brand text:       4" <<< "$prompt" || fail "build_auto_discovery_prompt must interpolate the passed gate_report verbatim"
 for gate in "placeholder-leak" "structured-fields NULL%" "'all variant/size' name" "canonical_name fields" "garbled brand text"; do
@@ -197,7 +139,7 @@ grep -qF "STEP 1C already bulk-promoted" <<< "$prompt" || fail "STEP 3 must excl
 echo "PASS: build_auto_discovery_prompt gate_report (STEP 1B)"
 
 # --- build_auto_discovery_prompt: one-pass confidence promotion (STEP 4 / STEP 5) ---
-prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "docs/categories/shopee_th_suncare.md" "200")
+prompt=$(build_auto_discovery_prompt "shopee_th_suncare" "master_clean_niq.shopee_th_suncare" "200")
 grep -qF "Same-session gate-verify" <<< "$prompt" || fail "STEP 4 must add the immediate post-fix Tier 1 recheck instruction"
 grep -qF "do not wait for a future session's STEP 1C" <<< "$prompt" || fail "STEP 4's recheck must run this session, not a future one"
 grep -qF "PATH 1 (new, 2026-07-28)" <<< "$prompt" || fail "STEP 5 must add the new one-pass promotion path"
@@ -235,10 +177,10 @@ script_src=$(cat script/targeted_qa_fix.sh)
 grep -qF 'gate_report=$(./script/qa_report.sh "$table")' <<< "$script_src" || fail "main() must capture qa_report.sh output before building the prompt"
 grep -qF 'QA_FIX_TABLE="$table"' <<< "$script_src" || fail "main() must set QA_FIX_TABLE as a global for the EXIT trap to see"
 grep -q 'trap.*qa_coverage_report\.sh.*EXIT' <<< "$script_src" || fail "main() must set an EXIT trap invoking qa_coverage_report.sh"
-grep -qF 'build_prompt "$table" "$category_file" "$block_size" "$gate_report"' <<< "$script_src" || fail "brief-mode call site must pass gate_report to build_prompt"
-grep -qF 'build_auto_discovery_prompt "$table" "$category_file" "$block_size" "$gate_report"' <<< "$script_src" || fail "auto-discovery call site must pass gate_report to build_auto_discovery_prompt"
+grep -qF 'build_prompt "$table" "$category_key" "$block_size" "$gate_report"' <<< "$script_src" || fail "brief-mode call site must pass category_key to build_prompt"
+grep -qF 'build_auto_discovery_prompt "$table" "$category_key" "$block_size" "$gate_report"' <<< "$script_src" || fail "auto-discovery call site must pass category_key to build_auto_discovery_prompt"
 grep -qF 'qa_history_entry' <<< "$script_src" || fail "main() must read qa_history_entry from result_json"
-grep -q 'append_qa_history_row' <<< "$script_src" || fail "main() must call append_qa_history_row"
+grep -q 'insert_qa_history_row' <<< "$script_src" || fail "main() must call insert_qa_history_row"
 echo "PASS: main() gate report capture + coverage trap wiring"
 
 # --- review_worklist_count_query ---

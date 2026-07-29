@@ -20,30 +20,14 @@ set -euo pipefail
 
 PROJECT="sincere-hearth-273704"
 
-resolve_category_file() {
-  local table="$1"
-  local candidate="docs/categories/${table}.md"
-  if [[ -f "$candidate" ]]; then
-    echo "$candidate"
-    return 0
-  fi
-  local stripped="${table#shopee_}"
-  candidate="docs/categories/${stripped}.md"
-  if [[ -f "$candidate" ]]; then
-    echo "$candidate"
-    return 0
-  fi
-  return 1
-}
-
 has_real_brief() {
-  local category_file="$1"
-  if ! grep -q "^## Targeted QA Fix Brief" "$category_file" 2>/dev/null; then
+  local brief_markdown="$1"
+  if ! grep -q "^## Targeted QA Fix Brief" <<< "$brief_markdown"; then
     echo "false"
     return
   fi
   local verdict_line
-  verdict_line=$(grep "^\*\*Verdict:\*\*" "$category_file" | head -1)
+  verdict_line=$(grep "^\*\*Verdict:\*\*" <<< "$brief_markdown" | head -1)
   if [[ -z "$verdict_line" ]] || [[ "$verdict_line" == *"{"* ]]; then
     echo "false"
   else
@@ -51,25 +35,30 @@ has_real_brief() {
   fi
 }
 
-append_qa_history_row() {
-  local category_file="$1"
-  local finding="$2"
-  local resolution="$3"
-  local timestamp="$4"
-  local qa_history_line divider_line
-  qa_history_line=$(grep -n '^## QA History' "$category_file" | head -1 | cut -d: -f1)
-  [[ -z "$qa_history_line" ]] && return 1
-  divider_line=$(awk -v start="$qa_history_line" 'NR > start && /^---$/ { print NR; exit }' "$category_file")
-  [[ -z "$divider_line" ]] && return 1
-  finding=$(printf '%s' "$finding" | tr '\n' ' ' | sed 's/|/\\|/g')
-  resolution=$(printf '%s' "$resolution" | tr '\n' ' ' | sed 's/|/\\|/g')
-  local new_row="| ${timestamp} | Automated review session (auto-discovery) | ${finding} | ${resolution} |"
-  local tmpfile
-  tmpfile=$(mktemp)
-  head -n $((divider_line - 1)) "$category_file" > "$tmpfile"
-  printf '%s\n' "$new_row" >> "$tmpfile"
-  tail -n +"$divider_line" "$category_file" >> "$tmpfile"
-  mv "$tmpfile" "$category_file"
+category_key_for() {
+  local table="$1"
+  echo "master_clean_niq.${table}"
+}
+
+fetch_brief_markdown_query() {
+  local category_key="$1"
+  echo "SELECT brief_markdown FROM \`${PROJECT}.magpie_reference.category_brief\` WHERE category_key = '${category_key}' AND task_type = 'BRIEF'"
+}
+
+qa_history_insert_query() {
+  local category_key="$1"
+  echo "INSERT INTO \`${PROJECT}.magpie_reference.category_brief\` (category_key, task_type, task_date, brief_markdown, updated_at, meta_agent) VALUES (@category_key, 'QA_HISTORY', @task_date, @brief_markdown, CURRENT_TIMESTAMP(), 'CLAUDE_CODE')"
+}
+
+insert_qa_history_row() {
+  local category_key="$1" finding="$2" resolution="$3" task_date="$4"
+  local note
+  note=$(printf 'Finding: %s\nResolution: %s' "$finding" "$resolution")
+  bq query --use_legacy_sql=false --project_id="${PROJECT}" \
+    --parameter="category_key:STRING:${category_key}" \
+    --parameter="task_date:DATE:${task_date}" \
+    --parameter="brief_markdown:STRING:${note}" \
+    "$(qa_history_insert_query "$category_key")"
 }
 
 review_worklist_count_query() {
@@ -85,16 +74,16 @@ SQL
 
 build_prompt() {
   local table="$1"
-  local category_file="$2"
+  local category_key="$2"
   local block_size="${3:-200}"
   local gate_report="${4:-}"
   local slot_offset=$((block_size - 1))
   cat <<PROMPT
 Targeted QA Fix session for ${table}.
 
-BEFORE ANYTHING ELSE, read in full: CLAUDE.md, ARCHITECTURE.md, docs/llm-extraction-rules.md, docs/headless-runbook.md, docs/quality-standards.md, and ${category_file} (your fix brief lives in that file's '## Targeted QA Fix Brief' section — read it in full, it is the specific work for this session, not background).
+BEFORE ANYTHING ELSE, read in full: CLAUDE.md, ARCHITECTURE.md, docs/llm-extraction-rules.md, docs/headless-runbook.md, docs/quality-standards.md, and the category brief — run: SELECT brief_markdown FROM \`${PROJECT}.magpie_reference.category_brief\` WHERE category_key = '${category_key}' AND task_type = 'BRIEF' (your fix brief lives in that content's '## Targeted QA Fix Brief' section — read it in full, it is the specific work for this session, not background).
 
-If ${category_file} has no '## Targeted QA Fix Brief' section, or the section has no concrete fixes to perform, that is a genuine blocker: stop, write nothing, output status='blocked'.
+If the category brief has no '## Targeted QA Fix Brief' section, or the section has no concrete fixes to perform, that is a genuine blocker: stop, write nothing, output status='blocked'.
 
 You perform every fix yourself, directly, using your own multimodal reading of product images and text where the brief calls for it. You do not invoke external scripts or subprocesses and do not need any API key beyond your own session auth — CLAUDE.md's ANTHROPIC_API_KEY note is about a different, external pipeline that does not exist in this repo.
 
@@ -123,16 +112,15 @@ BEGIN
 END;
 Never query MAX(taxonomy_id) directly and assume it's safe to use — this atomic claim against the registry table is what prevents two sessions colliding on the same ID range.
 
-STEP 3 — Execute exactly the fixes described in ${category_file}'s '## Targeted QA Fix Brief' section: pack-count / size / bundle / product-line / variant corrections, hard-gate violations (G1, G2, G3, G5, G6 per docs/quality-standards.md §4), brand_mismatch review per docs/brand-extraction.md — whatever that section specifies. That section is the actual scope of this session — this prompt does not restate it. This script fixes existing taxonomy entries only; it never creates coverage for products with taxonomy_id IS NULL — if the Brief's scope turns out to actually be a NULL-coverage/unmapped-product backfill, that is a genuine blocker (the correct tool is script/headless_taxonomy.sh's top-up scenario, not this script): stop, write nothing, output status='blocked' explaining the mismatch.
+STEP 3 — Execute exactly the fixes described in the category brief's '## Targeted QA Fix Brief' section: pack-count / size / bundle / product-line / variant corrections, hard-gate violations (G1, G2, G3, G5, G6 per docs/quality-standards.md §4), brand_mismatch review per docs/brand-extraction.md — whatever that section specifies. That section is the actual scope of this session — this prompt does not restate it. This script fixes existing taxonomy entries only; it never creates coverage for products with taxonomy_id IS NULL — if the Brief's scope turns out to actually be a NULL-coverage/unmapped-product backfill, that is a genuine blocker (the correct tool is script/headless_taxonomy.sh's top-up scenario, not this script): stop, write nothing, output status='blocked' explaining the mismatch.
 
 STEP 4 — Write via bq query DML only, never the streaming API. Set meta_agent='CLAUDE_CODE' on every row you write. Never delete an existing row unless the brief explicitly instructs you to.
 
 STEP 5 — Do NOT run the universe refresh yourself. That step runs after this session, only if independent QA gates pass — it is not something you do.
 
-STEP 6 — Do not edit ${category_file} or run git yourself. Instead, set the final JSON output's
-qa_history_entry field to {finding: "...", resolution: "..."} summarizing what you did and found this
-session — the same content that used to go directly into the QA History table's Finding/Resolution columns.
-The wrapper appends it to ${category_file} and commits on your behalf after you finish.
+STEP 6 — Do not write to \`${PROJECT}.magpie_reference.category_brief\` yourself. Instead, set the final
+JSON output's qa_history_entry field to {finding: "...", resolution: "..."} summarizing what you did and
+found this session. The wrapper inserts it as a QA_HISTORY row on your behalf after you finish.
 
 STEP 7 — If you hit a genuine blocker at any step — something wrong with these instructions, missing data, anything that would make proceeding unsafe — stop, write nothing further, and output status='blocked' with the blockers array populated. That is a valid, expected outcome, not a failure.
 
@@ -143,19 +131,22 @@ PROMPT
 
 build_auto_discovery_prompt() {
   local table="$1"
-  local category_file="$2"
+  local category_key="$2"
   local block_size="${3:-200}"
   local gate_report="${4:-}"
   local slot_offset=$((block_size - 1))
   cat <<PROMPT
 Automated Taxonomy Review session for ${table}. No '## Targeted QA Fix Brief' section with real content
-exists in ${category_file} — this session auto-discovers its own scope instead of executing a hand-written
-brief. See docs/superpowers/specs/2026-07-21-taxonomy-review-loop-design.md for the full design.
+exists in the category brief — this session auto-discovers its own scope instead of executing a
+hand-written brief. See docs/superpowers/specs/2026-07-21-taxonomy-review-loop-design.md for the full
+design.
 
 BEFORE ANYTHING ELSE, read in full: CLAUDE.md, ARCHITECTURE.md, docs/llm-extraction-rules.md (including §11,
 Signal Provenance & Cross-Validation), docs/quality-standards.md, docs/brand-extraction.md,
-docs/headless-runbook.md, and ${category_file} (brand scope, allowlist, and scope rules are already
-documented there — do not rediscover them from scratch).
+docs/headless-runbook.md, and the category brief — run: SELECT brief_markdown FROM
+\`${PROJECT}.magpie_reference.category_brief\` WHERE category_key = '${category_key}' AND task_type =
+'BRIEF' (brand scope, allowlist, and scope rules are already documented there — do not rediscover them
+from scratch).
 
 You perform every review and fix yourself, directly, using your own multimodal reading of product images and
 text where needed. You do not invoke external scripts or subprocesses and do not need any API key beyond your
@@ -498,11 +489,10 @@ write or update. Never delete an existing row.
 STEP 8 — Do NOT run the universe refresh yourself. That step runs after this session, only if independent QA
 gates pass — it is not something you do.
 
-STEP 9 — Do not edit ${category_file} or run git yourself. Instead, set the final JSON output's
-qa_history_entry field to {finding: "...", resolution: "..."} summarizing what you reviewed, what you fixed,
-and the confidence distribution you left behind — the same content that used to go directly into the QA
-History table's Finding/Resolution columns. The wrapper appends it to ${category_file} and commits on your
-behalf after you finish.
+STEP 9 — Do not write to \`${PROJECT}.magpie_reference.category_brief\` yourself. Instead, set the final
+JSON output's qa_history_entry field to {finding: "...", resolution: "..."} summarizing what you reviewed,
+what you fixed, and the confidence distribution you left behind. The wrapper inserts it as a QA_HISTORY
+row on your behalf after you finish.
 
 STEP 10 — Before declaring status, self-check the hard gates from docs/headless-runbook.md's QA-gate-as-code
 section, WITHOUT --skip-coexistence (this category already shipped once — coexistence is always a genuine bug
@@ -616,10 +606,15 @@ main() {
   local block_size="${2:-200}"
   local max_turns="${3:-300}"
 
-  local category_file
-  if ! category_file=$(resolve_category_file "$table"); then
-    echo "ERROR: no category file found at docs/categories/${table}.md or docs/categories/${table#shopee_}.md" >&2
-    echo "A Targeted QA Fix requires an existing, documented category — write the category file (and its '## Targeted QA Fix Brief' section) first." >&2
+  local category_key
+  category_key=$(category_key_for "$table")
+
+  local brief_markdown
+  brief_markdown=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=json \
+    "$(fetch_brief_markdown_query "$category_key")" | jq -r '.[0].brief_markdown // empty')
+  if [[ -z "$brief_markdown" ]]; then
+    echo "ERROR: no category_brief BRIEF row found for category_key=${category_key}" >&2
+    echo "A Targeted QA Fix requires an existing, documented category — run headless_taxonomy.sh's Full Rebuild first." >&2
     exit 1
   fi
 
@@ -635,10 +630,10 @@ main() {
   gate_report=$(./script/qa_report.sh "$table") || true
 
   local prompt
-  if [[ "$(has_real_brief "$category_file")" == "true" ]]; then
-    echo "TARGETED QA FIX STARTED (brief mode: ${category_file}, block_size=${block_size}, max_turns=${max_turns})"
+  if [[ "$(has_real_brief "$brief_markdown")" == "true" ]]; then
+    echo "TARGETED QA FIX STARTED (brief mode: ${category_key}, block_size=${block_size}, max_turns=${max_turns})"
     echo "==========================="
-    prompt=$(build_prompt "$table" "$category_file" "$block_size" "$gate_report")
+    prompt=$(build_prompt "$table" "$category_key" "$block_size" "$gate_report")
   else
     local review_worklist_count
     review_worklist_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
@@ -648,9 +643,9 @@ main() {
       echo "QUEUE_SIGNAL: NOTHING_TO_DO"
       exit 0
     fi
-    echo "TARGETED QA FIX STARTED (auto-discovery mode: ${category_file}, block_size=${block_size}, max_turns=${max_turns}, review_worklist_count=${review_worklist_count})"
+    echo "TARGETED QA FIX STARTED (auto-discovery mode: ${category_key}, block_size=${block_size}, max_turns=${max_turns}, review_worklist_count=${review_worklist_count})"
     echo "==========================="
-    prompt=$(build_auto_discovery_prompt "$table" "$category_file" "$block_size" "$gate_report")
+    prompt=$(build_auto_discovery_prompt "$table" "$category_key" "$block_size" "$gate_report")
   fi
 
   local claude_output
@@ -680,15 +675,10 @@ main() {
   qa_finding=$(echo "$result_json" | jq -r '.qa_history_entry.finding // empty')
   qa_resolution=$(echo "$result_json" | jq -r '.qa_history_entry.resolution // empty')
   if [[ -n "$qa_finding" ]]; then
-    local qa_timestamp
-    qa_timestamp=$(date -u +'%Y-%m-%d %H:%M UTC')
-    if append_qa_history_row "$category_file" "$qa_finding" "$qa_resolution" "$qa_timestamp"; then
-      echo "Appending QA History row and committing..."
-      git add "$category_file"
-      git commit -m "Automated review session for ${table}: update QA History"
-    else
-      echo "WARNING: could not append QA History row (no '## QA History' heading or closing '---' found in ${category_file}) — skipping commit." >&2
-    fi
+    local qa_task_date
+    qa_task_date=$(date -u +'%Y-%m-%d')
+    insert_qa_history_row "$category_key" "$qa_finding" "$qa_resolution" "$qa_task_date"
+    echo "Inserted QA_HISTORY row for ${category_key}."
   fi
 
   local decision
