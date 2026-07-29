@@ -6,11 +6,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD after extraction |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 95.6% (2026-06) |
 | Last run | 2026-07-29 |
-| Current MAX taxonomy_id | Query BQ live — never trust this file |
+| Current MAX taxonomy_id | Query BQ live — never trust this file (was SKU-211748 at end of this run) |
 
 **Prior state note:** `docs/categories/STATUS.md` line 67 labeled this category "⏳ Keyword only," but a
 live check on 2026-07-29 found **zero** `product_taxonomy_map` rows of any source (HUMAN or LLM) for
@@ -32,7 +32,11 @@ map rows for *this* table to orphan or duplicate against (the specific hazard th
 
 | Block | Usage |
 |-------|-------|
-| (filled in after atomic claim in Step 3) | Full Rebuild, Pass 1 + Pass 2 |
+| SKU-211207–213206 | Claimed block (2000 slots), full_rebuild |
+| SKU-211207–211567 | Pass 1 official-store extraction (361 entries, 407 map rows, 9 merchants) |
+| SKU-211568–211598 | Pass 1 continuation: Enfagrow A+ / Enfamil Official Store (31 entries, 43 map rows) — this merchant name has a trailing space in the source data (`'Enfagrow A+ Official Store '`) that caused it to be silently missed by the initial exact-match allowlist query; caught and backfilled during Pass 2 triage |
+| SKU-211599–211748 | Pass 2 bulk reseller routing (150 new entries; 72 more products reused existing Pass 1/1b entries via text match) |
+| SKU-211749–213206 | Unused remainder of claimed block |
 
 ---
 
@@ -160,7 +164,34 @@ Genuinely a first pass — no prior map rows of either source exist for this tab
   store — long tail, may remain `UNRESOLVED`
 
 **Edge cases:**
-- To be logged here as encountered during Pass 1/Pass 2.
+- RTD (ready-to-drink) GROW cartons: base unit is 180ml; a `[Bundle of N]` prefix in `sku_name` is a
+  bundle-of-(4-carton-base-pack), i.e. real `pack_count = N*4`, confirmed against the image's `x{total}`
+  badge — text alone would have undercounted 4x. Confirmed via direct image read on several listings.
+  Products with no bundle text at all in the title still pictured 4 cartons (pack_count=4) — text was
+  silent, image was not.
+- `[Bundle of N]`/`(Bundle of N)` sometimes conflicts with an inline `SIZE x M` fragment in the same title
+  (e.g. `[Bundle of 4] ... 900g x3 + Timmy & Tammy Books`) — the bracketed `[Bundle of N]` count was trusted
+  over the inline fragment, consistent with the `th_moisturizer_for_body` bracket-format precedent in
+  llm-extraction-rules.md §1.
+- GWP text patterns (`[GWP]`, `+ Free {other item}`, `GWP Bundle of N [GWP] {product}`) almost always wrap a
+  genuine, real-product listing (the free item is a toy/appliance bonus, not a different milk product) —
+  these were extracted normally at the stated pack_count, not treated as GWP-flagged/zeroed products.
+- `[NOT FOR SALE]` / `[NWP]` tagged listings (all 0 GMV) were still mapped to the same real product/size
+  when parseable — these are catalog placeholder listings for a genuine product, not out-of-category.
+- One listing (`56208107207`) was a Tefal cookware GWP set with no milk product at all — excluded from the
+  taxonomy entirely (wrong category, not an infant-milk listing despite appearing in this source table).
+- Multi-stage-selector reseller titles (e.g. `Stage 3/4`, `Friso Gold Stage 3 / Stage 4`, `S26 ... Progress
+  (Stage 3) & Promise (Stage 4)`) were routed to a stage-agnostic `is_multi_variant=TRUE` catch-all rather
+  than guessing which stage the buyer actually receives.
+- ~20 long-tail brands (Dutch Lady, WAKODO, Meiji, HiPP, Lactogrow, Spring Sheep NZ, etc.) fall inside the
+  95%-cumulative-GMV **product**-level scope (Rule A) despite being well outside the top-18 **brand**-level
+  95% scope used for the official-store allowlist — expected per quality-standards.md §2 (Rule A is
+  product-level, independent of brand-level scope). These got `"{Brand} (unresolved)"` product_line
+  catch-alls (real brand, unconfirmed line) rather than a guessed line name.
+- `product_brand_map` had one row with `brand_id='BRD-UNDEFINED'` for a real, identifiable brand (Spring
+  Sheep, New Zealand sheep-milk formula) not yet in `brand_dict` — used the real brand name in
+  `canonical_name` rather than literally writing "Undefined" (which would have tripped the
+  placeholder-leak QA gate).
 
 ---
 
@@ -187,6 +218,10 @@ Genuinely a first pass — no prior map rows of either source exist for this tab
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-29 | Pre-run | STATUS.md "Keyword only" label found stale/unreliable; live map rows = 0 (genuine first pass) | Proceeded per advisor guidance — no orphan risk since zero surviving rows for this table |
+| 2026-07-29 | Pass 1 | Text/image spot-checks confirmed `[Bundle of N]` pack_count and stage/size text signals are reliable for this category's official stores — high text-image agreement | Built 361 entries, 407 map rows via bulk text extraction with targeted image spot-checks (RTD cartons, Bellamy's no-size listing) |
+| 2026-07-29 | Pass 1→1b | `Enfagrow A+ Official Store` (brand_id BRD-GLOBAL-00030/BRD-SG-01010) returned 0 rows on the initial exact-match allowlist pull — merchant_name has an undocumented trailing space, same bug class as the Wyeth store caught earlier in the same session | Re-pulled all 43 products under the correct (space-suffixed) name and processed as Pass 1: +31 entries, +43 map rows (SKU-211568–211598) |
+| 2026-07-29 | Pass 2 | 314 in-scope (top-95%-cumulative-GMV) products remained unmapped after Pass 1; reseller titles far less structured than official-store titles, ~20 long-tail brands outside the brand-level 95% scope | Bulk text-matched via the same brand-line parser (reuse-before-mint against the Pass 1 dictionary): 72 products reused existing entries, 218 minted 150 new entries (SKU-211599–211748); unresolvable brand/line combos got `"{Brand} (unresolved)"` catch-alls rather than guesses |
+| 2026-07-29 | Post-run QA | G1 (dual-mapped LLM) = 0, G2 (HUMAN+LLM coexistence) = 0, placeholder-leak = 0, structured-fields (product_line NULL among non-multi-size entries) = 0%, G5 (provenance) = 0 | All gates pass; 95.6% GMV coverage (2026-06), 542 taxonomy entries / 740 map rows total |
 
 ---
 
@@ -208,6 +243,6 @@ Genuinely a first pass — no prior map rows of either source exist for this tab
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | TBD | Filled in after Pass 1 + Pass 2 |
-| HUMAN | 0 | None existed prior to this session |
-| NULL (unmapped) | TBD | Below GMV scope or out-of-category |
+| LLM | 740 | Pass 1 (407) + Pass 1b Enfagrow/Enfamil (43) + Pass 2 (290) |
+| HUMAN | 0 | None existed prior to this session, none created by it |
+| NULL (unmapped) | 3,468 (of 4,208 distinct products, month 2026-06) | Below the 95%-cumulative-GMV / official-store in-scope set — long tail, GMV coverage 95.6% |
