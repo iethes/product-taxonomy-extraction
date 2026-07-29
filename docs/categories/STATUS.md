@@ -75,9 +75,9 @@ Status section for what this means for a session picking up the next ID category
 | sg_spirits | ⏳ Keyword only | |
 | sg_toilet_rolls | ⏳ Keyword only | |
 | sg_baby_accessories | ⏳ Keyword only | |
-| sg_vitamin_mineral_health_supplements | ⏳ Keyword only | |
+| sg_vitamin_mineral_health_supplements | ✅ Complete | LLM Pass 1+2 complete Jul 29, 95.1% GMV coverage, SKU-199329–201328 + SKU-203529–204028 (two disjoint blocks, primary exhausted mid-Pass-2); 477 per-brand `(unresolved)` catch-alls for fragmented long-tail (category has unusually low product-line duplication vs. other categories) |
 
-| **Total SG:** 5/23 LLM complete (sg_toothpaste, sg_coffee, sg_carbonated_drink, sg_liquid_soap, sg_hand_and_body_moisturiser) — keyword seed provides ~50–70% GMV coverage for the rest
+| **Total SG:** 6/23 LLM complete (sg_toothpaste, sg_coffee, sg_carbonated_drink, sg_liquid_soap, sg_hand_and_body_moisturiser, sg_vitamin_mineral_health_supplements) — keyword seed provides ~50–70% GMV coverage for the rest
 
 ---
 
@@ -155,3 +155,5 @@ Status section for what this means for a session picking up the next ID category
 | SKU-110729–112405 | shopee_sg_carbonated_drink supplemental block, unused remainder | ACTIVE |
 | SKU-129756–131755 | shopee_sg_liquid_soap LLM P1 (129756–130324) + P2 (130325–131369) | ACTIVE (131370–131755 unused remainder) |
 | SKU-135196–137195 | shopee_sg_hand_and_body_moisturiser LLM P1 (135196–135776) + P2 specific (135777–136776) + P2 per-brand catch-alls (136777–136922) | ACTIVE (136923–137195 unused remainder) |
+| SKU-199329–201328 | shopee_sg_vitamin_mineral_health_supplements LLM P1 (199329–200645) + P2 specific (200646–201230) | ACTIVE (201231–201328 unused remainder) |
+| SKU-203529–204028 | shopee_sg_vitamin_mineral_health_supplements P2 supplemental block, per-brand catch-alls (203529–203854) | ACTIVE (203855–204028 unused remainder) |
