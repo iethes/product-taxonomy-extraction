@@ -6,16 +6,16 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD (2026-06) |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 87.08% of total category GMV (2026-06); 34/305 Rule-A in-scope products remain NULL, all confirmed out-of-scope (see QA History) |
 | Last run | 2026-07-29 |
-| Current MAX taxonomy_id | TBD — claimed atomically in Step 3 |
+| Current MAX taxonomy_id | SKU-208309 (this category's own block; overall table MAX may be higher from concurrent sessions) |
 
-**Live pre-check confirmed:** `product_taxonomy_map` has **zero** rows (HUMAN or LLM) for
-`master_table = 'shopee_sg_fabric_softener'` as of this session start. Genuine first run — matches
-`docs/categories/STATUS.md`'s `sg_fabric_softener` row, which is also marked "⏳ Keyword only" (no seed rows
-exist despite the label, same drift pattern seen on `sg_beverages`/`sg_household_cleaner`).
+**Live pre-check confirmed:** `product_taxonomy_map` had **zero** rows (HUMAN or LLM) for
+`master_table = 'shopee_sg_fabric_softener'` at session start. Genuine first run — matches
+`docs/categories/STATUS.md`'s `sg_fabric_softener` row, which was also marked "⏳ Keyword only" (no seed rows
+existed despite the label, same drift pattern seen on `sg_beverages`/`sg_household_cleaner`).
 
 ---
 
@@ -23,7 +23,8 @@ exist despite the label, same drift pattern seen on `sg_beverages`/`sg_household
 
 | Block | Usage |
 |-------|-------|
-| TBD | Claimed atomically in Step 3 (2,000-slot block, `scenario='full_rebuild'`) |
+| SKU-208049–208309 | Pass 1 + Pass 2 combined (261 taxonomy entries, 358 products mapped) |
+| SKU-208310–210048 | Unused remainder of claimed 2,000-slot block |
 
 ---
 
@@ -56,8 +57,16 @@ Ranked by GWP-zeroed GMV (SGD), month 2026-06-01:
 18. **ODOCO** — `BRD-SG-04946` — 1,503
 19. **Ecover** — `BRD-SG-01987` — 1,163 (cum_frac crosses 0.95 here: 0.9515)
 
-Category total GWP-zeroed GMV (all ~100 brand buckets): **SGD 243,043**. Threshold row: Ecover at cum_frac
-0.9515. Everything from rank 20 (Faultless, cum_frac 0.956) downward is below-threshold long tail (81 more
+Category total GWP-zeroed GMV (139 brand buckets, corrected count — an earlier `bq query` pull without
+`--max_rows` silently truncated to 100 rows mid-session; re-run with `--max_rows` gave the real count):
+**SGD 242,992**. Threshold row: Ecover at cum_frac 0.9515.
+
+**Correction found during Pass 2:** Cosway's brand-level GMV in this category table is contaminated by
+wrong-product-type listings — both of its Rule-A-eligible products (`29866308198` "PowerMax Dish Drop",
+`25677553559` "PowerMax Bathroom Cleaner") are dish soap / bathroom cleaner, not fabric softener at all,
+and were left unmapped (OOS) rather than force-taxonomized. Cosway's true fabric-softener GMV in this table
+is effectively ~0 — its rank-9 brand position above is an artifact of mixed-category source-table
+contamination (the same class of issue `docs/llm-extraction-rules.md` §8 warns about for brand-GMV ranking). Everything from rank 20 (Faultless, cum_frac 0.956) downward is below-threshold long tail (81 more
 brand buckets, mostly near-zero GMV) — out of Rule-A scope, in scope only if they qualify under Rule B
 (official store).
 
@@ -145,9 +154,24 @@ Mall-badged pool.
 - 2-in-1 wash+soften products (per `docs/llm-extraction-rules.md` §5 `fabric_softener` row)
 
 **Out of scope (leave NULL):**
-- Ironing spray
-- Laundry-only detergent (no softening function)
+- Ironing spray / wrinkle-releaser spray / anti-wrinkle spray / "no-iron" spray (e.g. Downy Wrinkle Releaser
+  Spray, Faultless Ironing Spray, Hygiene Wrinkle Spray, generic "no-iron wrinkle release" listings) — a
+  distinct ironing-aid format, not a rinse-cycle fabric softener, even when sold by a fabric-softener brand.
+- Starch spray for ironing (Dr. Beckmann "Starch & Easy Iron", Yuri Tril Ironing Starch Spray) — same class.
+- Laundry pods/capsules (ODOCO 7-in-1 Laundry Pods, Downy 4-in-1 Laundry Pods, Vanzo 3-in-1 Laundry Capsules)
+  — a detergent-format product (used in the wash cycle) even when marketed with "fabric softener" as one of
+  several claimed benefits; structurally not a rinse-cycle softener.
+- Kispray / Rapika / Rapika Biang (Indonesian "pelicin"/ironing-smoothing spray products) — same ironing-spray
+  class under different brand names.
+- Laundry-only detergent (no softening function), dish soap, bathroom cleaner (Cosway PowerMax Dish
+  Drop/Bathroom Cleaner — wrong product type despite same source table)
+- Stain/spot remover (Ink Cleaner Fabric Stain Remover, TOP Lion Fabric Spot Remover, Tide To Go stain
+  wipes/pen)
+- Foot softener (BAREN Foot Softener — personal care product, wrong category entirely)
+- Physical accessories (LEIFHEIT Ironing Board Cover — not a chemical product at all)
 - Downy/other Gel Ball detergent capsules (a detergent product, not a softener, despite brand overlap)
+- Cross-category bundles dominated by non-softener items (e.g. Snuggle Fabric Conditioner + Sunlight
+  Dishwashing + Cif Anti-Bac Spray + Scrub Daddy sponge, sold as one SKU)
 
 **Edge cases:**
 - P&G-raw-string "Lenor" products: in scope (fabric softener/scent booster), route per the note above — do
@@ -156,6 +180,10 @@ Mall-badged pool.
 - Watsons/myCK_online/Prestigio Delights/Corlison listings: still in scope as individual products (Rule A if
   high-GMV enough, or plain Pass 2 reseller routing) — excluded only from the Pass 1 *official-store allowlist*
   gate, not from extraction entirely.
+- A single ambiguous multi-product option listing (`26056558343`, iiMONO reseller bundling Downy Infusions
+  Dryer Sheets / Unstopables Scent Booster / Wrinkle Releaser Spray as buyer-choice variants in one SKU) was
+  left NULL — can't determine which option the buyer actually receives, and one of the three options is itself
+  out-of-scope.
 
 ---
 
@@ -186,6 +214,30 @@ Mall-badged pool.
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-29 | Pre-run | Live pre-check: 0 existing map rows, confirms genuine first-run scenario | Proceeded with Full Rebuild |
+| 2026-07-29 | Pass 1+2 | `bq query` silently truncates result sets to 100 rows without `--max_rows` — first Pass-1-pool pull and brand-bucket count were both truncated mid-session | Re-ran every query expected to exceed 100 rows with `--max_rows=5000` |
+| 2026-07-29 | Pass 1+2 | Rule A (product-level 95% cumulative GMV) is a different, larger set than the 19-brand-scope official-store pool — 305 products vs. 187; worklist = Rule A ∪ Rule B (393 unique products) | Built the full union before extraction, not just the official-store pool |
+| 2026-07-29 | Pass 1+2 | 35 products in the worklist are wrong-format/wrong-category for this category (ironing/wrinkle spray, starch spray, Kispray/Rapika, laundry pods/capsules, dish soap/bathroom cleaner mislabeled under Cosway, stain remover, foot softener, ironing board cover, one cross-category bundle) | Excluded via keyword filter, documented in Scope section; left `taxonomy_id` NULL |
+| 2026-07-29 | QA gates | G1/G2/G3-placeholder-leak/structured-fields/G5 all ran at 0 violations post-insert | Shipped without a fix iteration needed |
+| 2026-07-29 | D6 | 34 remaining Rule-A in-scope NULLs, top-GMV checked individually — all 34 confirmed as the same OOS classes above, none is a genuine coverage miss | No further action; documented as legitimately-NULL |
+
+**Known gap for a future `targeted_qa_fix.sh` pass (not this session's scope, coverage was prioritized over
+precision per the headless runbook):** several long-tail single-appearance brands (SOFSIL, Bluna, SHIRO, UIC,
+Fineline, Weavve Home, Bouquet Garni, Kirkland Signature, Pigeon, and a few "Unbranded" dryer-sheet/scent-bead
+catch-alls) got `product_line` derived by generic text-stripping rather than a read on-label line name, since
+each appears only once or twice in the worklist. Also several Downy/Comfort/Daia/Softlan buckets use the
+category-adjacent line name "Fabric Softener"/"Regular"/"Concentrated Fabric Softener" where the sku_name
+didn't clearly state a more specific on-label line — D2 (product line accuracy) risk worth a future
+image-verification pass on the highest-GMV of these.
+
+---
+
+## Map Row Counts (as of last run)
+
+| Source | Count | Notes |
+|--------|-------|-------|
+| LLM | 358 | Pass 1 + Pass 2 combined (single bulk-routed pass, 261 distinct taxonomy entries) |
+| HUMAN | 0 | No prior keyword-seed pass ran for this table |
+| NULL (unmapped, in-scope) | 34 | All confirmed out-of-scope product-type contamination (ironing spray, laundry pods, stain remover, etc.) — see Scope and QA History |
 
 ---
 
@@ -201,13 +253,3 @@ Mall-badged pool.
 | Script | Purpose |
 |--------|---------|
 | (headless session, no persisted pipeline script — direct multimodal extraction by the Claude Code session) | Pass 1 + Pass 2 |
-
----
-
-## Map Row Counts (as of last run)
-
-| Source | Count | Notes |
-|--------|-------|-------|
-| LLM | TBD | Filled in after Pass 1 + Pass 2 complete |
-| HUMAN | 0 | No prior keyword-seed pass ran for this table |
-| NULL (unmapped) | TBD | Below GMV scope or out-of-category |
