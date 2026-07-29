@@ -46,35 +46,46 @@ ranked #4 ($33,691 GMV) on unfiltered brand GMV, almost entirely from a single f
 of its $33,691); once facial-tissue GMV is excluded, NOMIEO's real toilet-roll GMV is $1,343 and it ranks #28,
 outside the 95% cutoff. Brand name variants merged: `Manhua` / `manHUA` / `漫花` → `Manhua`.
 
-Category total in-category GMV (June 2026): $293,419.86. **24 entries cross the 95% cumulative threshold**
-(23 real brands + 1 "(blank)" bucket for products with no `brand` field value):
+Category total in-category GMV (June 2026): $287,270.72 (revised — see wet-wipes refinement below).
+**23 entries cross the 95% cumulative threshold** (22 real brands + 1 "(blank)" bucket for products with no
+`brand` field value):
 
-1. **Vinda** — $46,188.23 (15.7% cum.)
-2. **Kleenex** — $43,592.12 (30.6% cum.)
-3. **(blank)** — $30,151.91 (40.9% cum.) — not a real brand; products with empty `brand` field. Still in scope
+1. **Vinda** — $46,188.23 (16.1% cum.)
+2. **Kleenex** — $43,079.65 (31.1% cum.)
+3. **(blank)** — $27,144.77 (40.5% cum.) — not a real brand; products with empty `brand` field. Still in scope
    via Rule A (top-95% GMV); brand resolved per-product during extraction via `brand_from_image`/sku_name, same
    as any `BRD-UNDEFINED`/`FALLBACK` product.
-4. **Hearttex** — $24,858.14 (49.3% cum.)
+4. **Hearttex** — $24,858.14 (49.2% cum.)
 5. **Onwards** — $21,079.70 (56.5% cum.)
-6. **Jie Rou C&S** — $17,383.06 (62.4% cum.)
-7. **HG** — $14,419.22 (67.3% cum.)
-8. **IUIGA** — $10,683.94 (71.0% cum.)
-9. **PASEO** — $10,142.38 (74.4% cum.)
-10. **AOG** — $7,992.40 (77.2% cum.)
-11. **Belux** — $6,894.46 (79.5% cum.)
-12. **Breeze** — $6,310.69 (81.6% cum.)
-13. **Scott** — $6,255.96 (83.8% cum.)
-14. **植护 Botare** — $5,421.52 (85.6% cum.)
-15. **ValueStar** — $4,676.70 (87.2% cum.)
-16. **Cloversoft** — $4,326.70 (88.7% cum.)
-17. **Manhua** — $3,086.31 (89.7% cum.)
-18. **Zappy** — $2,895.70 (90.7% cum.)
-19. **Uzumi** — $2,768.92 (91.7% cum.)
-20. **JIJI.SG** — $2,654.94 (92.6% cum.)
-21. **Pursoft** — $2,511.54 (93.4% cum.)
-22. **myCK** — $2,143.10 (94.2% cum.)
-23. **EverFresh** — $2,140.78 (94.9% cum.)
-24. **Beautex** — $2,012.70 (95.6% cum.) — last brand included; crosses the 95% line.
+6. **Jie Rou C&S** — $17,383.06 (62.5% cum.)
+7. **HG** — $14,419.22 (67.6% cum.)
+8. **IUIGA** — $10,683.94 (71.3% cum.)
+9. **PASEO** — $10,546.93 (74.9% cum.)
+10. **AOG** — $7,992.40 (77.7% cum.)
+11. **Belux** — $6,894.46 (80.1% cum.)
+12. **Breeze** — $6,310.69 (82.3% cum.)
+13. **Scott** — $6,255.96 (84.5% cum.)
+14. **植护 Botare** — $5,421.52 (86.4% cum.)
+15. **ValueStar** — $4,676.70 (88.0% cum.)
+16. **Cloversoft** — $4,326.70 (89.5% cum.)
+17. **Manhua** — $3,086.31 (90.6% cum.)
+18. **Uzumi** — $2,768.92 (91.6% cum.)
+19. **JIJI.SG** — $2,654.94 (92.5% cum.)
+20. **Pursoft** — $2,511.54 (93.3% cum.)
+21. **myCK** — $2,143.10 (94.1% cum.)
+22. **EverFresh** — $2,140.78 (94.8% cum.)
+23. **Beautex** — $2,012.70 (95.5% cum.) — last brand included; crosses the 95% line.
+
+**Zappy excluded** (was rank 18 at $2,895.70 on an earlier pass): 100% of Zappy's GMV in this table is
+"Flushable Toilet Tissue Wipes" — individually-wrapped moist wipes marketed as toilet-adjacent, not dry paper
+rolls (Scope § wet-wipes exclusion applies at the product-type level, and Zappy has no other product in this
+table). Once excluded, Zappy's real toilet-roll GMV is $0 — it drops out of the brand scope entirely, and its
+official store drops out of the Pass 1 allowlist (see below). Caught because the first-pass wet-wipes regex
+(`wet tissue|wet wipes|...`) didn't match "Toilet Tissue Wipes" phrasing; the second-pass regex over-corrected
+and also zeroed out several genuine Kleenex toilet-roll bundle listings whose titles mention "+ Free Moist
+Toilet Tissue Flushable Wipes" as a GWP bonus item (not the primary product) — fixed by requiring the exclusion
+regex to also check for absence of "roll"/"rolls" in the sku_name, so a bundle that states a roll count stays
+in-category regardless of a wipes-freebie mention.
 
 Brands excluded from scope (below 5% GMV tail, ranks 25+, e.g. KCA, Nara Home Affairs, Watsons(-brand, distinct
 from the retailer of the same name), PINSE, Pulppy, Qing Feng, Peri, Soiselle, Tempo, Bambooloo, Nufresh,
@@ -99,7 +110,6 @@ Built by querying distinct `merchant_name WHERE merchant_badge='Shopee Mall'`, m
 | Hearttex | — | `Hearttex.SG` |
 | IUIGA | — | `IUIGA Official` |
 | PASEO | — | `PASEO` |
-| Zappy | — | `Zappy & HospiCare by Freshening` |
 
 **Parent-company stores:** `Kimberly-Clark Official Store` / `Kimberly-Clark Professional Store` carry both
 Kleenex and Scott (Kimberly-Clark owns both brands) — Pass-1-eligible for both, disambiguate per-product via
@@ -127,6 +137,11 @@ Kleenex and Scott (Kimberly-Clark owns both brands) — Pass-1-eligible for both
 broader `merchant_name` pattern search (no hits for any of these): Onwards, Jie Rou C&S, HG, AOG, Belux, Breeze,
 植护 Botare, ValueStar, Cloversoft, Manhua, myCK, Uzumi, JIJI.SG, Pursoft, EverFresh, Beautex, plus the
 "(blank)"-brand bucket (no brand field, so no brand-owned store to look up).
+
+**Zappy removed from Pass 1 entirely** (was 7th confirmed store, `Zappy & HospiCare by Freshening`) — Zappy
+fell out of the brand scope once its GMV was correctly attributed to an out-of-scope product type (wet wipes,
+see Brand Scope § Zappy note above). Its official-store products are wet-wipes, not toilet-roll, so excluding
+them from Pass 1 is correct on both grounds (brand scope and product type).
 
 ---
 
@@ -217,6 +232,7 @@ June 2026 data (8,602 rows) surfaced real contamination, not just theoretical ri
 | 2026-07-29 | Pre-run verification | STATUS.md said "⏳ Keyword only" implying seed rows exist; live query found zero rows of any source for this master_table, and zero for any June-2026 product_id under any other master_table | Proceeded as genuine from-scratch first run, not top-up |
 | 2026-07-29 | Pre-run verification | Unfiltered brand-GMV ranking put NOMIEO at #4 ($33,691) almost entirely from facial-tissue-box GMV, not toilet-roll GMV | Applied in-category product-type filter before ranking (excluding facial tissue/kitchen towel/wet wipes/toilet cleaner GMV); NOMIEO fell to #28, outside 95% scope |
 | 2026-07-29 | Pre-run verification | `marketshare_universe_niq` has zero rows for month 2026-06 pipeline-wide (max month = 2026-05) | Confirmed not a blocker for this session's scope (extraction + QA-gate-as-code only, no universe dependency); noted for whoever runs universe refresh later |
+| 2026-07-29 | Pre-run verification | Zappy ranked in the 95% brand scope on GWP-zeroed GMV, but 100% of its GMV is a wet-wipes product type ("Flushable Toilet Tissue Wipes"), not toilet-roll — a first-pass wet-wipes exclusion regex missed the "Toilet Tissue Wipes" phrasing entirely | Refined regex to catch it; had to add a "contains 'roll'" carve-out so genuine Kleenex toilet-roll bundles with a "+ Free ... Flushable Wipes" GWP freebie mention weren't wrongly zeroed too. Zappy dropped out of brand scope and Pass 1 allowlist entirely |
 
 ---
 
