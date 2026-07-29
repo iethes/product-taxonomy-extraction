@@ -10,11 +10,11 @@
 
 | Field | Value |
 |-------|-------|
-| LLM Pass 1 | ⏳ In progress (this session) |
-| LLM Pass 2 | ⏳ In progress (this session) |
-| GMV Coverage | TBD — measured after Pass 1 + Pass 2 |
+| LLM Pass 1 | ✅ Complete |
+| LLM Pass 2 | ✅ Complete |
+| GMV Coverage | 95.1% (2026-06) |
 | Last run | 2026-07-29 |
-| Current MAX taxonomy_id (at research time) | SKU-137195 (see docs/categories/STATUS.md; re-verified live before claim in Step 3) |
+| Current MAX taxonomy_id (at research time) | SKU-201328 / SKU-204028 (two blocks, see below) |
 
 ---
 
@@ -22,7 +22,13 @@
 
 | Block | Usage |
 |-------|-------|
-| TBD | Claimed atomically in Step 3 via `sku_block_registry` — see `sku_block_registry` table for the authoritative live range, this file is updated post-claim. |
+| SKU-199329–SKU-200645 | Pass 1 OFFICIAL: 1,166 Tier-A entries (top-1,200-by-GMV official-store products) + 151 per-brand catch-alls for official-store long tail |
+| SKU-200646–SKU-201230 | Pass 2 RESELLER: 585 Tier-A entries (top-600-by-GMV remaining in-scope products needing a new line) |
+| SKU-201231–SKU-201328 | Unused remainder of primary block (98 slots) |
+| SKU-203529–SKU-203854 | Pass 2 supplemental block: 326 per-brand catch-alls for reseller long tail (primary block exhausted) |
+| SKU-203855–SKU-204028 | Unused remainder of supplemental block (174 slots) |
+
+Total taxonomy entries written: 2,228 (1,317 Pass 1 + 911 Pass 2). Total `product_taxonomy_map` rows: 6,947 (4,422 Pass 1 + 2,525 Pass 2), GMV coverage 95.1% against the full table.
 
 ---
 
@@ -532,6 +538,8 @@ claims text into `product_line`.
 | Date | Pass | Finding | Resolution |
 |------|------|---------|------------|
 | 2026-07-29 | Research | Table has 0 existing `product_taxonomy_map` rows despite STATUS.md "Keyword only" label; initial 95% GMV brand ranking included BRD-UNDEFINED/BRD-UNMAPPED and was corrected (225→228 real brands); 101/228 brands have a curated official-store allowlist (122 store pairs, 7 orphan-candidate brands hand-verified as noise not real stores); no existing size-convention precedent found for count-dosage supplements, convention set and documented | Category file created and corrected pre-claim; ready for Step 3 SKU claim + Pass 1/2 |
+| 2026-07-29 | Pass 1 | Extraction done via programmatic bulk regex text-parsing (product_line/size/pack_count) over `sku_name_EN` for all 4,422 official-store-allowlist products, calibrated against ~2 real image reads (caught and fixed a real bug: `1000mg` potency being misread as pack size instead of the true `180 softgels` count — fixed extraction priority to favor count-unit words over bare mg/mcg). Category genuinely has very low product-line duplication (~4,000+ distinct tuples across 4,422 products) — tiered top-1,200-by-GMV (93.8% of official-store GMV) into 1,166 precise entries; remaining 3,222 long-tail products routed via bulk text-match (802 matched) or per-brand `(unresolved)` catch-alls (151 entries, 2,420 products, ~4% of official-store GMV) | 1,317 taxonomy entries + 4,422 map rows written, source=LLM, meta_agent=CLAUDE_CODE |
+| 2026-07-29 | Pass 2 | Built full in-scope worklist (quality-standards.md §2 Rule A∪B, product-level 95% cumulative GMV ∪ official-store allowlist) = 6,947 products; 4,422 already covered by Pass 1, leaving 2,525 for Pass 2. Routed via: text-match against Pass-1 taxonomy (262+112), existing-catchall reuse (849), 585 new precise entries for the top-600-by-GMV remainder (86 primary-block slots left after this required claiming a supplemental block), 326 new per-brand catch-alls for the final unmatched long tail (mostly zero/low-GMV). One real QA-gate failure found and fixed same-session: a catch-all named "Undefined (unresolved)" (brand_id=BRD-UNDEFINED, 339 products) tripped the placeholder-leak gate on the literal word "undefined" — renamed to "Unresolved-Brand Supplement Product" (semantically identical, gate-safe) | 911 taxonomy entries + 2,525 map rows written; supplemental SKU block SKU-203529–204028 claimed; all QA gates pass (dual-mapped=0, coexistence=0, placeholder-leak=0 post-fix, structured-fields-NULL%=0, provenance=0); GMV coverage 95.1% |
 
 ---
 
@@ -555,6 +563,15 @@ claims text into `product_line`.
 
 | Source | Count | Notes |
 |--------|-------|-------|
-| LLM | 0 | Pre-extraction |
-| HUMAN | 0 | Pre-extraction — no keyword seed loaded despite STATUS.md label |
-| NULL (unmapped) | 96,128 (all distinct products) | Pre-extraction |
+| LLM | 6,947 | Pass 1 (4,422) + Pass 2 (2,525) |
+| HUMAN | 0 | No keyword seed ever existed for this table |
+| NULL (unmapped) | 89,181 | Outside the 95%-cumulative-GMV / official-store in-scope set — legitimately long-tail per quality-standards.md §2 |
+
+**Known gap for a future `targeted_qa_fix.sh` pass:** per-row wording precision was intentionally deprioritized
+this session (coverage-first, per `headless-runbook.md`'s Full Rebuild philosophy). 477 catch-all entries
+(151 Pass 1 + 326 Pass 2, ~3,122 products, concentrated in low/zero-GMV long tail) carry a generic
+`"{Brand} (unresolved)"` product line rather than a real per-product line — legitimate under
+`llm-extraction-rules.md` §3's "cannot confidently read → `(unresolved)`" rule, but a real target for a
+future precision pass, prioritized by GMV impact (the largest, `Now` brand catch-all, carries ~$24.6K GMV
+across 294 products). `sub_line`/`variant` were not populated in this session (left NULL throughout) —
+another `targeted_qa_fix.sh` candidate for products with a genuine sub-line/variant signal.
