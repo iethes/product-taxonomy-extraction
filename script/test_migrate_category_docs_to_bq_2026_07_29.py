@@ -11,7 +11,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
 from migrate_category_docs_to_bq_2026_07_29 import (
-    derive_country, classify_status, parse_qa_history_table, build_reality_note,
+    derive_country, classify_status, parse_qa_history_table, build_reality_note, normalize_task_date,
 )
 
 
@@ -99,6 +99,32 @@ class TestBuildRealityNote(unittest.TestCase):
 
     def test_active_returns_empty(self):
         self.assertEqual(build_reality_note("active", live_rows=4527, orphan_rows=0), "")
+
+
+class TestNormalizeTaskDate(unittest.TestCase):
+    def test_plain_iso(self):
+        self.assertEqual(normalize_task_date("2026-07-16"), "2026-07-16")
+
+    def test_iso_with_time(self):
+        self.assertEqual(normalize_task_date("2026-07-23 17:45 UTC"), "2026-07-23")
+
+    def test_iso_with_trailing_note(self):
+        self.assertEqual(normalize_task_date("2026-07-27 (2nd session)"), "2026-07-27")
+        self.assertEqual(normalize_task_date("2026-07-28 (top-up session #14)"), "2026-07-28")
+
+    def test_month_name_with_year(self):
+        self.assertEqual(normalize_task_date("Jul 17 2026"), "2026-07-17")
+        self.assertEqual(normalize_task_date("Jun 19 2026"), "2026-06-19")
+
+    def test_month_name_without_year_defaults_2026(self):
+        self.assertEqual(normalize_task_date("Jul 20"), "2026-07-20")
+        self.assertEqual(normalize_task_date("Jun 21"), "2026-06-21")
+
+    def test_month_name_date_range_takes_start(self):
+        self.assertEqual(normalize_task_date("Jun 22–23"), "2026-06-22")
+
+    def test_unparseable_returns_none(self):
+        self.assertIsNone(normalize_task_date("whenever"))
 
 
 if __name__ == "__main__":

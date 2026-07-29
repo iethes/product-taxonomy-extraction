@@ -24,6 +24,14 @@ CATEGORY_MAP = [
     ("shopee_sg_hair_conditioner_or_treatment", "master_clean_niq", "shopee_sg_hair_conditioner_or_treatment", None),
     ("shopee_sg_shampoo", "master_clean_niq", "shopee_sg_shampoo", None),
     ("shopee_sg_toothpaste", "master_clean_niq", "shopee_sg_toothpaste", None),
+    # These 5 were added by a live queue_worker.sh session between when this map was first written
+    # and when the migration actually ran (session start count was 42; discovered 47 on disk at
+    # deletion time in Task 10). Migrated separately, after the fact -- see git log for this file.
+    ("shopee_sg_beverages", "master_clean_niq", "shopee_sg_beverages", None),
+    ("shopee_sg_fabric_softener", "master_clean_niq", "shopee_sg_fabric_softener", None),
+    ("shopee_sg_household_cleaner", "master_clean_niq", "shopee_sg_household_cleaner", None),
+    ("shopee_sg_infant_milk", "master_clean_niq", "shopee_sg_infant_milk", None),
+    ("shopee_sg_laundry_detergent", "master_clean_niq", "shopee_sg_laundry_detergent", None),
     ("shopee_id_baby_diapers", "master_clean_niq", "shopee_id_baby_diapers", None),
     ("shopee_id_makeup_face", "master_clean_niq", "shopee_id_makeup_face", None),
     ("shopee_sg_beer_and_lager", "master_clean_niq", "shopee_sg_beer_and_lager", None),
@@ -69,6 +77,32 @@ CATEGORY_MAP = [
 QA_HISTORY_ROW_RE = re.compile(
     r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$", re.MULTILINE
 )
+
+MONTH_ABBR = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def normalize_task_date(date_str):
+    """QA History dates accumulated several formats over ~6 weeks of sessions: plain ISO
+    ("2026-07-16"), ISO + time ("2026-07-23 17:45 UTC"), ISO + trailing note
+    ("2026-07-27 (2nd session)"), and month-name forms ("Jul 20", "Jun 19 2026", "Jun 22–23").
+    Returns 'YYYY-MM-DD' or None if unparseable (year defaults to 2026 when omitted -- every
+    session in this repo's history falls within 2026)."""
+    date_str = date_str.strip()
+    iso_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", date_str)
+    if iso_match:
+        return iso_match.group(0)
+    month_match = re.match(r"^([A-Za-z]{3})[a-z]*\s+(\d{1,2})(?:[–-]\d{1,2})?(?:\s+(\d{4}))?", date_str)
+    if month_match:
+        month = MONTH_ABBR.get(month_match.group(1).lower())
+        if month is None:
+            return None
+        day = int(month_match.group(2))
+        year = int(month_match.group(3)) if month_match.group(3) else 2026
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    return None
 
 
 def derive_country(master_table):
@@ -175,7 +209,7 @@ def load_brief_row(category_key, source_dataset, master_table, source_table_fqn,
     with open(f"/tmp/{master_table}_brief.ndjson", "w") as f:
         f.write(ndjson_line + "\n")
     subprocess.run(
-        ["bq", "load", "--use_legacy_sql=false", "--source_format=NEWLINE_DELIMITED_JSON", "--replace",
+        ["bq", "load", "--source_format=NEWLINE_DELIMITED_JSON", "--replace",
          f"{PROJECT}:{DATASET}.{stage_table}", f"/tmp/{master_table}_brief.ndjson",
          "category_key:STRING,task_type:STRING,source_dataset:STRING,master_table:STRING,"
          "source_table_fqn:STRING,country:STRING,status:STRING,live_map_rows:INTEGER,"
@@ -194,7 +228,12 @@ WHEN MATCHED THEN UPDATE SET
   live_map_rows = s.live_map_rows, orphan_map_rows = s.orphan_map_rows,
   reality_checked_at = s.reality_checked_at, brief_markdown = s.brief_markdown,
   updated_at = s.updated_at, meta_agent = s.meta_agent
-WHEN NOT MATCHED THEN INSERT ROW
+WHEN NOT MATCHED THEN INSERT
+  (category_key, task_type, source_dataset, master_table, source_table_fqn, country, status,
+   live_map_rows, orphan_map_rows, reality_checked_at, brief_markdown, updated_at, meta_agent)
+  VALUES
+  (s.category_key, s.task_type, s.source_dataset, s.master_table, s.source_table_fqn, s.country, s.status,
+   s.live_map_rows, s.orphan_map_rows, s.reality_checked_at, s.brief_markdown, s.updated_at, s.meta_agent)
 """],
         check=True,
     )
@@ -204,14 +243,18 @@ WHEN NOT MATCHED THEN INSERT ROW
 def load_qa_history_rows(category_key, history_rows, dry_run):
     for row in history_rows:
         note = f"Pass: {row['pass_name']}\nFinding: {row['finding']}\nResolution: {row['resolution']}"
+        task_date = normalize_task_date(row["date"])
+        if task_date is None:
+            print(f"  WARNING: could not parse date {row['date']!r} for {category_key} — skipping this row", file=sys.stderr)
+            continue
         if dry_run:
-            print(f"[dry-run] would insert QA_HISTORY row for {category_key} dated {row['date']}")
+            print(f"[dry-run] would insert QA_HISTORY row for {category_key} dated {task_date}")
             continue
         subprocess.run(
             ["bq", "query", "--use_legacy_sql=false", "--project_id", PROJECT,
-             "--parameter", f"category_key::STRING:{category_key}",
-             "--parameter", f"task_date::DATE:{row['date']}",
-             "--parameter", f"brief_markdown::STRING:{note}",
+             "--parameter", f"category_key:STRING:{category_key}",
+             "--parameter", f"task_date:DATE:{task_date}",
+             "--parameter", f"brief_markdown:STRING:{note}",
              f"INSERT INTO `{PROJECT}.{DATASET}.{TABLE}` "
              f"(category_key, task_type, task_date, brief_markdown, updated_at, meta_agent) "
              f"VALUES (@category_key, 'QA_HISTORY', @task_date, @brief_markdown, CURRENT_TIMESTAMP(), 'CLAUDE_CODE')"],
