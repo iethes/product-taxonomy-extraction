@@ -22,6 +22,21 @@ DUAL_MAPPED=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format
 if [ "$DUAL_MAPPED" = "0" ]; then echo "[PASS] dual-mapped (LLM):        0"
 else echo "[FAIL] dual-mapped (LLM):        ${DUAL_MAPPED}"; FAIL=1; fi
 
+# NULL platform passes every other gate silently, then fails the universe_taxonomy_overlay MERGE
+# atomically for the WHOLE category (BigQuery MERGE aborts entirely on one bad row) — catch it here,
+# before that refresh step, not after.
+NULL_PLATFORM=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+  "SELECT COUNT(*) FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\`
+   WHERE master_table = '${TABLE}' AND platform IS NULL" | tail -1)
+if [ "$NULL_PLATFORM" = "0" ]; then echo "[PASS] null platform:            0"
+else echo "[FAIL] null platform:            ${NULL_PLATFORM}"; FAIL=1; fi
+
+NULL_COUNTRY=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+  "SELECT COUNT(*) FROM \`${PROJECT}.magpie_reference.product_taxonomy_map\`
+   WHERE master_table = '${TABLE}' AND country IS NULL" | tail -1)
+if [ "$NULL_COUNTRY" = "0" ]; then echo "[PASS] null country:             0"
+else echo "[FAIL] null country:             ${NULL_COUNTRY}"; FAIL=1; fi
+
 if [ "$SKIP_COEXISTENCE" != "--skip-coexistence" ]; then
   COEXIST=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
     "SELECT COUNT(*) FROM (

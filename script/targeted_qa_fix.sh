@@ -706,10 +706,16 @@ main() {
     GATE_AND_REFRESH)
       echo "STATUS: rows written — running independent QA gates via script/qa_report.sh..."
       if ./script/qa_report.sh "$table"; then
-        run_universe_refresh "$table"
-        echo "============================"
-        echo "TARGETED QA FIX FINISHED — universe refreshed"
-        echo "QUEUE_SIGNAL: DONE"
+        if run_universe_refresh "$table"; then
+          echo "============================"
+          echo "TARGETED QA FIX FINISHED — universe refreshed"
+          echo "QUEUE_SIGNAL: DONE"
+        else
+          echo "Universe refresh failed — marking block FAILED_QA." >&2
+          mark_failed_qa "$table"
+          echo "QUEUE_SIGNAL: FAILED"
+          exit 1
+        fi
       else
         echo "QA gates failed — marking block FAILED_QA, skipping universe refresh." >&2
         mark_failed_qa "$table"

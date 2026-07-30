@@ -74,6 +74,32 @@ run_qa_gates() {
     echo "QA GATE FAILED: ${dual_mapped} dual-mapped LLM products for ${table}"; return 1
   fi
 
+  # Added 2026-07-30: NULL platform passes every other gate silently, then fails the
+  # universe_taxonomy_overlay MERGE atomically for the WHOLE category (one bad row aborts the entire
+  # MERGE job, not just that row) — found via shopee_th_body_wash/shopee_sg_liquid_soap/
+  # shopee_sg_toothpaste/shopee_th_suncare all sitting with a stale or empty overlay because of this.
+  # NIQ source tables (master_clean_niq.*) carry no platform column, so it must be hardcoded
+  # 'Shopee' on every INSERT into product_taxonomy_map for NIQ categories — easy to forget.
+  local null_platform
+  null_platform=$(bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 --format=csv \
+    "SELECT COUNT(*) FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\`
+     WHERE master_table = '${table}' AND platform IS NULL" | tail -1)
+  if [ "$null_platform" != "0" ]; then
+    echo "QA GATE FAILED: ${null_platform} NULL-platform rows for ${table}"; return 1
+  fi
+
+  # Same INSERT bug hit country too, not just platform — every NULL-platform row found 2026-07-30
+  # also had NULL country (identical counts per category), so whatever wrote them omitted both
+  # literals. NIQ tables carry no country column either; must be hardcoded per master_table's
+  # th_/sg_ naming prefix.
+  local null_country
+  null_country=$(bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 --format=csv \
+    "SELECT COUNT(*) FROM \`sincere-hearth-273704.magpie_reference.product_taxonomy_map\`
+     WHERE master_table = '${table}' AND country IS NULL" | tail -1)
+  if [ "$null_country" != "0" ]; then
+    echo "QA GATE FAILED: ${null_country} NULL-country rows for ${table}"; return 1
+  fi
+
   if [ "$skip_coexistence" != "--skip-coexistence" ]; then
     local human_llm_coexist
     human_llm_coexist=$(bq query --use_legacy_sql=false --project_id=sincere-hearth-273704 --format=csv \
