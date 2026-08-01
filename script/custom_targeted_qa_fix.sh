@@ -47,7 +47,9 @@ has_real_brief() {
   # auto-discovery, which has real work waiting.
   local section
   section=$(awk -v start="$brief_line" 'NR > start && /^## / { exit } NR >= start { print }' <<< "$brief_markdown")
-  if grep -qi "not executed this session" <<< "$section"; then
+  # Extended 2026-08-01 (see targeted_qa_fix.sh's matching check) to also catch "not yet assessed" /
+  # "none written yet" deferral disclaimers, the same underlying pattern found on the NIQ-source side.
+  if grep -qiE "not executed this session|not yet assessed|none written yet" <<< "$section"; then
     echo "false"
     return
   fi
@@ -246,6 +248,33 @@ post-fix independent qa_report.sh re-check (STEP 10) re-runs these same gates �
 will fail there too regardless of how well this session's fixes go, so a FAILED_QA outcome driven by a gate
 this session was never able to touch is expected, not a sign the session did anything wrong.
 
+Policy (management decision): a product that is simply irrelevant/out-of-category for ${category} — genuinely
+a different product type, sitting in this source table's raw data for reasons upstream of this pipeline — is
+NOT a defect on its own. An accurately-described, correctly-structured taxonomy entry for the real product
+(e.g. "Royal Canin Dog Gastrointestinal Dog 2kg" mapped under a cat-food master_table) is acceptable to leave
+exactly as-is. Do NOT flag category/scope mismatch alone as needing a deletion-authorized session, and do not
+spend Tier 2 judgment re-litigating it if a prior session already concluded the same. The only thing that
+still needs a deletion/reroute-authorized session is a genuine content duplicate — the same real-world product
+minted as two or more separate taxonomy_id rows (in this category or spanning into another one), which
+fragments its GMV across multiple entries instead of one. Run this check (global — a duplicate can exist in
+any master_table, not just this one) over every taxonomy_id currently mapped to ${category}:
+SELECT pt.taxonomy_id, pt.canonical_name, dup.taxonomy_id AS duplicate_of, dup.canonical_name AS duplicate_canonical_name
+FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
+JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id AND m.master_table = '${category}'
+JOIN \`${PROJECT}.magpie_reference.product_taxonomy\` dup
+  ON dup.taxonomy_id != pt.taxonomy_id
+  AND dup.brand_id = pt.brand_id
+  AND LOWER(dup.product_line) = LOWER(pt.product_line)
+  AND IFNULL(LOWER(dup.sub_line),'') = IFNULL(LOWER(pt.sub_line),'')
+  AND IFNULL(LOWER(dup.variant),'') = IFNULL(LOWER(pt.variant),'')
+  AND IFNULL(LOWER(dup.size),'') = IFNULL(LOWER(pt.size),'')
+  AND IFNULL(dup.pack_count, -1) = IFNULL(pt.pack_count, -1)
+GROUP BY 1,2,3,4
+A genuine hit here (same brand+product_line+sub_line+variant+size+pack_count signature under two different
+taxonomy_ids) is a real defect: record both taxonomy_ids, their master_tables, and their combined mapped-product
+counts in findings, flagged as needing a dedup-authorized session (a human picks the surviving taxonomy_id and
+a reroute-then-delete of the other is run explicitly, not by this script — same STEP 7 restriction as above).
+
 STEP 1C — Fast-lane recheck: before spending any Tier 2 judgment, resolve rows that were already fixed in a
 prior session and are only waiting on one more clean confirmation to become confident — identifiable as
 _meta IS NOT NULL AND JSON_VALUE(_meta, '$.review_confidence') IS NULL (the "fixed pending recheck" bucket
@@ -268,7 +297,9 @@ SELECT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand,
     OR (pt.pack_count > 1 AND pt.is_bundle IS NOT TRUE AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%x', CAST(pt.pack_count AS STRING), '%'))
   ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b') AS canonical_field_mismatch,
   (pt.size IS NULL AND pt.is_multi_size IS NOT TRUE) AS null_size,
-  NOT REGEXP_CONTAINS(bd.canonical_name, r'[\p{L}]') AS garbage_brand
+  NOT REGEXP_CONTAINS(bd.canonical_name, r'[\p{L}]') AS garbage_brand,
+  (pt.size IS NOT NULL AND REGEXP_CONTAINS(LOWER(pt.size), r'\b(pcs?|capsules?|sachets?|packets?|tablets?|pieces?|units?|ea|count)\b') AND NOT REGEXP_CONTAINS(LOWER(pt.size), r'\d+(\.\d+)?\s*(ml|g|kg|l|oz|lb)\b')) AS count_as_size,
+  (REGEXP_CONTAINS(pt.canonical_name, r'(?i)\b(ready stock|100%\s*original|direct from|fast shipping|local seller|\w+\s+seller|latest packaging|similar to)\b') OR REGEXP_CONTAINS(pt.canonical_name, r'[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]')) AS provenance_leak
 FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
@@ -317,7 +348,9 @@ SELECT pt.taxonomy_id, pt.canonical_name, bd.canonical_name AS brand,
     OR (pt.pack_count > 1 AND pt.is_bundle IS NOT TRUE AND NOT LOWER(pt.canonical_name) LIKE CONCAT('%x', CAST(pt.pack_count AS STRING), '%'))
   ) AND NOT REGEXP_CONTAINS(LOWER(pt.canonical_name), r'\(all\s+(variants?|sizes?)\b|\bmultiple\s+(variants?|sizes?)\b') AS canonical_field_mismatch,
   (pt.size IS NULL AND pt.is_multi_size IS NOT TRUE) AS null_size,
-  NOT REGEXP_CONTAINS(bd.canonical_name, r'[\p{L}]') AS garbage_brand
+  NOT REGEXP_CONTAINS(bd.canonical_name, r'[\p{L}]') AS garbage_brand,
+  (pt.size IS NOT NULL AND REGEXP_CONTAINS(LOWER(pt.size), r'\b(pcs?|capsules?|sachets?|packets?|tablets?|pieces?|units?|ea|count)\b') AND NOT REGEXP_CONTAINS(LOWER(pt.size), r'\d+(\.\d+)?\s*(ml|g|kg|l|oz|lb)\b')) AS count_as_size,
+  (REGEXP_CONTAINS(pt.canonical_name, r'(?i)\b(ready stock|100%\s*original|direct from|fast shipping|local seller|\w+\s+seller|latest packaging|similar to)\b') OR REGEXP_CONTAINS(pt.canonical_name, r'[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]')) AS provenance_leak
 FROM \`${PROJECT}.magpie_reference.product_taxonomy\` pt
 JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` m ON m.taxonomy_id = pt.taxonomy_id
 JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
@@ -330,6 +363,12 @@ any automated check before now, same gap D5 had — found via product 1625499462
 that was never extracted. garbage_brand catches a resolved brand (brand_dict.canonical_name via
 product_taxonomy.brand_id) with no letters at all (e.g. "12/+＝") — see docs/llm-extraction-rules.md §11 for
 the root cause (a reseller's watermark/logo overlay misread as the product's brand) and STEP 4 for the fix.
+count_as_size closes a real blind spot found via a category_brief QA_HISTORY audit: `size='10 pcs'`/`'20
+capsules'` satisfies `size IS NOT NULL`, so a missing real weight/volume was invisible to the null_size flag
+above — same underlying defect, different disguise. provenance_leak is §11's merchant/seller/SEO-leak rule
+(store names, "SG SELLER", "🔥HQ🔥", "Similar to <competitor>") finally wired into Tier 1 instead of relying on
+luck during GMV-sampled Tier 2 review to catch it — ponytail: heuristic keyword/emoji regex, not exhaustive;
+raise a genuinely new leak pattern here if Tier 2 keeps catching the same phrasing Tier 1 missed.
 
 STEP 2b — Tier 1 also includes this product-grain sweep (docs/quality-standards.md §3 D5 — this exact query
 existed only as a manual snippet there before now, never wired into any automated check, which is why product
@@ -422,6 +461,16 @@ the actual packaging counts), find or create the correct brand_dict entry, updat
 and correct canonical_name to start with the real brand — unlike case (b) above, both fields are wrong here
 and both need fixing.
 
+count_as_size's fix: this is null_size wearing a disguise, not a separate defect class — run the same
+extraction chain (sku_name text → image → product_specification → description per §2's priority order) to
+find the real weight/volume and write it to `size`; only if the listing genuinely has no weight/volume (a true
+unit-count product, e.g. a set of loose capsules with no stated fill weight) is the count value itself
+legitimate — leave it as-is and do not flag it again by hand.
+
+provenance_leak's fix follows docs/llm-extraction-rules.md §11 exactly like garbled brand text: strip the
+merchant/seller/SEO text from canonical_name (and product_line/variant if it leaked there too) and re-derive
+from sku_name and the image only — never from merchant_name or store branding.
+
 STEP 2c's fix needs one aggregation query first — never write a single size/multiplier value onto a
 taxonomy_id shared by products whose real values genuinely differ. Match on (product_id, platform), never
 product_id alone:
@@ -462,7 +511,8 @@ statement. Don't wait until STEP 7 to remember this.
 
 Same-session gate-verify (2026-07-28): immediately after applying a fix and resetting a row's _meta to
 {"is_reviewed": false}, re-run the same Tier 1 flag checks (stub_leak, duplicate_brand, wrong_field_order,
-brand_casing_mismatch, excess_content, canonical_field_mismatch, null_size, garbage_brand) against that row's
+brand_casing_mismatch, excess_content, canonical_field_mismatch, null_size, garbage_brand, count_as_size,
+provenance_leak) against that row's
 new values, in this same session — do not wait for a future session's STEP 1C to confirm the fix held. A row
 that comes back fully clean on this immediate recheck qualifies for STEP 5's Path 1(b) promotion below, this
 session. A row that still trips a flag keeps _meta at {"is_reviewed": false}, unresolved — picked up again by

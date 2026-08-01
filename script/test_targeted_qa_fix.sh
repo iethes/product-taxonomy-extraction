@@ -37,6 +37,20 @@ real_brief='## Targeted QA Fix Brief
 
 Fix these specific pack-count mistakes...'
 [[ "$(has_real_brief "$real_brief")" == "true" ]] || fail "filled Verdict -> true"
+
+deferred_brief='## Targeted QA Fix Brief
+
+**Verdict:** not yet assessed — this run was coverage-first, precision work deferred to auto-discovery.
+
+Highest-value first targets: ...'
+[[ "$(has_real_brief "$deferred_brief")" == "false" ]] || fail "'not yet assessed' disclaimer must be treated as no-real-brief, even with a filled Verdict line"
+
+none_written_brief='## Targeted QA Fix Brief
+
+**Verdict:** *(none written yet — auto-discovery mode is correct for the next run.)*
+
+Known, expected precision debt: ...'
+[[ "$(has_real_brief "$none_written_brief")" == "false" ]] || fail "'none written yet' disclaimer must be treated as no-real-brief"
 echo "PASS: has_real_brief"
 
 # --- qa_history_insert_query ---
