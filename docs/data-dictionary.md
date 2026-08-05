@@ -261,6 +261,29 @@ See [`docs/categories/STATUS.md`](categories/STATUS.md) for the current SKU allo
 
 ---
 
+## Reference Layer — `magpie_reference.category_scope_exceptions`
+
+> Granularity: one row = one product confirmed wrong-type/wrong-category for a given `master_table`.
+> Built by: `script/headless_taxonomy.sh` sessions (first-run Pass 2, top-up STEP 1) when the match-or-create
+> gate (`docs/product-lifecycle.md` §4.2) concludes a product genuinely doesn't belong — see
+> `docs/headless-runbook.md`'s "Confirmed out-of-scope products" for why this exists.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `master_table` | STRING NOT NULL | Source table this product was excluded from. Composite key with `product_id`. |
+| `product_id` | STRING NOT NULL | Platform product ID confirmed wrong-type/wrong-category for `master_table`. |
+| `reason` | STRING | Free text — why it doesn't belong (e.g. "wrong product type: cocoa powder listed under this liquid-milk table"). |
+| `confirmed_at` | TIMESTAMP | |
+| `meta_agent` | STRING | `CLAUDE_CODE`, `CODEX`, or `HUMAN` — never NULL. |
+
+`script/headless_taxonomy.sh`'s `worklist_query()` LEFT JOINs this table and excludes any matching
+`(master_table, product_id)` from the live coverage-gap count — a durable equivalent of
+`qa_gate_exceptions`, but for coverage scope rather than QA-defect gates. Only a confirmed, per-product
+determination belongs here, never a blanket keyword/category carve-out — see `docs/quality-standards.md`
+§2 for how this interacts with the formal in-scope definition.
+
+---
+
 ## Source Layer — `raw_niq_history.shopee_{country}_{category}`
 
 Extended source with full product specifications. Use when sku_name and product image don't contain enough size/spec information.

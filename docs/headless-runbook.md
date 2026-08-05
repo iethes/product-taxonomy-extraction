@@ -370,6 +370,28 @@ speed-first pass.
 `MAX_TURNS` is an optional 3rd CLI argument (`<TABLE> [MONTH] [MAX_TURNS]`, default 300) for scaling the
 session's turn budget on a large gap, e.g. `./script/headless_taxonomy.sh shopee_th_suncare "" 800`.
 
+**Confirmed out-of-scope products (`magpie_reference.category_scope_exceptions`).** A source table's rows
+aren't guaranteed to actually be the category they're filed under — e.g. cocoa/malt-powder listings inside
+`shopee_th_milk_powder`, or anti-hair-loss tonics inside `shopee_sg_hair_conditioner_or_treatment`. The
+match-or-create gate (`docs/product-lifecycle.md` §4.2) correctly leaves these `taxonomy_id IS NULL` rather
+than force-mapping them — but before this table existed, that determination wasn't recorded anywhere, so
+every subsequent top-up session re-discovered the exact same products in its live worklist, correctly
+declined them again, and the reported coverage gap never dropped below whatever fraction of it was
+permanently-wrong-type noise — no matter how many sessions ran. Confirmed live across the 2026-08-04/05
+top-up batch: `shopee_th_liquid_milk`'s residual gap was entirely OOS cocoa/malt-powder mass;
+`shopee_th_milk_powder` reported a permanent ~3,200-product gap burning a fresh 2,000-slot SKU block per
+session for 1-2 genuinely new rows; `shopee_th_conditioner`'s remaining gap was ~1,290 confirmed-OOS rows,
+"none force-mapped."
+
+Both scenarios' prompts now instruct the agent to write a bulk `INSERT` into `category_scope_exceptions`
+(`master_table`, `product_id`, `reason`, `confirmed_at`, `meta_agent`) whenever the match-or-create gate
+concludes a product is a clear wrong-type/wrong-category match — never for products it simply didn't get to,
+and never when the scope call is itself ambiguous (leave those `NULL` and escalate in findings, as before).
+`worklist_query()` excludes any `product_id` present in this table for the target `master_table`, so a
+confirmed exclusion permanently shrinks the reported gap instead of being re-litigated every session. This is
+a coverage-metric correction, not a licence to force-map or to except anything merely inconvenient — a wrong
+exception here silently and permanently hides a real, fixable coverage hole.
+
 The rest of this section describes the first-run procedure.
 
 **Worked example: `shopee_sg_shampoo`.** Attempt #1 (2026-07-15) claimed a real block (`SKU-069001`–

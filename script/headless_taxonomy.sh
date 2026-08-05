@@ -17,6 +17,13 @@ set -euo pipefail
 # Note: existing_llm_rows counts source='LLM' rows only — HUMAN keyword-seed rows (present for almost every
 # category before Phase 5 ever runs) must not be mistaken for prior LLM coverage.
 # See docs/superpowers/specs/2026-07-20-headless-script-scope-refinement-design.md for the full design.
+#
+# gap_count excludes products confirmed out-of-scope (wrong product type, e.g. cocoa powder inside a
+# liquid_milk table) via magpie_reference.category_scope_exceptions — see docs/headless-runbook.md
+# "Confirmed out-of-scope products" for why this exists: without it, a category's reported coverage gap
+# never closes past whatever fraction of it is permanently-wrong-type noise, no matter how many top-up
+# sessions run, because each session correctly re-declines to force-map those products but had no durable
+# way to say so — so the same rows kept re-entering next session's live worklist.
 
 PROJECT="sincere-hearth-273704"
 
@@ -26,12 +33,15 @@ worklist_query() {
 WITH base AS (
   SELECT s.product_id, s.model_id, s.merchant_name, s.merchant_badge, s.sku_name, s.image,
          s.gmv_monthly, s.sold_monthly, s.flag_GWP,
-         bd.canonical_name AS brand, pt.canonical_name AS canonical_name
+         bd.canonical_name AS brand, pt.canonical_name AS canonical_name,
+         exc.product_id AS excepted_product_id
   FROM \`${PROJECT}.master_clean_niq.${table}\` s
   LEFT JOIN \`${PROJECT}.magpie_reference.product_taxonomy_map\` ptm
     ON ptm.product_id = s.product_id AND ptm.master_table = '${table}'
   LEFT JOIN \`${PROJECT}.magpie_reference.product_taxonomy\` pt ON pt.taxonomy_id = ptm.taxonomy_id
   LEFT JOIN \`${PROJECT}.magpie_reference.brand_dict\` bd ON bd.brand_id = pt.brand_id
+  LEFT JOIN \`${PROJECT}.magpie_reference.category_scope_exceptions\` exc
+    ON exc.product_id = s.product_id AND exc.master_table = '${table}'
   WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}'
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY s.product_id, s.model_id
@@ -46,7 +56,7 @@ with_cumulative AS (
   FROM base
 )
 SELECT * FROM with_cumulative
-WHERE cumulative_gmv_pct <= 95 AND canonical_name IS NULL
+WHERE cumulative_gmv_pct <= 95 AND canonical_name IS NULL AND excepted_product_id IS NULL
 ORDER BY gmv_monthly DESC
 SQL
 }
@@ -139,6 +149,13 @@ STEP 4 — Pass 1: build taxonomy ONLY from the Official Store Allowlist merchan
 
 STEP 5 — Pass 2: the priority for Pass 2 is closing the coverage gap quickly, not per-row precision — quality correctness (exact product_line wording, variant capture, pack-count edge cases, D1-D5 of docs/quality-standards.md) is a separate, later concern owned by script/targeted_qa_fix.sh, scoped by GMV impact; do not spend this session's turns chasing it. Route remaining official-store-unmatched and reseller products in BULK via SQL text-matching of sku_name against the Pass 1 taxonomy you just built — group by brand+line pattern and write statements that map many products per statement, not one row at a time. Only read product images for individual products where text matching is genuinely ambiguous — do not vision-read the full candidate pool. This keyword/text-matching step is a routing convenience, never a scope filter: this keyword gate must never be used to decide whether an individual product gets extracted. Every product in the 95%-cumulative-GMV-or-official-store in-scope set (docs/quality-standards.md §2) must be considered — only your own category/type match-or-create gate (docs/product-lifecycle.md §4.2), applied after reading a product, may conclude it doesn't belong here and leave it NULL. This matters most for high-GMV Mall-seller listings that are genuinely miscategorized (their sku_name doesn't match the category's expected keywords even though the product itself belongs) — a text pre-filter would silently drop them before you ever looked. Hard gates G1 (no dual-mapping), G2 (no HUMAN+LLM coexistence), G4 (no cross-category mapping), and G5 (provenance) are structural invariants and must still pass regardless of this speed-first approach — never skip or relax those.
 
+When your match-or-create gate concludes a product genuinely doesn't belong in this category — wrong product type, not a size/variant/pack ambiguity — don't just leave it NULL and move on: record that determination in bulk (one statement per reason-group, not per row) so it stops re-entering every future session's live worklist and coverage-gap count:
+INSERT INTO \`${PROJECT}.magpie_reference.category_scope_exceptions\` (master_table, product_id, reason, confirmed_at, meta_agent)
+SELECT '${table}', new_id, '<why it does not belong, e.g. wrong product type: cocoa powder listed under this liquid-milk table>', CURRENT_TIMESTAMP(), 'CLAUDE_CODE'
+FROM UNNEST(['<product_id>', '<product_id>']) AS new_id  -- product_id is STRING — quote every element
+WHERE new_id NOT IN (SELECT product_id FROM \`${PROJECT}.magpie_reference.category_scope_exceptions\` WHERE master_table = '${table}');
+Only use this for products you are confident are the wrong type/category for this table — never for ones you simply didn't get to this session, and never to paper over a real coverage shortfall.
+
 STEP 6 — For every taxonomy entry, populate product_line, sub_line, and variant as their own structured columns — do NOT leave them NULL while folding that same information into canonical_name as free text. product_line is close to mandatory (populate it whenever a real on-label line name exists, per docs/llm-extraction-rules.md §3); sub_line and variant are optional — populate only where a real signal exists, leave NULL rather than guess when the text doesn't clearly support a split. This was gotten wrong before: 934 entries once shipped with product_line NULL on 100% of them because the extraction wrote good canonical_name text but never decomposed it into the structured fields.
 
 Write via bq query DML only, never the streaming API.
@@ -183,6 +200,12 @@ Do NOT process the live worklist one product at a time — that under-uses this 
 (b) For groups of worklist products that share a brand+line but don't match any existing entry (new size/pack/variant), mint ONE new taxonomy entry per group and map every matching product to it in one bulk statement — never process that group's products one by one.
 (c) Only read an individual product's image when text signals (sku_name, product_specification, product_description) are genuinely insufficient to identify brand or product line for minting a new entry. Even then, look for other unresolved worklist rows with a similar sku_name pattern and batch them under the same new entry rather than reading and minting one at a time. This is a routing convenience, never a scope filter: this keyword gate must never be used to decide whether an individual product gets extracted — every product in the live worklist gets considered. Only your own category/type match-or-create gate may conclude a product doesn't belong here and leave it NULL. This matters most for high-GMV Mall-seller listings that are genuinely miscategorized (their sku_name doesn't match the category's expected keywords even though the product itself belongs) — a text pre-filter would silently drop them before you ever looked.
 (d) Attempt to resolve the ENTIRE live worklist within your available turn budget this session — do not self-limit to a small sample or match this category's older QA History session sizes. Stop early only when you are genuinely running low on turns, and say so honestly in findings — never as a strategic choice to work only the top of the list.
+(e) When your match-or-create gate concludes a product genuinely doesn't belong in this category — wrong product type, not a size/variant/pack ambiguity — don't just leave it NULL and move on: record that determination in bulk (one statement per reason-group, not per row) so it stops re-entering every future session's live worklist and coverage-gap count:
+INSERT INTO \`${PROJECT}.magpie_reference.category_scope_exceptions\` (master_table, product_id, reason, confirmed_at, meta_agent)
+SELECT '${table}', new_id, '<why it does not belong, e.g. wrong product type: anti-hair-loss tonic listed under this conditioner table>', CURRENT_TIMESTAMP(), 'CLAUDE_CODE'
+FROM UNNEST(['<product_id>', '<product_id>']) AS new_id  -- product_id is STRING — quote every element
+WHERE new_id NOT IN (SELECT product_id FROM \`${PROJECT}.magpie_reference.category_scope_exceptions\` WHERE master_table = '${table}');
+Only use this for products you are confident are the wrong type/category for this table — never for ones you simply didn't get to this session, and never to paper over a real coverage shortfall. If the scope call itself is genuinely ambiguous (could plausibly belong depending on a judgment call, not a clear-cut wrong type), don't except it — leave it NULL and escalate the ambiguity in findings instead, same as before.
 
 Hard gates G1 (no dual-mapping), G2 (no HUMAN+LLM coexistence), G4 (no cross-category mapping), and G5 (provenance) are structural invariants and must still pass regardless of this speed-first approach — never skip or relax those.
 

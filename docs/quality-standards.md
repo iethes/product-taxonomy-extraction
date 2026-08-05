@@ -76,10 +76,16 @@ if it satisfies **either** rule:
 | **A — Top-95% GMV** | Rank all products in the category by GWP-zeroed GMV descending; take products whose cumulative GMV ≤ 95% of category total | Decision 8 |
 | **B — Official-store listings** | **Every** listing in any brand-principal official store, where that brand is within the 95% GMV brand scope — regardless of the individual listing's GMV | Decisions 7, 9 |
 
-**In-scope set = A ∪ B.** This is the population that *must* be fully resolved. A NULL or
-a generic stub **inside this set** that is identifiable from text/image is a defect.
-Products **outside** this set (long-tail resellers, out-of-scope brands) may legitimately
-remain `UNRESOLVED` — they are not counted against the quality scores.
+**In-scope set = (A ∪ B) − confirmed-out-of-scope.** This is the population that *must* be fully resolved. A
+NULL or a generic stub **inside this set** that is identifiable from text/image is a defect. Products
+**outside** this set (long-tail resellers, out-of-scope brands) may legitimately remain `UNRESOLVED` — they
+are not counted against the quality scores. Products in
+`magpie_reference.category_scope_exceptions` (confirmed, per-product, wrong type/category for this
+`master_table` — see `docs/headless-runbook.md`'s "Confirmed out-of-scope products") are likewise excluded
+from the denominator entirely: they are not D1 Tier D / D6 defects, because rank-by-GMV alone (Rule A) can't
+tell a genuinely miscategorized product from a real coverage gap. Only a confirmed, per-product exception
+row earns this — never a blanket category- or keyword-level carve-out, which would silently swallow real
+gaps alongside genuine noise.
 
 ```sql
 -- In-scope set for a category (Rule A ∪ Rule B), review month 2026-04-01
