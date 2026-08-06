@@ -340,6 +340,29 @@ the packaging's own brand text is small, partially obscured, or ambiguous, prefe
 `product_specification` over guessing from a prominent overlay — never resolve a brand from the most
 visually dominant text in the image without confirming it's actually printed on the product itself.
 
+**A brand token must appear as itself in `sku_name` (or be legible on the product image) — a shared prefix,
+similar sound, or "this is probably the famous brand" impression is never sufficient.** Confusable
+budget/generic brand names that mimic a well-known brand are common in marketplace listings, and defaulting
+to the famous name has produced real defects: confirmed live on `alatmusik_id` — three taxonomy entries
+(`SKU-341143` "Yamaha Recorder / Suling", `SKU-340752` "Yamaha Pianica") each bundle a genuine Yamaha listing
+together with a distinct, unrelated budget brand, "**Yamada**" (e.g. "Pianika **Yamada** Tas Kain Original
+Murah Bagus"), under one Yamaha-labeled taxonomy entry. Before writing a brand into `canonical_name` or
+`brand_id`, confirm the *exact* token is present — never assign the well-known brand just because the text
+is similar to it.
+
+**When `sku_name` names multiple distinct brands, do not default to any one of them from text alone —
+this is an ambiguous signal, not a routing shortcut.** A generic accessory advertised as compatible with
+several brands (confirmed live: `SKU-341232` "Yamaha Instrument Accessory" bundles two genuine Yamaha foot
+switches with "Pedal sustain switch match MPS-6 ... **casio roland yamaha korg**" — a universal pedal
+claiming compatibility with four brands, not made by any single one of them) must be verified against the
+product image before being assigned to any of the named brands — often the correct answer is that it's a
+third-party/generic accessory (`BRD-UNBRANDED`), not the most prominent brand name in the title.
+
+**A shared taxonomy entry that mixes products from two different actual brands is a defect even when every
+individual `canonical_name` field looks fine** — the fix is a reroute (move the wrong-brand products to
+their own/an existing entry), never a rename of the shared entry, since the entry also correctly serves the
+real brand's products.
+
 ---
 
 ## Changelog

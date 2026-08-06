@@ -431,6 +431,16 @@ multiple product lines with overlapping vocabulary — a match that "sounds righ
 verified until the type is confirmed against sku_name/image. A wrong-type match is never partial credit —
 reroute to the correct existing entry, or mint a new one; do not rename in place.
 
+Same check applies to brand, not just product type — a confirmed live defect here (docs/llm-extraction-rules.md
+§11): entries like "Yamaha Recorder / Suling" and "Yamaha Pianica" each bundle a genuine Yamaha listing with a
+distinct, unrelated budget brand whose sku_name says "Yamada", not "Yamaha" — never assign a well-known brand
+because the text merely resembles it; the exact token must be present in sku_name or legible on the image.
+When sku_name names several brands at once (e.g. a generic accessory advertised as "match casio roland yamaha
+korg"), check the image before assigning any of them — it is very often a third-party/generic accessory
+(BRD-UNBRANDED), not the most prominent name in the title. A shared entry mixing two real brands' products is
+a reroute, exactly like a wrong-type match — never a rename, since the entry also correctly serves the real
+brand's products.
+
 But exhaustively re-judging every Tier-1-clean row one by one is
 what capped a prior session at 133 of ~5,812 rows in one run. A Tier-1-clean row you do NOT sample this
 session gets no _meta write at all — do not mark it reviewed just because Tier 1 found nothing; that would
