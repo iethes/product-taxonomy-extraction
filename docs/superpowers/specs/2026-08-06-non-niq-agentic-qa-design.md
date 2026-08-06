@@ -55,7 +55,7 @@ Everything else in `script/` stays exactly where it is.
 ### Execution model
 
 - `non_niq_queue_worker.sh`: new, separate worker loop on Hetzner. Claims rows from the **same** `p4ct2g2urhzcfnz.task_queue` Postgres table the NIQ worker uses, filtered to `script_type = 'non_niq_qa'` — a logically separate lane on shared storage, never claims NIQ rows or vice versa. One row per (category, platform).
-- `non_niq_embed.py`'s scheduled batch run (dict→Meilisearch sync) is **not** queued through `task_queue` — it's a Windmill-native scheduled trigger (cron inside Windmill), independent of the QA harness's queue. Query-time embedding (per QA batch) happens in-process inside `non_niq_qa.sh`'s Python helper by importing `embed()` from the same file — same Hetzner box, no network hop.
+- `non_niq_embed.py`'s batch run (dict→Meilisearch sync) is **not** queued through `task_queue` and **not** scheduled — deployed to Windmill purely for convenient manual triggering (click "Run" instead of SSH+run on Hetzner). No cron. Query-time embedding (per QA batch) happens in-process inside `non_niq_qa.sh`'s Python helper by importing `embed()` from the same file — same Hetzner box, no network hop.
 
 ### Retrieval engine — Meilisearch hybrid
 
@@ -63,7 +63,7 @@ Everything else in `script/` stays exactly where it is.
 - **Corpus:** `{dataset}.product_id_dict_qa` rows — **confirmed exemplars**, not raw dict entries. This mirrors the "QA examples (RAG)" pattern the epic says the current Gemini engine already uses (previously-QA'd rows as few-shot examples), reimplemented on Meilisearch.
 - **Documents:** `product_id`, `sku_name`, `sku_type_complete`, `brand`.
 - **Hybrid search:** vector search on `_vectors.default` (`userProvided` embedder, `multilingual-e5-large` via `sentence-transformers` — already a repo dependency), embedded from `sku_name` only. Keyword search on `sku_name`, `sku_type_complete`, `brand` (`searchableAttributes`).
-- **Sync job (`non_niq_embed.py main()`):** reads `product_id_dict_qa` for each active category, filters to **confirmed rows only** — excludes rows where `_meta` marks our own `qa_confidence = 'unconfident'`, so the RAG corpus never feeds the model its own shaky guesses back as ground truth. Full upsert every run (all target tables are under 50k rows — idempotent upsert by `product_id`, no incremental-diff logic needed at this scale). Scheduled hourly in Windmill, adjustable.
+- **Sync job (`non_niq_embed.py main()`):** reads `product_id_dict_qa` for each active category, filters to **confirmed rows only** — excludes rows where `_meta` marks our own `qa_confidence = 'unconfident'`, so the RAG corpus never feeds the model its own shaky guesses back as ground truth. Full upsert every run (all target tables are under 50k rows — idempotent upsert by `product_id`, no incremental-diff logic needed at this scale). **Manual trigger only** — run on demand from Windmill's UI before a `non_niq_qa.sh` run, no schedule.
 - **Query-time:** for each worklist batch, `non_niq_qa.sh`'s Python helper embeds the batch's `sku_name`s in-process, hybrid-searches the category's index, returns top-N candidates as RAG context for the Claude decision call — replacing the POC's brute SQL keyword scoring.
 
 ### Decision tree (per issue #2, mapped onto Non-NIQ schema)
@@ -122,7 +122,9 @@ ORDER BY priority ASC, gmv_monthly DESC
 
 ### Filter table
 
-A few categories list **multiple** filter tables (e.g. `babysunscreen`: `babysunscreen.filter_babysunscreen;sunscreen.filter_sunscreen_hanasui`). **Assumption, flagged as an open item below:** write to the first-listed table only; treat additional ones as legacy/read-only unless told otherwise.
+One target category (`babysunscreen`) lists two filter tables: `babysunscreen.filter_babysunscreen;sunscreen.filter_sunscreen_hanasui`. Investigated live rather than guessed — these are **not** duplicates or a platform split (checked: both tables mix all platforms). `sunscreen` is a **separate, fully active category dataset** (it has its own complete pipeline — `0_pipeline` through `9_`, same as `babysunscreen`) for general/adult Sunscreen, distinct from Baby & Kids Sunscreen. `filter_sunscreen_hanasui` is that other category's own filter table, cross-referenced here because Hanasui-brand products were apparently getting mislabeled into `babysunscreen` and someone already filters them under the general Sunscreen category instead of duplicating the work.
+
+**Rule:** write new agent-flagged irrelevant products only to the table in the row's **own dataset** (`{dataset}.filter_*` — the first-listed one is always this). Any additional cross-dataset table is **read-only reference**: check it too before flagging, so a product someone already filtered under a different category's effort doesn't get redundantly (or inconsistently) re-flagged here — but never write there. This generalizes past `babysunscreen` to any category that lists a second, foreign-dataset filter table.
 
 ## Success criteria (from issue #2, unchanged)
 
@@ -143,8 +145,6 @@ A few categories list **multiple** filter tables (e.g. `babysunscreen`: `babysun
 - [ ] Mapping table (`product_id_dict`) never modified — corrections only land in `product_id_dict_qa`
 - [ ] Results compared against existing human QA for the first rollout category (`babybath`); agreement rate, disagreement triage, filter precision/recall reported before continuing down the rollout list
 
-## Open items
+## Config Sheet access
 
-- **Filter table multi-value handling** — confirm "write to first-listed table" is correct, or if there's a rule for which one.
-- **Sheet access method** — this design was validated against the published CSV export; the running harness should likely use the Sheets API (same service-account auth already used for BigQuery) instead, since CSV publish-to-web can lag behind edits. Confirm before implementation.
-- **Windmill embed-sync cadence** — proposed hourly, adjustable if categories need fresher exemplars sooner.
+`non_niq_sheet.py` reads the **published CSV export**, read-only — it's the only thing this project ever needs from the Sheet. The Sheets API (write access) is not used: nothing in this design writes back to the config Sheet itself (filter-table writes go to the BQ filter table, not the Sheet). Revisit only if a future requirement needs the harness to write into the Sheet.
