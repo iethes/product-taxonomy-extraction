@@ -363,8 +363,8 @@ any automated check before now, same gap D5 had — found via product 1625499462
 that was never extracted. garbage_brand catches a resolved brand (brand_dict.canonical_name via
 product_taxonomy.brand_id) with no letters at all (e.g. "12/+＝") — see docs/llm-extraction-rules.md §11 for
 the root cause (a reseller's watermark/logo overlay misread as the product's brand) and STEP 4 for the fix.
-count_as_size closes a real blind spot found via a category_brief QA_HISTORY audit: `size='10 pcs'`/`'20
-capsules'` satisfies `size IS NOT NULL`, so a missing real weight/volume was invisible to the null_size flag
+count_as_size closes a real blind spot found via a category_brief QA_HISTORY audit: \`size='10 pcs'\`/\`'20
+capsules'\` satisfies \`size IS NOT NULL\`, so a missing real weight/volume was invisible to the null_size flag
 above — same underlying defect, different disguise. provenance_leak is §11's merchant/seller/SEO-leak rule
 (store names, "SG SELLER", "🔥HQ🔥", "Similar to <competitor>") finally wired into Tier 1 instead of relying on
 luck during GMV-sampled Tier 2 review to catch it — ponytail: heuristic keyword/emoji regex, not exhaustive;
@@ -463,7 +463,7 @@ and both need fixing.
 
 count_as_size's fix: this is null_size wearing a disguise, not a separate defect class — run the same
 extraction chain (sku_name text → image → product_specification → description per §2's priority order) to
-find the real weight/volume and write it to `size`; only if the listing genuinely has no weight/volume (a true
+find the real weight/volume and write it to \`size\`; only if the listing genuinely has no weight/volume (a true
 unit-count product, e.g. a set of loose capsules with no stated fill weight) is the count value itself
 legitimate — leave it as-is and do not flag it again by hand.
 
