@@ -26,6 +26,7 @@ if echo "$q" | grep -qE '(^|[^.])JSON_VALUE'; then
   fail "worklist_query must never call bare JSON_VALUE (only SAFE.JSON_VALUE) on _meta"
 fi
 echo "$q" | grep -q "ORDER BY priority ASC, gmv_monthly DESC" || fail "worklist_query must order unreviewed before unconfident, then by GMV"
+echo "$q" | grep -q "qa_status = 'Not Reviewed'" || fail "worklist_query must gate priority-0 rows to qa_status = 'Not Reviewed' per design spec"
 echo "PASS: worklist_query"
 
 # --- primary_filter_table ---

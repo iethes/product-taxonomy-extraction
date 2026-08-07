@@ -28,7 +28,7 @@ worklist_query() {
   local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5"
   cat <<SQL
 WITH base AS (
-  SELECT s.product_id, s.sku_name, s.image, s.ecommerce_platform,
+  SELECT s.product_id, s.sku_name, s.image, s.ecommerce_platform, s.qa_status,
          COALESCE(s.flag_GWP, FALSE) OR REGEXP_CONTAINS(UPPER(s.sku_name), r'\[NOT FOR SALE\]|\[GWP\]') AS flag_GWP,
          s.gmv_monthly
   FROM \`${PROJECT}.${source_table}\` s
@@ -52,13 +52,13 @@ qa_state AS (
 )
 SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly,
   CASE
-    WHEN qs.product_id IS NULL THEN 0
+    WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
     WHEN qs.qa_confidence = 'unconfident' AND COALESCE(qs.human_review, 'false') != 'true' THEN 1
     ELSE NULL
   END AS priority
 FROM scoped sc
 LEFT JOIN qa_state qs ON qs.product_id = sc.product_id
-WHERE (qs.product_id IS NULL)
+WHERE (qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed')
    OR (qs.qa_confidence = 'unconfident' AND COALESCE(qs.human_review, 'false') != 'true')
 ORDER BY priority ASC, gmv_monthly DESC
 SQL
