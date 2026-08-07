@@ -60,6 +60,9 @@ def _meili_request(method, path, body=None):
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8")
         raise RuntimeError(f"Meilisearch {method} {path} failed: {e.code} {body_text}") from e
+    except urllib.error.URLError as e:
+        # Meilisearch down / DNS / timeout -- same RuntimeError shape so callers need one except.
+        raise RuntimeError(f"Meilisearch {method} {path} unreachable: {e.reason}") from e
 
 
 def ensure_index(meili_url, index_uid):
@@ -119,7 +122,13 @@ def sync_category(client, meili_url, project, dataset, qa_table, model):
         }
         for r, vec in zip(rows, vectors)
     ]
-    _meili_request("POST", f"/indexes/{index_uid}/documents", docs)
+    # One POST per BATCH_SIZE docs. A 1024-dim vector serialises to ~20KB of JSON, so the whole
+    # corpus in a single POST blows past Meilisearch's 100MB payload limit above ~5k rows.
+    # Ingestion is async: print each batch's taskUid so a failure that happens after the 202 is at
+    # least traceable from this job's log (no polling -- the sync is manual-trigger only).
+    for i in range(0, len(docs), BATCH_SIZE):
+        task = _meili_request("POST", f"/indexes/{index_uid}/documents", docs[i:i + BATCH_SIZE])
+        print(f"  {dataset}: submitted batch task {task.get('taskUid')} ({len(docs[i:i + BATCH_SIZE])} docs)")
     return len(docs)
 
 
@@ -134,7 +143,12 @@ def embed_query_file(input_path, output_path, model=None):
 
 
 def main(mode="sync", dataset=None):
-    """Windmill entrypoint."""
+    """Windmill entrypoint.
+
+    `mode` is deliberately unread: Windmill builds the job's input form by introspecting this
+    signature, so dropping the parameter is a deploy-surface change to the already-deployed job
+    for zero code benefit. Sync is the only mode; give it a second meaning before branching on it.
+    """
     from google.cloud import bigquery
     client = bigquery.Client(project=PROJECT)
     model = _load_model()
