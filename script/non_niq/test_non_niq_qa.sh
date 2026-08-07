@@ -27,6 +27,9 @@ if echo "$q" | grep -qE '(^|[^.])JSON_VALUE'; then
 fi
 echo "$q" | grep -q "ORDER BY priority ASC, gmv_monthly DESC" || fail "worklist_query must order unreviewed before unconfident, then by GMV"
 echo "$q" | grep -q "qa_status = 'Not Reviewed'" || fail "worklist_query must gate priority-0 rows to qa_status = 'Not Reviewed' per design spec"
+# Substring greps cannot catch a dropped comma between CTEs -- assert the join literally.
+[[ "$q" == *$'),\nprioritized AS ('* ]] || fail "the CTE list must be comma-joined before prioritized AS -- otherwise the query is a BigQuery syntax error"
+grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed exactly once (in the prioritized CTE), never restated in the outer WHERE"
 echo "PASS: worklist_query"
 
 # --- primary_filter_table ---
@@ -40,9 +43,13 @@ echo "PASS: primary_filter_table"
 echo "ALL TESTS PASSED (part 1: SQL builders)"
 
 # --- build_qa_prompt ---
+# dict_identity_col is deliberately "sku_type" here (never sku_type_complete): the QA table's
+# identity column is hardcoded sku_type_complete, and the assertions below prove the two are not
+# wired to each other.
 prompt=$(build_qa_prompt "babybath" "shopee" "babybath.master_babybath_id_dev" \
   "babybath.product_id_dict_qa" "babybath.babybath_dict" "babybath.filter_babybath" \
-  "prod_id" "sku_type" "keywords_typo" "babybath_taxonomy_qa" "SELECT 1 /* worklist */")
+  "prod_id" "sku_type" "keywords_typo" "babybath_taxonomy_qa" "SELECT 1 /* worklist */" \
+  "telonoil.product_id_dict")
 
 echo "$prompt" | grep -q "RELEVANT to this category" || fail "prompt must state the relevance-check step first"
 echo "$prompt" | grep -q "do NOT create a taxonomy entry" || fail "prompt must state irrelevant products are dropped, never routed elsewhere"
@@ -57,6 +64,34 @@ echo "$prompt" | grep -q "never the streaming API" || fail "prompt must repeat t
 echo "$prompt" | grep -q "qa_confidence" || fail "prompt must instruct writing the qa_confidence _meta field"
 echo "$prompt" | grep -q "human_review" || fail "prompt must instruct writing the human_review _meta field on the retry path"
 echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping table is never modified"
+
+# QA-table identity column is hardcoded sku_type_complete and must NOT follow dict_identity_col.
+# Plain `grep sku_type_complete` would pass vacuously here (dict_identity_col="sku_type" is its
+# substring), so assert on the distinguishing context on both sides.
+echo "$prompt" | grep -q "brand/sku_type_complete values to" || fail "QA-table writes must name sku_type_complete literally, not the resolved dict_identity_col"
+if echo "$prompt" | grep -qE "brand/sku_type values to \`[^\`]*product_id_dict_qa"; then
+  fail "QA-table writes must never use the dict identity column (sku_type) -- the two are decoupled"
+fi
+echo "$prompt" | grep -q ", dict_identity_col=sku_type, " || fail "prompt's resolved-config line must still carry the live dict_identity_col"
+echo "$prompt" | grep -q "Never write sku_type to the QA table" || fail "prompt must warn against writing the dict identity column to the QA table"
+
+# step2_block, configured branch
+echo "$prompt" | grep -q "Prior mapping check against" || fail "configured product_id_dict must produce a real step 2b prior-mapping instruction"
+echo "$prompt" | grep -q "telonoil.product_id_dict" || fail "step 2b must name the configured product_id_dict table"
+echo "$prompt" | grep -q "INFORMATION_SCHEMA.COLUMNS" || fail "step 2b must tell the agent to discover the unresolved product_id_dict schema before querying it"
+
+# step2_block, unconfigured ('-') branch
+prompt_nodict=$(build_qa_prompt "babybath" "shopee" "babybath.master_babybath_id_dev" \
+  "babybath.product_id_dict_qa" "babybath.babybath_dict" "babybath.filter_babybath" \
+  "prod_id" "sku_type" "keywords_typo" "babybath_taxonomy_qa" "SELECT 1 /* worklist */" "-")
+echo "$prompt_nodict" | grep -q "2b. SKIPPED for this category" || fail "an unconfigured ('-') product_id_dict must skip step 2b"
+echo "$prompt_nodict" | grep -q "Go straight to 2c" || fail "the skipped step 2b must send the agent straight to 2c"
+if echo "$prompt_nodict" | grep -q "Prior mapping check against"; then
+  fail "an unconfigured product_id_dict must not emit the prior-mapping instruction"
+fi
+if echo "$prompt_nodict" | grep -qF "${PROJECT}.-"; then
+  fail "an unconfigured product_id_dict must never reach the prompt as a table reference"
+fi
 echo "PASS: build_qa_prompt"
 
 # --- extract_json_object / decide_queue_signal (local duplicates, same contract as headless_taxonomy.sh) ---
@@ -75,6 +110,9 @@ echo "PASS: decide_queue_signal"
 script_src=$(cat script/non_niq/non_niq_qa.sh)
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() must emit NOTHING_TO_DO when the worklist is empty, before spending a claude -p call"
 grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() must emit the post-run signal derived from decide_queue_signal"
+grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() must tolerate a non-zero claude exit (|| true) so the transcript still gets echoed under set -e"
+grep -qF "product_id_dict=\$(echo \"\$category_json\" | jq -r '.product_id_dict')" <<< "$script_src" || fail "main() must extract product_id_dict from the Sheet row and pass it to build_qa_prompt"
+grep -qF 'for t in "qa_table=$qa_table" "dict_table=$dict_table" "filter_table=$filter_table"' <<< "$script_src" || fail "main() must guard qa_table/dict_table/filter_table against the Sheet's unconfigured '-' marker (and only those three -- '-' is legal for product_id_dict)"
 echo "PASS: main() QUEUE_SIGNAL wiring"
 
 echo "ALL TESTS PASSED (part 2: prompt + main)"
