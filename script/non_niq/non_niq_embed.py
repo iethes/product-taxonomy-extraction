@@ -75,6 +75,16 @@ def ensure_index(meili_url, index_uid):
     })
 
 
+def _format_passage_text(text):
+    """Format text for the indexed corpus side (E5 asymmetric retrieval)."""
+    return f"passage: {text}"
+
+
+def _format_query_text(text):
+    """Format text for the search query side (E5 asymmetric retrieval)."""
+    return f"query: {text}"
+
+
 def _load_model():
     from sentence_transformers import SentenceTransformer
     return SentenceTransformer(MODEL_NAME)
@@ -96,7 +106,7 @@ def sync_category(client, meili_url, project, dataset, qa_table, model):
     index_uid = f"{dataset}_taxonomy_qa"
     ensure_index(meili_url, index_uid)
 
-    texts = [f"query: {r.sku_name}" for r in rows]
+    texts = [_format_passage_text(r.sku_name) for r in rows]
     vectors = model.encode(texts, batch_size=BATCH_SIZE, show_progress_bar=False, normalize_embeddings=True)
 
     docs = [
@@ -116,7 +126,7 @@ def sync_category(client, meili_url, project, dataset, qa_table, model):
 def embed_query_file(input_path, output_path, model=None):
     model = model or _load_model()
     lines = [json.loads(l) for l in Path(input_path).read_text().splitlines() if l.strip()]
-    texts = [f"query: {l['text']}" for l in lines]
+    texts = [_format_query_text(l['text']) for l in lines]
     vectors = model.encode(texts, batch_size=BATCH_SIZE, show_progress_bar=False, normalize_embeddings=True)
     with open(output_path, "w") as f:
         for line, vec in zip(lines, vectors):
@@ -141,9 +151,12 @@ def main(mode="sync", dataset=None):
         if ds in seen_datasets or qa_table == "-":
             continue
         seen_datasets.add(ds)
-        n = sync_category(client, MEILI_URL, PROJECT, ds, qa_table, model)
-        print(f"{ds}: synced {n} rows")
-        total += n
+        try:
+            n = sync_category(client, MEILI_URL, PROJECT, ds, qa_table, model)
+            print(f"{ds}: synced {n} rows")
+            total += n
+        except Exception as e:
+            print(f"{ds}: ERROR - {type(e).__name__}: {e}")
     print(f"Total synced: {total}")
     return total
 
