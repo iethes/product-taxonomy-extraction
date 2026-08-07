@@ -68,10 +68,25 @@ echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping 
 # QA-table identity column is hardcoded sku_type_complete and must NOT follow dict_identity_col.
 # Plain `grep sku_type_complete` would pass vacuously here (dict_identity_col="sku_type" is its
 # substring), so assert on the distinguishing context on both sides.
-echo "$prompt" | grep -q "brand/sku_type_complete values to" || fail "QA-table writes must name sku_type_complete literally, not the resolved dict_identity_col"
-if echo "$prompt" | grep -qE "brand/sku_type values to \`[^\`]*product_id_dict_qa"; then
-  fail "QA-table writes must never use the dict identity column (sku_type) -- the two are decoupled"
+# The prompt hard-wraps, so single-line greps silently miss instructions split across lines (that
+# is exactly how 2c's two QA-table writes survived the first pass at this fix). Flatten to one
+# line first, then every assertion below is wrap-proof.
+flat=$(echo "$prompt" | tr '\n' ' ' | tr -s ' ')
+
+# All three QA-table write instructions -- 2b's, and BOTH of 2c's -- must name sku_type_complete.
+echo "$flat" | grep -q "write those SAME brand/sku_type_complete values to \`sincere-hearth-273704.babybath.product_id_dict_qa\`" || fail "step 2b's QA-table write must name sku_type_complete"
+echo "$flat" | grep -q "write CORRECTED (re-pointed) brand/sku_type_complete values to \`sincere-hearth-273704.babybath.product_id_dict_qa\`" || fail "step 2c's re-point QA-table write must name sku_type_complete, not the resolved dict_identity_col"
+echo "$flat" | grep -q "write brand/sku_type_complete values pointing at the new entry to \`sincere-hearth-273704.babybath.product_id_dict_qa\`" || fail "step 2c's post-mint QA-table write must name sku_type_complete, not the resolved dict_identity_col"
+
+# The general invariant: the dict identity column must never appear near a QA-table reference.
+# \bsku_type([^_]|$) matches the dict value but not sku_type_complete. 140 chars of lookbehind
+# covers the longest of the three write instructions above.
+if echo "$flat" | grep -oE ".{0,140}product_id_dict_qa" | grep -qE "\bsku_type([^_]|\$)"; then
+  fail "the dict identity column (sku_type) must never appear adjacent to a QA-table reference -- the two identity columns are decoupled"
 fi
+
+# ...and conversely it must still appear where it genuinely belongs: the dict table's own writes.
+echo "$flat" | grep -q "Step A: insert brand + sku_type + keywords" || fail "the dict-table mint (Step A) must still use the resolved dict_identity_col"
 echo "$prompt" | grep -q ", dict_identity_col=sku_type, " || fail "prompt's resolved-config line must still carry the live dict_identity_col"
 echo "$prompt" | grep -q "Never write sku_type to the QA table" || fail "prompt must warn against writing the dict identity column to the QA table"
 

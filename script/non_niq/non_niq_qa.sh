@@ -180,7 +180,7 @@ ${step2_block}
       past-QA'd products), not raw dict rows -- use them as grounding context, then check the
       candidates' implied dict entries against \`${PROJECT}.${dict_table}\` for the real match.
       Does a TRUE matching taxonomy record exist in ${dict_table}?
-      YES -> write CORRECTED (re-pointed) brand/${dict_identity_col} values to
+      YES -> write CORRECTED (re-pointed) brand/${qa_identity_col} values to
              \`${PROJECT}.${qa_table}\`.
       NO  -> two-step create in \`${PROJECT}.${dict_table}\`:
              Step A: insert brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if you
@@ -190,7 +190,7 @@ ${step2_block}
                      \`SELECT DISTINCT <column> FROM ${PROJECT}.${dict_table}\` per attribute column
                      before writing a new value, prefer an existing value over inventing one, and
                      match existing formatting exactly (e.g. "150 ml" not "150ml").
-             Then write brand/${dict_identity_col} values pointing at the new entry to
+             Then write brand/${qa_identity_col} values pointing at the new entry to
              \`${PROJECT}.${qa_table}\`.
 
   2d. Self-QA: as an explicit, separate judgment (not folded into 2a-2c's reasoning), state how
