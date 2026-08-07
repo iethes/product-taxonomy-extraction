@@ -81,3 +81,196 @@ primary_filter_table() {
   done
   echo "${entries[0]}"
 }
+
+build_qa_prompt() {
+  local dataset="$1" platform="$2" source_table="$3" qa_table="$4" dict_table="$5" filter_table="$6"
+  local qa_pk_col="$7" dict_identity_col="$8" dict_typo_col="$9" meili_index="${10}" worklist_query="${11}"
+  cat <<PROMPT
+Non-NIQ Agentic QA session for dataset=${dataset}, platform=${platform}. See
+docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the full design this
+implements -- read it in full before starting.
+
+Resolved for this run: source_table=${PROJECT}.${source_table}, qa_table=${PROJECT}.${qa_table},
+dict_table=${PROJECT}.${dict_table}, filter_table (write target)=${PROJECT}.${filter_table},
+qa_pk_col=${qa_pk_col}, dict_identity_col=${dict_identity_col}, dict_typo_col=${dict_typo_col},
+meilisearch_index=${meili_index} (at ${MEILI_URL}).
+
+STEP 0 -- Get the live worklist (do not trust any cached number, re-run this yourself):
+${worklist_query}
+This is already scoped to top 90% cumulative GMV per platform and prioritized (unreviewed rows
+before agent-flagged-unconfident retry rows, both by gmv_monthly descending) -- process it in
+that order.
+
+STEP 1 -- Batch-embed the WHOLE worklist's sku_name text in ONE call, never one call per product
+(a fresh process per product means a ~2GB multilingual-e5-large model reload per product):
+  1. Write /tmp/${dataset}_${platform}_worklist.jsonl -- one line per worklist product:
+     {"id": "<product_id>", "text": "<sku_name>"}
+  2. Run: python3 script/non_niq/non_niq_embed.py embed-query --input-file /tmp/${dataset}_${platform}_worklist.jsonl --output-file /tmp/${dataset}_${platform}_vectors.jsonl
+  3. Read back /tmp/${dataset}_${platform}_vectors.jsonl -- one {"id":..., "embedding":[...]} per input line.
+
+STEP 2 -- For each product in the worklist, in order:
+
+  2a. RELEVANT to this category? Read the product image and sku_name/item_description together --
+      does this product genuinely belong in "${dataset}"?
+      NO  -> write {product_id, ecommerce_platform, sku_name, reason} to \`${PROJECT}.${filter_table}\`
+             (this dataset's OWN filter table -- never write to a different dataset's filter table
+             even if the Sheet cross-references one for read context), _meta stamped
+             '{"source":"claude_code"}', do NOT create a taxonomy entry. Move to the next product.
+      YES -> continue to 2b.
+
+  2b. Does \`${PROJECT}.${qa_table}\` already have a row for this product_id (via ${qa_pk_col})
+      with a value that came from a prior engine, not from you? If a value exists: is it CORRECT?
+      YES -> write the SAME brand/${dict_identity_col} values to \`${PROJECT}.${qa_table}\`, go to 2d.
+      NO, or no existing value at all -> continue to 2c.
+
+  2c. Hybrid retrieval: using this product's vector from STEP 1 and its sku_name text, query
+      Meilisearch for candidates:
+        curl -s -X POST "${MEILI_URL}/indexes/${meili_index}/search" -H "Content-Type: application/json" \\
+          -d "{\\"q\\": \\"<sku_name>\\", \\"vector\\": <embedding from STEP 1>, \\"hybrid\\": {\\"embedder\\": \\"default\\", \\"semanticRatio\\": 0.5}, \\"limit\\": 10}"
+      This returns confirmed exemplars (product_id, sku_name, brand, sku_type_complete of similar
+      past-QA'd products), not raw dict rows -- use them as grounding context, then check the
+      candidates' implied dict entries against \`${PROJECT}.${dict_table}\` for the real match.
+      Does a TRUE matching taxonomy record exist in ${dict_table}?
+      YES -> write CORRECTED (re-pointed) brand/${dict_identity_col} values to
+             \`${PROJECT}.${qa_table}\`.
+      NO  -> two-step create in \`${PROJECT}.${dict_table}\`:
+             Step A: insert brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if you
+                     have common misspellings), _meta='claude_code' stamped here.
+             Step B: populate the remaining attribute columns for this dict's schema, GROUNDED on
+                     existing dict rows' actual vocabulary and formatting -- query
+                     \`SELECT DISTINCT <column> FROM ${PROJECT}.${dict_table}\` per attribute column
+                     before writing a new value, prefer an existing value over inventing one, and
+                     match existing formatting exactly (e.g. "150 ml" not "150ml").
+             Then write brand/${dict_identity_col} values pointing at the new entry to
+             \`${PROJECT}.${qa_table}\`.
+
+  2d. Self-QA: as an explicit, separate judgment (not folded into 2a-2c's reasoning), state how
+      confident you are in the decision you just made for this product. Then:
+      - If this is the product's FIRST time being processed this session (no qa_confidence value
+        existed for it before this run): write _meta =
+        '{"source":"claude_code","qa_confidence":"confident","timestamp":"<now, ISO 8601 UTC>"}' if
+        confident, or
+        '{"source":"claude_code","qa_confidence":"unconfident","human_review":false,"timestamp":"<now>"}'
+        if not.
+      - If this product ALREADY had a qa_confidence:'unconfident', human_review:false row before
+        this run (i.e. this is its one allowed retry): and you are STILL unconfident after
+        redoing 2a-2c with full multimodal effort, write _meta =
+        '{"source":"claude_code","qa_confidence":"unconfident","human_review":true,"timestamp":"<now>"}'
+        -- this is terminal, the product will not re-enter future worklists for this harness.
+        If you ARE confident on this retry, write the confident shape as above.
+
+Hard rules, never relaxed:
+- Mapping table (any product_id_dict / prior-engine table) is NEVER modified by this harness --
+  corrections only ever land in \`${PROJECT}.${qa_table}\`.
+- All writes use bq query DML, never the streaming API -- CLAUDE.md's 90-minute streaming-buffer
+  rule. The very next run's retry-cap logic depends on reading back this run's QA rows reliably.
+- Every _meta read you do yourself (e.g. checking whether a product already has an unconfident
+  row) must use SAFE.JSON_VALUE, never bare JSON_VALUE -- some existing _meta values are empty
+  strings or the literal text "nan", and bare JSON_VALUE raises on those.
+- Attempt to resolve the ENTIRE worklist within your turn budget this session -- do not
+  self-limit to a small sample. Stop early only when genuinely low on turns, and say so honestly
+  in findings.
+
+If you hit a genuine blocker -- something wrong with these instructions, missing data, anything
+that would make proceeding unsafe -- stop and output status='blocked' with the blockers array
+populated. That is a valid, expected outcome.
+
+Output ONLY this JSON when done, nothing else:
+{status: complete|partial|failed|blocked, rows_qa_confirmed, rows_qa_unconfident, rows_filtered, rows_created_in_dict, findings, blockers}.
+PROMPT
+}
+
+extract_json_object() {
+  local text="$1"
+  printf '%s' "$text" | grep -Pzo '(?s)\{.*\}' | tr -d '\0'
+}
+
+decide_queue_signal() {
+  local claude_output="$1"
+  local result_json
+  result_json=$(echo "$claude_output" | jq -r '.result // empty' 2>/dev/null) || result_json=""
+  if [[ -z "$result_json" ]]; then
+    echo "FAILED"
+    return
+  fi
+  if ! echo "$result_json" | jq -e . >/dev/null 2>&1; then
+    local extracted
+    extracted=$(extract_json_object "$result_json")
+    if [[ -n "$extracted" ]] && echo "$extracted" | jq -e . >/dev/null 2>&1; then
+      result_json="$extracted"
+    fi
+  fi
+  local status
+  status=$(echo "$result_json" | jq -r '.status // empty' 2>/dev/null) || status=""
+  case "$status" in
+    blocked) echo "BLOCKED" ;;
+    complete|partial) echo "DONE" ;;
+    *) echo "FAILED" ;;
+  esac
+}
+
+main() {
+  if [[ $# -lt 2 ]]; then
+    echo "Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS]" >&2
+    exit 1
+  fi
+  local dataset="$1" platform="$2" max_turns="${3:-300}"
+
+  local category_json
+  category_json=$(python3 "$(dirname "$0")/non_niq_sheet.py" categories --country ID \
+    | jq -c --arg ds "$dataset" --arg pl "$platform" '.[] | select(.dataset == $ds and .ecommerce_platform == $pl)')
+  if [[ -z "$category_json" ]]; then
+    echo "No active config Sheet row for dataset=${dataset} platform=${platform}" >&2
+    echo "QUEUE_SIGNAL: FAILED"
+    exit 1
+  fi
+
+  local source_table qa_table dict_table filter_table_config
+  source_table=$(echo "$category_json" | jq -r '.table')
+  qa_table=$(echo "$category_json" | jq -r '.product_id_dict_qa')
+  dict_table=$(echo "$category_json" | jq -r '.dict')
+  filter_table_config=$(echo "$category_json" | jq -r '.filter_table')
+  local filter_table
+  filter_table=$(primary_filter_table "$filter_table_config" "$dataset")
+
+  local columns_json qa_pk_col dict_identity_col dict_typo_col
+  columns_json=$(python3 "$(dirname "$0")/non_niq_sheet.py" columns --project "$PROJECT" \
+    --qa-table "$qa_table" --dict-table "$dict_table")
+  qa_pk_col=$(echo "$columns_json" | jq -r '.qa_pk_col')
+  dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
+  dict_typo_col=$(echo "$columns_json" | jq -r '.dict_typo_col')
+
+  local month
+  month=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+    "$(default_month_query "$source_table")" | tail -1)
+
+  local meili_index="${dataset}_taxonomy_qa"
+  local query
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform")
+
+  local worklist_count
+  worklist_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+    "SELECT COUNT(*) FROM ($query)" | tail -1)
+
+  if [[ "$worklist_count" == "0" ]]; then
+    echo "No in-scope worklist for ${dataset}/${platform}/${month} -- nothing to do."
+    echo "QUEUE_SIGNAL: NOTHING_TO_DO"
+    exit 0
+  fi
+
+  echo "${dataset}/${platform}, month=${month}, worklist_count=${worklist_count}"
+
+  local prompt
+  prompt=$(build_qa_prompt "$dataset" "$platform" "$source_table" "$qa_table" "$dict_table" \
+    "$filter_table" "$qa_pk_col" "$dict_identity_col" "$dict_typo_col" "$meili_index" "$query")
+
+  local claude_output
+  claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt")
+  echo "$claude_output"
+
+  echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

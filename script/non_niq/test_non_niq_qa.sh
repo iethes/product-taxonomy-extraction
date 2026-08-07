@@ -38,3 +38,43 @@ multi="babysunscreen.filter_babysunscreen;sunscreen.filter_sunscreen_hanasui"
 echo "PASS: primary_filter_table"
 
 echo "ALL TESTS PASSED (part 1: SQL builders)"
+
+# --- build_qa_prompt ---
+prompt=$(build_qa_prompt "babybath" "shopee" "babybath.master_babybath_id_dev" \
+  "babybath.product_id_dict_qa" "babybath.babybath_dict" "babybath.filter_babybath" \
+  "prod_id" "sku_type" "keywords_typo" "babybath_taxonomy_qa" "SELECT 1 /* worklist */")
+
+echo "$prompt" | grep -q "RELEVANT to this category" || fail "prompt must state the relevance-check step first"
+echo "$prompt" | grep -q "do NOT create a taxonomy entry" || fail "prompt must state irrelevant products are dropped, never routed elsewhere"
+echo "$prompt" | grep -q "babybath.filter_babybath" || fail "prompt must name the correct write-target filter table"
+echo "$prompt" | grep -q "babybath_taxonomy_qa" || fail "prompt must name the Meilisearch index to search"
+echo "$prompt" | grep -q "non_niq_embed.py embed-query" || fail "prompt must instruct batch embedding via the CLI helper, not per-product"
+echo "$prompt" | grep -q -- "--input-file" || fail "prompt must instruct the batch (--input-file/--output-file) embed-query contract, not a per-product call"
+echo "$prompt" | grep -q "sku_type" || fail "prompt must reference the resolved dict identity column"
+echo "$prompt" | grep -q "keywords_typo" || fail "prompt must reference the resolved dict typo column"
+echo "$prompt" | grep -q "prod_id" || fail "prompt must reference the resolved QA primary-key column"
+echo "$prompt" | grep -q "never the streaming API" || fail "prompt must repeat the DML-only / no-streaming-API constraint"
+echo "$prompt" | grep -q "qa_confidence" || fail "prompt must instruct writing the qa_confidence _meta field"
+echo "$prompt" | grep -q "human_review" || fail "prompt must instruct writing the human_review _meta field on the retry path"
+echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping table is never modified"
+echo "PASS: build_qa_prompt"
+
+# --- extract_json_object / decide_queue_signal (local duplicates, same contract as headless_taxonomy.sh) ---
+[[ "$(extract_json_object 'prose {"status":"complete"} trailing')" == '{"status":"complete"}' ]] || fail "extract_json_object should pull the JSON object out of mixed text"
+echo "PASS: extract_json_object"
+
+complete_output='{"result":"{\"status\":\"complete\"}"}'
+[[ "$(decide_queue_signal "$complete_output")" == "DONE" ]] || fail "complete status should map to DONE"
+blocked_output='{"result":"{\"status\":\"blocked\"}"}'
+[[ "$(decide_queue_signal "$blocked_output")" == "BLOCKED" ]] || fail "blocked status should map to BLOCKED"
+garbage_output='not json at all'
+[[ "$(decide_queue_signal "$garbage_output")" == "FAILED" ]] || fail "unparseable output should map to FAILED, never silently succeed"
+echo "PASS: decide_queue_signal"
+
+# --- main() wiring (grep the script source, no execution) ---
+script_src=$(cat script/non_niq/non_niq_qa.sh)
+grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() must emit NOTHING_TO_DO when the worklist is empty, before spending a claude -p call"
+grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() must emit the post-run signal derived from decide_queue_signal"
+echo "PASS: main() QUEUE_SIGNAL wiring"
+
+echo "ALL TESTS PASSED (part 2: prompt + main)"
