@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./script/targeted_qa_fix.sh <TABLE> [BLOCK_SIZE] [MAX_TURNS]
-# e.g.  ./script/targeted_qa_fix.sh shopee_th_detergent
+# Usage: ./script/niq/targeted_qa_fix.sh <TABLE> [BLOCK_SIZE] [MAX_TURNS]
+# e.g.  ./script/niq/targeted_qa_fix.sh shopee_th_detergent
 #
 # Runs the "Scenario: Targeted QA Fix" procedure from docs/headless-runbook.md: claim a small SKU
 # block, run claude -p, then independently re-verify via script/qa_report.sh before refreshing the
@@ -683,13 +683,13 @@ main() {
   # Global, not local: this EXIT trap fires after main() itself may have returned, when a `local` would
   # already be out of scope. Every exit from here on (blocked/failed/noop/success) reports coverage.
   QA_FIX_TABLE="$table"
-  trap './script/qa_coverage_report.sh "$QA_FIX_TABLE" || true' EXIT
+  trap './script/niq/qa_coverage_report.sh "$QA_FIX_TABLE" || true' EXIT
 
   echo "${table}"
 
   echo "Running pre-fix QA gate report..."
   local gate_report
-  gate_report=$(./script/qa_report.sh "$table") || true
+  gate_report=$(./script/niq/qa_report.sh "$table") || true
 
   local prompt
   if [[ "$(has_real_brief "$brief_markdown")" == "true" ]]; then
@@ -767,7 +767,7 @@ main() {
       ;;
     GATE_AND_REFRESH)
       echo "STATUS: rows written — running independent QA gates via script/qa_report.sh..."
-      if ./script/qa_report.sh "$table"; then
+      if ./script/niq/qa_report.sh "$table"; then
         if run_universe_refresh "$table"; then
           echo "============================"
           echo "TARGETED QA FIX FINISHED — universe refreshed"

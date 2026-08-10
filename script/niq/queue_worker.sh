@@ -79,10 +79,10 @@ run_underlying_script() {
   local script_type="$1" table="$2" month="$3" max_turns="$4" block_size="$5"
   case "$script_type" in
     headless_taxonomy)
-      "${HEADLESS_TAXONOMY_SCRIPT:-./script/headless_taxonomy.sh}" "$table" "$month" "$max_turns"
+      "${HEADLESS_TAXONOMY_SCRIPT:-./script/niq/headless_taxonomy.sh}" "$table" "$month" "$max_turns"
       ;;
     targeted_qa_fix)
-      "${TARGETED_QA_FIX_SCRIPT:-./script/targeted_qa_fix.sh}" "$table" "$block_size" "$max_turns"
+      "${TARGETED_QA_FIX_SCRIPT:-./script/niq/targeted_qa_fix.sh}" "$table" "$block_size" "$max_turns"
       ;;
     *)
       echo "Unknown script_type: $script_type" >&2
@@ -145,7 +145,7 @@ run_task() {
 }
 
 main() {
-  source "$(dirname "$0")/load_env.sh"
+  source "$(dirname "$0")/../load_env.sh"
   QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"   # recompute now that .env is actually loaded -- the
                                                        # top-level assignment (needed so pure-function
                                                        # tests get a value without ever calling main())

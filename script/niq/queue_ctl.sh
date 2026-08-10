@@ -111,7 +111,7 @@ cmd_cancel() {
 }
 
 main() {
-  source "$(dirname "$0")/load_env.sh"
+  source "$(dirname "$0")/../load_env.sh"
   QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"   # recompute now that .env is actually loaded -- the
                                                        # top-level assignment (needed so pure-function
                                                        # tests get a value without ever calling main())

@@ -731,13 +731,13 @@ main() {
   # Global, not local: this EXIT trap fires after main() itself may have returned, when a `local` would
   # already be out of scope. Every exit from here on (blocked/failed/noop/success) reports coverage.
   QA_FIX_CATEGORY="$category"
-  trap './script/qa_coverage_report.sh "$QA_FIX_CATEGORY" || true' EXIT
+  trap './script/niq/qa_coverage_report.sh "$QA_FIX_CATEGORY" || true' EXIT
 
   echo "${dataset}.${table} -> category=${category}"
 
   echo "Running pre-fix QA gate report..."
   local gate_report
-  gate_report=$(./script/qa_report.sh "$category") || true
+  gate_report=$(./script/niq/qa_report.sh "$category") || true
 
   local prompt
   if [[ "$(has_real_brief "$brief_markdown")" == "true" ]]; then
@@ -815,7 +815,7 @@ main() {
       ;;
     GATE_AND_REFRESH)
       echo "STATUS: rows written — running independent QA gates via script/qa_report.sh..."
-      if ./script/qa_report.sh "$category"; then
+      if ./script/niq/qa_report.sh "$category"; then
         if run_universe_refresh "$category"; then
           echo "============================"
           echo "TARGETED QA FIX FINISHED — universe refreshed"

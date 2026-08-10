@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./script/qa_report.sh <master_table> [--skip-coexistence]
+# Usage: ./script/niq/qa_report.sh <master_table> [--skip-coexistence]
 # Runs the QA gates from docs/headless-runbook.md § QA-gate-as-code plus the canonical_name /
 # duplicate-map checks from docs/llm-extraction-rules.md, and prints a full report —
 # unlike run_qa_gates() (which aborts on the first failure, for gating a pipeline step), this always

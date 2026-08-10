@@ -294,7 +294,7 @@ Coverage gaps (products with `taxonomy_id IS NULL`) are explicitly out of scope 
 "Scenario: Full Rebuild" below, which now also covers re-running against an already-complete category to
 close a live coverage gap.
 
-**Since 2026-07-21, this scenario has two modes** (`script/targeted_qa_fix.sh` picks automatically):
+**Since 2026-07-21, this scenario has two modes** (`script/niq/targeted_qa_fix.sh` picks automatically):
 - **Brief mode** (unchanged): `docs/categories/<table>.md` has a filled-in `## Targeted QA Fix Brief` section
   — executes exactly what it specifies.
 - **Auto-discovery mode** (new default when no real Brief exists): reviews `product_taxonomy` entries the
@@ -327,7 +327,7 @@ close a live coverage gap.
    SET status = 'FAILED_QA' WHERE block_start = @claimed_block_start AND master_table = @table;
    ```
 7. Regardless of outcome (blocked, failed, noop, or refreshed), run `qa_coverage_report.sh @table` and report
-   the pending-review count — this always fires, via an `EXIT` trap in `script/targeted_qa_fix.sh`, not a
+   the pending-review count — this always fires, via an `EXIT` trap in `script/niq/targeted_qa_fix.sh`, not a
    conditional step an operator has to remember to run. Since
    [docs/superpowers/specs/2026-07-23-qa-fix-throughput-diagnosis-design.md](superpowers/specs/2026-07-23-qa-fix-throughput-diagnosis-design.md),
    this report splits into four buckets, not three — a freshly-fixed row awaiting its next re-review
@@ -337,7 +337,7 @@ close a live coverage gap.
 
 ## Scenario: Full Rebuild
 
-`script/headless_taxonomy.sh` implements two scenarios, auto-selected from live BigQuery state rather than
+`script/niq/headless_taxonomy.sh` implements two scenarios, auto-selected from live BigQuery state rather than
 chosen by the operator — the script itself checks whether any `source='LLM'` `product_taxonomy_map` rows
 exist for the target table and picks accordingly. **This check is scoped to `source='LLM'` specifically, not
 any row** — almost every category has `source='HUMAN'` keyword-seed rows before Phase 5 ever runs (see
@@ -368,7 +368,7 @@ deprioritized here; that precision work belongs to `targeted_qa_fix.sh`, scoped 
 speed-first pass.
 
 `MAX_TURNS` is an optional 3rd CLI argument (`<TABLE> [MONTH] [MAX_TURNS]`, default 300) for scaling the
-session's turn budget on a large gap, e.g. `./script/headless_taxonomy.sh shopee_th_suncare "" 800`.
+session's turn budget on a large gap, e.g. `./script/niq/headless_taxonomy.sh shopee_th_suncare "" 800`.
 
 **Confirmed out-of-scope products (`magpie_reference.category_scope_exceptions`).** A source table's rows
 aren't guaranteed to actually be the category they're filed under — e.g. cocoa/malt-powder listings inside
@@ -508,7 +508,7 @@ that writes to production once it starts.
 ## Queue Mode
 
 An alternative to running `headless_taxonomy.sh` / `targeted_qa_fix.sh` by hand: submit them as
-priority-queued tasks and let one or more `script/queue_worker.sh` processes pull and run them. See
+priority-queued tasks and let one or more `script/niq/queue_worker.sh` processes pull and run them. See
 `docs/superpowers/specs/2026-07-27-task-queue-design.md` for the full design.
 
 ### Setup
@@ -523,11 +523,11 @@ priority-queued tasks and let one or more `script/queue_worker.sh` processes pul
 
 ```bash
 source script/load_env.sh
-script/queue_ctl.sh submit shopee_th_shampoo headless_taxonomy --priority 200
-script/queue_ctl.sh submit shopee_th_shampoo targeted_qa_fix --loop-count 1 --priority 100
-script/queue_ctl.sh list --status queued
-script/queue_ctl.sh priority <id> 500
-script/queue_ctl.sh cancel <id>
+script/niq/queue_ctl.sh submit shopee_th_shampoo headless_taxonomy --priority 200
+script/niq/queue_ctl.sh submit shopee_th_shampoo targeted_qa_fix --loop-count 1 --priority 100
+script/niq/queue_ctl.sh list --status queued
+script/niq/queue_ctl.sh priority <id> 500
+script/niq/queue_ctl.sh cancel <id>
 ```
 
 The same operations are also exposed as a Windmill UI, built separately against the same Postgres
@@ -537,7 +537,7 @@ table — see the design spec's §7 for the UI's own build prompt.
 
 ```bash
 source script/load_env.sh
-script/queue_worker.sh
+script/niq/queue_worker.sh
 ```
 
 Each worker is a long-running loop: it claims the highest-priority queued task for a table no other

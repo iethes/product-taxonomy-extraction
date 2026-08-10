@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./script/qa_coverage_report.sh <master_table>
+# Usage: ./script/niq/qa_coverage_report.sh <master_table>
 # Reports how many product_taxonomy entries for a table are NOT confidently reviewed yet — the exact
 # _meta criteria targeted_qa_fix.sh's auto-discovery worklist uses (_meta IS NULL OR review_confidence !=
 # 'confident'). Standalone-runnable for any table at any time; also called by targeted_qa_fix.sh at the end

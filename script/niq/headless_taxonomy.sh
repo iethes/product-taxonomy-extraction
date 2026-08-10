@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./script/headless_taxonomy.sh <TABLE> [MONTH] [MAX_TURNS]
-# e.g.  ./script/headless_taxonomy.sh shopee_th_conditioner
-#       ./script/headless_taxonomy.sh shopee_th_suncare 2026-06        (explicit month instead of live-latest)
-#       ./script/headless_taxonomy.sh shopee_th_suncare "" 800         (default month, larger turn budget for a big gap)
+# Usage: ./script/niq/headless_taxonomy.sh <TABLE> [MONTH] [MAX_TURNS]
+# e.g.  ./script/niq/headless_taxonomy.sh shopee_th_conditioner
+#       ./script/niq/headless_taxonomy.sh shopee_th_suncare 2026-06        (explicit month instead of live-latest)
+#       ./script/niq/headless_taxonomy.sh shopee_th_suncare "" 800         (default month, larger turn budget for a big gap)
 #
 # MAX_TURNS defaults to 300 if omitted. Raise it for a large live gap you want closed in one session — bulk-first
 # processing (see build_topup_prompt) means turn count no longer scales 1:1 with worklist size, but a very large
