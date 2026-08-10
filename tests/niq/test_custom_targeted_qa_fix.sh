@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Self-test for script/custom_targeted_qa_fix.sh's pure helper functions.
-# No network, BQ, or claude calls — mirrors script/test_targeted_qa_fix.sh's convention.
-# Run: bash script/test_custom_targeted_qa_fix.sh
+# Self-test for script/niq/custom_targeted_qa_fix.sh's pure helper functions.
+# No network, BQ, or claude calls — mirrors tests/niq/test_targeted_qa_fix.sh's convention.
+# Run: bash tests/niq/test_custom_targeted_qa_fix.sh
 
-cd "$(dirname "$0")/.."
-source script/custom_targeted_qa_fix.sh
+cd "$(dirname "$0")/../.."
+source script/niq/custom_targeted_qa_fix.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
@@ -115,7 +115,7 @@ echo "$q" | grep -q "master_table = 'makanankucing_my'" || fail "review_worklist
 echo "PASS: review_worklist_count_query"
 
 # --- main(): DATASET/SOURCE_TABLE/CATEGORY wiring + coverage EXIT trap ---
-script_src=$(cat script/custom_targeted_qa_fix.sh)
+script_src=$(cat script/niq/custom_targeted_qa_fix.sh)
 grep -qF 'QA_FIX_CATEGORY="$category"' <<< "$script_src" || fail "main() must set QA_FIX_CATEGORY as a global for the EXIT trap to see"
 grep -q 'trap.*qa_coverage_report\.sh.*EXIT' <<< "$script_src" || fail "main() must set an EXIT trap invoking qa_coverage_report.sh"
 grep -qF 'build_prompt "$dataset" "$table" "$category" "$category_key" "$block_size" "$gate_report"' <<< "$script_src" || fail "brief-mode call site must pass category_key, not a file path"

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Self-test for script/custom_headless_taxonomy.sh's pure helper functions.
-# No network, BQ, or claude calls — mirrors script/test_headless_taxonomy.sh's convention.
-# Run: bash script/test_custom_headless_taxonomy.sh
+# Self-test for script/niq/custom_headless_taxonomy.sh's pure helper functions.
+# No network, BQ, or claude calls — mirrors tests/niq/test_headless_taxonomy.sh's convention.
+# Run: bash tests/niq/test_custom_headless_taxonomy.sh
 
-cd "$(dirname "$0")/.."
-source script/custom_headless_taxonomy.sh
+cd "$(dirname "$0")/../.."
+source script/niq/custom_headless_taxonomy.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 

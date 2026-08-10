@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Self-test for script/queue_worker.sh's pure helper functions.
-# No network, Postgres, or claude calls -- mirrors script/test_targeted_qa_fix.sh's convention.
-# Run: bash script/test_queue_worker.sh
+# Self-test for script/niq/queue_worker.sh's pure helper functions.
+# No network, Postgres, or claude calls -- mirrors tests/niq/test_targeted_qa_fix.sh's convention.
+# Run: bash tests/niq/test_queue_worker.sh
 
-cd "$(dirname "$0")/.."
-source script/queue_worker.sh
+cd "$(dirname "$0")/../.."
+source script/niq/queue_worker.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 

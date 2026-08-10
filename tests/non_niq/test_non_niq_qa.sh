@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Self-test for script/non_niq/non_niq_qa.sh's pure helper functions.
-# No network, BQ, or claude calls -- mirrors script/test_headless_taxonomy.sh's convention.
+# No network, BQ, or claude calls -- mirrors tests/niq/test_headless_taxonomy.sh's convention.
 # Run: bash script/non_niq/test_non_niq_qa.sh
 
 cd "$(dirname "$0")/../.."

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Self-test for script/load_env.sh.
-# Run: bash script/test_load_env.sh
+# Run: bash tests/test_load_env.sh
 
 cd "$(dirname "$0")/.."
 fail() { echo "FAIL: $1" >&2; exit 1; }

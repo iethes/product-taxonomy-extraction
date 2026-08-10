@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "script" / "non_niq"))
 from non_niq_embed import is_confirmed, _format_passage_text, _format_query_text
 
 def test_confirmed_when_meta_is_labeling_source():

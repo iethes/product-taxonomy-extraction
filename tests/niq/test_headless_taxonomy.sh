@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Self-test for script/headless_taxonomy.sh's pure helper functions.
-# No network, BQ, or claude calls — mirrors script/test_targeted_qa_fix.sh's convention.
-# Run: bash script/test_headless_taxonomy.sh
+# Self-test for script/niq/headless_taxonomy.sh's pure helper functions.
+# No network, BQ, or claude calls — mirrors tests/niq/test_targeted_qa_fix.sh's convention.
+# Run: bash tests/niq/test_headless_taxonomy.sh
 
-cd "$(dirname "$0")/.."
-source script/headless_taxonomy.sh
+cd "$(dirname "$0")/../.."
+source script/niq/headless_taxonomy.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
@@ -135,7 +135,7 @@ prose_wrapped_output='{"result": "prose before {\"status\": \"complete\"} prose 
 echo "PASS: decide_queue_signal"
 
 # --- QUEUE_SIGNAL wiring in main() (static check -- gap_count/claude -p require live BQ, out of scope here) ---
-script_src=$(cat script/headless_taxonomy.sh)
+script_src=$(cat script/niq/headless_taxonomy.sh)
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() must emit NOTHING_TO_DO when gap_count==0, before the early exit"
 grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() must emit the post-run signal derived from decide_queue_signal"
 echo "PASS: main() QUEUE_SIGNAL wiring"

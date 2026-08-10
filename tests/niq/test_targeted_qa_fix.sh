@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Self-test for script/targeted_qa_fix.sh's pure helper functions.
+# Self-test for script/niq/targeted_qa_fix.sh's pure helper functions.
 # No network, BQ, or claude calls — see docs/superpowers/specs/2026-07-17-targeted-qa-fix-script-design.md
 # "Testing" section for why those are out of scope for an automated check.
-# Run: bash script/test_targeted_qa_fix.sh
+# Run: bash tests/niq/test_targeted_qa_fix.sh
 
-cd "$(dirname "$0")/.."
-source script/targeted_qa_fix.sh
+cd "$(dirname "$0")/../.."
+source script/niq/targeted_qa_fix.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
@@ -187,8 +187,8 @@ prose_wrapped='QA gates all pass. Final wrap-up.
 echo "PASS: decide_next_step"
 
 # --- main(): pre-fix gate capture + coverage EXIT trap wiring ---
-script_src=$(cat script/targeted_qa_fix.sh)
-grep -qF 'gate_report=$(./script/qa_report.sh "$table")' <<< "$script_src" || fail "main() must capture qa_report.sh output before building the prompt"
+script_src=$(cat script/niq/targeted_qa_fix.sh)
+grep -qF 'gate_report=$(./script/niq/qa_report.sh "$table")' <<< "$script_src" || fail "main() must capture qa_report.sh output before building the prompt"
 grep -qF 'QA_FIX_TABLE="$table"' <<< "$script_src" || fail "main() must set QA_FIX_TABLE as a global for the EXIT trap to see"
 grep -q 'trap.*qa_coverage_report\.sh.*EXIT' <<< "$script_src" || fail "main() must set an EXIT trap invoking qa_coverage_report.sh"
 grep -qF 'build_prompt "$table" "$category_key" "$block_size" "$gate_report"' <<< "$script_src" || fail "brief-mode call site must pass category_key to build_prompt"
@@ -205,7 +205,7 @@ echo "$q" | grep -q "review_confidence" || fail "review_worklist_count_query sho
 echo "PASS: review_worklist_count_query"
 
 # --- QUEUE_SIGNAL wiring in main() (static check -- live bq/claude calls are out of scope here) ---
-script_src=$(cat script/targeted_qa_fix.sh)
+script_src=$(cat script/niq/targeted_qa_fix.sh)
 grep -qF 'review_worklist_count_query "$table"' <<< "$script_src" || fail "main() must run the pre-check worklist count before invoking claude -p in auto-discovery mode"
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() must emit NOTHING_TO_DO when the auto-discovery worklist is empty"
 grep -qF 'echo "QUEUE_SIGNAL: BLOCKED"' <<< "$script_src" || fail "main() must emit BLOCKED in the BLOCKED case branch"

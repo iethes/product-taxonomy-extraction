@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "script" / "non_niq"))
 from non_niq_sheet import parse_categories, pick_column, QA_PK_CANDIDATES, DICT_IDENTITY_CANDIDATES, DICT_TYPO_CANDIDATES
 
 SAMPLE_CSV = """country,category_1,category_2,category,dataset,is_active,ecommerce_platform,raw_table,children,filter_column,filter_value,,0,exclude_tiktok,variant,filter_variant,phasing,1,2-1,2-2,2-3,5,9,double_date,is_daily,10,9_table,table,master_table_prod,product_id_dict_qa,product_id_dict,product_id_dict_image_qa,product_id_image_taxonomy,dict,filter_table,sku_type_complete,PIC,isDoubleDate,keywords,taxonomy_url ,taxonomy_spreadsheet_id, taxonomy_sheet_name,labelling_config,last_active_month,qa_ai_labelling
@@ -66,7 +66,7 @@ def test_cli_categories_prints_json():
         path = f.name
     try:
         out = subprocess.run(
-            [sys.executable, str(Path(__file__).parent / "non_niq_sheet.py"), "categories",
+            [sys.executable, str(Path(__file__).parent.parent.parent / "script" / "non_niq" / "non_niq_sheet.py"), "categories",
              "--country", "ID", "--csv-file", path],
             capture_output=True, text=True, check=True,
         )

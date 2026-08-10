@@ -3,13 +3,13 @@ Unit tests for script/migrate_category_docs_to_bq_2026_07_29.py's pure functions
 
 Uses stdlib unittest (not pytest) -- this environment has no python3-venv and no
 sudo, so pytest can't be installed without a system-level package change. Run:
-python3 script/test_migrate_category_docs_to_bq_2026_07_29.py -v
+python3 tests/test_migrate_category_docs_to_bq_2026_07_29.py -v
 """
 import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "script"))
 from migrate_category_docs_to_bq_2026_07_29 import (
     derive_country, classify_status, parse_qa_history_table, build_reality_note, normalize_task_date,
 )

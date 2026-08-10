@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Self-test for script/queue_ctl.sh's pure SQL-building functions.
-# No network or Postgres calls -- mirrors script/test_targeted_qa_fix.sh's convention.
-# Run: bash script/test_queue_ctl.sh
+# Self-test for script/niq/queue_ctl.sh's pure SQL-building functions.
+# No network or Postgres calls -- mirrors tests/niq/test_targeted_qa_fix.sh's convention.
+# Run: bash tests/niq/test_queue_ctl.sh
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 # QUEUE_SCHEMA is unset explicitly (not just left alone) so this test is deterministic even when run
 # from an interactive shell that already exported it via `source script/load_env.sh` earlier in the
 # same session -- queue_ctl.sh's top-level QUEUE_TABLE assignment (the one that applies here, since
@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 # assertions need to match. (main(), when actually run, recomputes QUEUE_TABLE again after loading
 # .env -- irrelevant here, but see queue_ctl.sh's main() for why.)
 unset QUEUE_SCHEMA
-source script/queue_ctl.sh
+source script/niq/queue_ctl.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
