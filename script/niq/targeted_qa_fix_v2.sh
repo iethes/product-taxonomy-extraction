@@ -198,3 +198,114 @@ Output ONLY this JSON when done, nothing else:
 {status: complete|partial|failed|blocked, rows_created, rows_mapped, taxonomy_id_range_used, qa_history_entry: null|{finding, resolution}, findings, blockers}.
 PROMPT
 }
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 <TABLE> [BLOCK_SIZE] [MAX_TURNS]" >&2
+    echo "  e.g. $0 shopee_th_detergent            (defaults: BLOCK_SIZE=200, MAX_TURNS=300)" >&2
+    exit 1
+  fi
+  local table="$1"
+  local block_size="${2:-200}"
+  local max_turns="${3:-300}"
+
+  local category_key
+  category_key=$(category_key_for "$table")
+
+  QA_FIX_TABLE="$table"
+  trap './script/niq/qa_coverage_report.sh "$QA_FIX_TABLE" || true' EXIT
+
+  echo "Building candidate-enriched worklist for ${table}..."
+  local worklist_json
+  worklist_json=$(python3 script/niq/qa_v2_worklist.py --table "$table" --block-size "$block_size")
+
+  if [[ "$worklist_json" == "[]" ]]; then
+    echo "No unlabelled/unconfident taxonomy entries for ${table} after fast-lane promotion -- nothing to do."
+    echo "QUEUE_SIGNAL: NOTHING_TO_DO"
+    exit 0
+  fi
+
+  echo "TARGETED QA FIX V2 STARTED (${category_key}, block_size=${block_size}, max_turns=${max_turns})"
+  echo "==========================="
+  local prompt
+  prompt=$(build_auto_discovery_prompt_v2 "$table" "$category_key" "$worklist_json" "$block_size")
+
+  local claude_output
+  claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt")
+
+  local result_json
+  result_json=$(echo "$claude_output" | jq -r '.result // empty')
+
+  if [[ -z "$result_json" ]]; then
+    echo "ERROR: claude -p produced no parseable .result field. Raw output:" >&2
+    echo "$claude_output" >&2
+    mark_failed_qa "$table"
+    exit 1
+  fi
+
+  if ! echo "$result_json" | jq -e . >/dev/null 2>&1; then
+    local extracted
+    extracted=$(extract_json_object "$result_json")
+    if [[ -n "$extracted" ]] && echo "$extracted" | jq -e . >/dev/null 2>&1; then
+      result_json="$extracted"
+    fi
+  fi
+
+  local qa_finding qa_resolution
+  qa_finding=$(echo "$result_json" | jq -r '.qa_history_entry.finding // empty')
+  qa_resolution=$(echo "$result_json" | jq -r '.qa_history_entry.resolution // empty')
+  if [[ -n "$qa_finding" ]]; then
+    local qa_task_date
+    qa_task_date=$(date -u +'%Y-%m-%d')
+    insert_qa_history_row "$category_key" "$qa_finding" "$qa_resolution" "$qa_task_date"
+    echo "Inserted QA_HISTORY row for ${category_key}."
+  fi
+
+  local decision
+  decision=$(decide_next_step "$result_json")
+
+  case "$decision" in
+    BLOCKED)
+      echo "STATUS: blocked. Claimed block left ACTIVE (nothing written) -- see blockers below."
+      echo "$result_json" | jq -r '.blockers[]?' >&2
+      echo "QUEUE_SIGNAL: BLOCKED"
+      exit 0
+      ;;
+    NOOP)
+      echo "STATUS: complete/partial with rows_created=0 -- nothing to gate or refresh. Block left ACTIVE."
+      echo "QUEUE_SIGNAL: DONE"
+      exit 0
+      ;;
+    MARK_FAILED)
+      echo "STATUS: failed or malformed. Marking block FAILED_QA." >&2
+      echo "$result_json" >&2
+      mark_failed_qa "$table"
+      echo "QUEUE_SIGNAL: FAILED"
+      exit 1
+      ;;
+    GATE_AND_REFRESH)
+      echo "STATUS: rows written -- running independent QA gates via script/niq/qa_report.sh..."
+      if ./script/niq/qa_report.sh "$table"; then
+        if run_universe_refresh "$table"; then
+          echo "============================"
+          echo "TARGETED QA FIX V2 FINISHED -- universe refreshed"
+          echo "QUEUE_SIGNAL: DONE"
+        else
+          echo "Universe refresh failed -- marking block FAILED_QA." >&2
+          mark_failed_qa "$table"
+          echo "QUEUE_SIGNAL: FAILED"
+          exit 1
+        fi
+      else
+        echo "QA gates failed -- marking block FAILED_QA, skipping universe refresh." >&2
+        mark_failed_qa "$table"
+        echo "QUEUE_SIGNAL: FAILED"
+        exit 1
+      fi
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
