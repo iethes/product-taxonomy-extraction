@@ -1,0 +1,25 @@
+[project]
+name = "product-taxonomy-extraction"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "google-auth>=2.0.0",
+    "google-auth-oauthlib>=0.5.0",
+    "google-api-python-client>=2.0.0",
+    "google-cloud-bigquery>=3.11",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "db-dtypes>=1.2",
+    "xgboost>=2.0",
+    "scikit-learn>=1.4",
+    "sentence-transformers>=2.7",
+    "torch>=2.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]

@@ -82,7 +82,8 @@ See [`docs/categories/STATUS.md`](docs/categories/STATUS.md) for per-category GM
 ├── sql/schema/                      ← DDL for all BQ tables
 ├── config/
 │   └── tables.py                    ← All 43 source table names
-└── requirements.txt
+├── pyproject.toml
+└── uv.lock
 ```
 
 ---
