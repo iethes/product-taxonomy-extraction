@@ -303,6 +303,14 @@ close a live coverage gap.
   [docs/superpowers/specs/2026-07-21-taxonomy-review-loop-design.md](superpowers/specs/2026-07-21-taxonomy-review-loop-design.md)
   for the full mechanics.
 
+**V2 (added 2026-08-10):** `script/niq/targeted_qa_fix_v2.sh` is a separate, auto-discovery-only script that
+pre-builds the entire worklist — strict-tier (never-reviewed before unconfident) GMV-sorted, Tier-1-flagged,
+and enriched with same-brand confident-entry and brand_dict candidates — via `script/niq/qa_v2_worklist.py`
+(pure SQL/Python, no LLM calls) before `claude -p` ever runs. This removes worklist discovery and the Tier-1
+sweep from the agent's own turn budget, cutting session cost versus V1's auto-discovery mode. Brief-mode QA
+fixes are unaffected and stay on V1 (`script/niq/targeted_qa_fix.sh`) — V2 has no brief-mode branch. See
+[`docs/superpowers/specs/2026-08-10-targeted-qa-fix-v2-design.md`](superpowers/specs/2026-08-10-targeted-qa-fix-v2-design.md).
+
 1. Claim a ~200-slot block (Shared mechanics § Atomic SKU block claim, `@block_size = 200`, `@scenario =
    'targeted_qa_fix'`).
 2. Run `qa_report.sh @table` *before* invoking `claude -p` and pass its output into the prompt as
