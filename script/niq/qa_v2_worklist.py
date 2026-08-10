@@ -152,3 +152,106 @@ def assemble_worklist_json(rows, flags_by_id, tax_cands_by_id, brand_cands_by_id
             "sample_sku_names": samples_by_id.get(tid, []),
         })
     return worklist
+
+
+def run_query(client, sql, params):
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+    return [dict(row.items()) for row in client.query(sql, job_config=job_config).result()]
+
+
+def fastlane_promote(client, table):
+    """STEP 1C-equivalent: bulk-promote fixed-pending-recheck rows that come back Tier-1-clean. No LLM
+    judgment -- this is a direct cost removal, these rows never reach claude -p at all."""
+    sql, params = build_pending_recheck_query(table)
+    pending_ids = [r["taxonomy_id"] for r in run_query(client, sql, params)]
+    if not pending_ids:
+        return 0
+    sql, params = build_tier1_sweep_query(pending_ids)
+    flag_rows = run_query(client, sql, params)
+    clean_ids = clean_taxonomy_ids(flag_rows)
+    if not clean_ids:
+        return 0
+    sql, params = build_promote_query(clean_ids)
+    client.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+    return len(clean_ids)
+
+
+def fetch_worklist_rows(client, table, block_size):
+    sql, params = build_worklist_query(table, block_size)
+    return run_query(client, sql, params)
+
+
+def fetch_tier1_flags(client, taxonomy_ids):
+    if not taxonomy_ids:
+        return {}
+    sql, params = build_tier1_sweep_query(taxonomy_ids)
+    rows = run_query(client, sql, params)
+    return {r["taxonomy_id"]: {f: r[f] for f in TIER1_FLAG_COLUMNS} for r in rows}
+
+
+def fetch_taxonomy_candidates(client, taxonomy_ids):
+    if not taxonomy_ids:
+        return {}
+    sql, params = build_taxonomy_candidates_query(taxonomy_ids)
+    rows = run_query(client, sql, params)
+    result = {}
+    for r in rows:
+        result.setdefault(r["worklist_taxonomy_id"], []).append({
+            "taxonomy_id": r["candidate_taxonomy_id"],
+            "canonical_name": r["candidate_canonical_name"],
+            "normalized_distance": r["normalized_distance"],
+        })
+    return result
+
+
+def fetch_brand_candidates(client, taxonomy_ids):
+    if not taxonomy_ids:
+        return {}
+    sql, params = build_brand_candidates_query(taxonomy_ids)
+    rows = run_query(client, sql, params)
+    result = {}
+    for r in rows:
+        result.setdefault(r["worklist_taxonomy_id"], []).append({
+            "brand_id": r["candidate_brand_id"],
+            "canonical_name": r["candidate_canonical_name"],
+            "normalized_distance": r["normalized_distance"],
+        })
+    return result
+
+
+def fetch_sample_sku_names(client, table, taxonomy_ids):
+    if not taxonomy_ids:
+        return {}
+    sql, params = build_sample_sku_names_query(table, taxonomy_ids)
+    rows = run_query(client, sql, params)
+    return {r["taxonomy_id"]: list(r["sample_sku_names"]) for r in rows}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--table", required=True)
+    parser.add_argument("--block-size", type=int, default=200)
+    args = parser.parse_args()
+
+    client = bigquery.Client(project=PROJECT)
+
+    n_promoted = fastlane_promote(client, args.table)
+    print(f"Fast-lane promoted {n_promoted} rows to confident (Tier-1-clean on recheck)", file=sys.stderr)
+
+    rows = fetch_worklist_rows(client, args.table, args.block_size)
+    if not rows:
+        print("[]")
+        return
+
+    taxonomy_ids = [r["taxonomy_id"] for r in rows]
+    flags_by_id = fetch_tier1_flags(client, taxonomy_ids)
+    tax_cands_by_id = fetch_taxonomy_candidates(client, taxonomy_ids)
+    brand_cands_by_id = fetch_brand_candidates(client, taxonomy_ids)
+    samples_by_id = fetch_sample_sku_names(client, args.table, taxonomy_ids)
+
+    worklist = assemble_worklist_json(rows, flags_by_id, tax_cands_by_id, brand_cands_by_id, samples_by_id)
+    print(json.dumps(worklist))
+
+
+if __name__ == "__main__":
+    main()
