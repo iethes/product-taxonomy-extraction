@@ -23,4 +23,13 @@ echo "PASS: category_key_for"
 [[ "$(decide_next_step 'not json at all')" == "MARK_FAILED" ]] || fail "malformed json"
 echo "PASS: decide_next_step"
 
+# --- build_auto_discovery_prompt_v2 ---
+sample_worklist='[{"taxonomy_id":"SKU-000001","canonical_name":"Sweety Silver Pants M","tier":"unlabelled","gmv":500000,"tier1_flags":{"null_size":true},"taxonomy_candidates":[],"brand_candidates":[],"sample_sku_names":["Sweety Silver M"]}]'
+prompt=$(build_auto_discovery_prompt_v2 "shopee_th_diapers" "master_clean_niq.shopee_th_diapers" "$sample_worklist" 200)
+echo "$prompt" | grep -q "SKU-000001" || fail "prompt must embed the worklist JSON verbatim"
+echo "$prompt" | grep -q "never-reviewed rows before any unconfident row" || fail "prompt must document the strict-tier ordering it was given"
+echo "$prompt" | grep -q "'targeted_qa_fix_v2'" || fail "SKU block claim must use the targeted_qa_fix_v2 scenario, matching mark_failed_qa's filter"
+echo "$prompt" | grep -qF 'status: complete|partial|failed|blocked' || fail "prompt must specify the required output JSON shape"
+echo "PASS: build_auto_discovery_prompt_v2"
+
 echo "ALL TESTS PASSED"

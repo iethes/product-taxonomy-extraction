@@ -114,3 +114,87 @@ run_universe_refresh() {
        VALUES (src.product_id, src.platform, src.country, src.master_table, src.taxonomy_id, src.canonical_name,
                src.source, src.confidence, src.meta_agent, CURRENT_TIMESTAMP())"
 }
+
+build_auto_discovery_prompt_v2() {
+  local table="$1"
+  local category_key="$2"
+  local worklist_json="$3"
+  local block_size="${4:-200}"
+  local slot_offset=$((block_size - 1))
+  cat <<PROMPT
+Targeted QA Fix V2 session for ${table}. This is a candidate-enriched, pre-built worklist -- unlike
+script/niq/targeted_qa_fix.sh's auto-discovery mode, worklist discovery, the Tier-1 mechanical sweep, and
+reference-candidate retrieval have already run in Python/SQL before this session started. See
+docs/superpowers/specs/2026-08-10-targeted-qa-fix-v2-design.md for the full design.
+
+BEFORE ANYTHING ELSE, read in full: CLAUDE.md, ARCHITECTURE.md, docs/llm-extraction-rules.md,
+docs/quality-standards.md, docs/brand-extraction.md, and the category brief -- run: SELECT brief_markdown FROM
+\`${PROJECT}.magpie_reference.category_brief\` WHERE category_key = '${category_key}' AND task_type = 'BRIEF'.
+
+You are a one-shot, non-interactive process -- do NOT use the Agent/Task tool, ScheduleWakeup, or any
+background/async dispatch mechanism.
+
+Your worklist for this session, in JSON, already ordered highest-priority first (every never-reviewed row
+before any unconfident row, GMV descending within each tier -- never-reviewed rows before any unconfident row
+regardless of relative GMV). Each row carries: tier1_flags (mechanical defects already detected by SQL regex --
+you decide the correct fix, not whether the flag fired; a flag can still be a false positive, e.g.
+"all variant/size" language on legitimately variant text), taxonomy_candidates (up to 5 same-brand
+review_confidence='confident' entries, closest by edit distance -- reference/format context only, never assume
+one is correct without checking sku_name/image yourself), brand_candidates (up to 3 similarly-named brand_dict
+entries excluding this row's own brand -- for catching brand_id misattribution), and sample_sku_names (up to 3
+real listing titles mapped to this taxonomy_id):
+
+${worklist_json}
+
+For every row: judge correct/wrong against docs/llm-extraction-rules.md and docs/quality-standards.md §3's
+D1-D5 dimensions, using the pre-attached flags and candidates as a starting point, never as a verdict on their
+own. Apply fixes directly via bq query DML.
+
+STEP 4 (fix) -- prefer bulk SQL per defect class over one row at a time. Read a product's image only when the
+fix itself requires re-deriving a value. Every row you change must have its _meta reset in the same session:
+UPDATE \`${PROJECT}.magpie_reference.product_taxonomy\`
+SET _meta = '{"is_reviewed": false}'
+WHERE taxonomy_id IN (/* the taxonomy_ids you just fixed */)
+
+STEP 5 -- promote reviewed rows' _meta using the same Path 1/Path 2 rules as script/niq/targeted_qa_fix.sh
+(docs/superpowers/specs/2026-07-28-qa-fix-one-pass-confidence-design.md): a never-reviewed row you judge correct
+AND that has no un-excepted Tier-1 flag promotes straight to 'confident'; a row you fixed this session that
+comes back clean on an immediate Tier-1 recheck also promotes straight to 'confident'; every other row you
+review gets its _meta updated by comparing this verdict against its stored prior verdict (agreement ->
+confident, disagreement -> unconfident).
+
+STEP 6 -- if a fix genuinely requires minting a new taxonomy entry, claim a ${block_size}-slot SKU block first
+(DECLARE before BEGIN TRANSACTION -- reversing that order is a real BigQuery scripting syntax error):
+BEGIN
+  DECLARE next_start INT64;
+  BEGIN TRANSACTION;
+  SET next_start = (SELECT COALESCE(MAX(block_end), 69000) + 1 FROM \`${PROJECT}.magpie_reference.sku_block_registry\`);
+  INSERT INTO \`${PROJECT}.magpie_reference.sku_block_registry\`
+    (block_start, block_end, master_table, scenario, claimed_at, status)
+  VALUES (next_start, next_start + ${slot_offset}, '${table}', 'targeted_qa_fix_v2', CURRENT_TIMESTAMP(), 'ACTIVE');
+  COMMIT TRANSACTION;
+END;
+Most sessions fix existing entries in place and need no new SKU at all; only claim a block when you actually
+mint one.
+
+STEP 7 -- write via bq query DML only, never the streaming API. Set meta_agent='CLAUDE_CODE' on every row you
+write or update. Never delete an existing row.
+
+STEP 8 -- do NOT run the universe refresh yourself; that runs after this session, only if independent QA gates
+pass.
+
+STEP 9 -- do not write to \`${PROJECT}.magpie_reference.category_brief\` yourself. Instead, set the final JSON
+output's qa_history_entry field to {finding: "...", resolution: "..."}; the wrapper inserts it as a QA_HISTORY
+row on your behalf.
+
+STEP 10 -- before declaring status, self-check the hard gates from docs/headless-runbook.md's QA-gate-as-code
+section, WITHOUT --skip-coexistence (this category already shipped once -- coexistence is always a genuine bug
+at this point). Report the actual numbers in findings.
+
+STEP 11 -- if you hit a genuine blocker at any step, stop, write nothing further, and output status='blocked'
+with the blockers array populated. That is a valid, expected outcome, not a failure.
+
+Output ONLY this JSON when done, nothing else:
+{status: complete|partial|failed|blocked, rows_created, rows_mapped, taxonomy_id_range_used, qa_history_entry: null|{finding, resolution}, findings, blockers}.
+PROMPT
+}
