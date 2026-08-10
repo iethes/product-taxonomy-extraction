@@ -29,6 +29,8 @@ PROJECT="sincere-hearth-273704"
 
 worklist_query() {
   local dataset="$1" table="$2" category="$3"
+  local country
+  country=$(echo "${category##*_}" | tr '[:lower:]' '[:upper:]')
   cat <<SQL
 WITH agg AS (
   SELECT
@@ -42,7 +44,7 @@ WITH agg AS (
     SUM(s.gmv_daily) AS gmv_monthly,
     SUM(s.sold_daily) AS sold_monthly,
   FROM \`${PROJECT}.${dataset}.${table}\` s
-  WHERE s.country = 'MY'
+  WHERE s.country = '${country}'
   GROUP BY 1,2,3,4,5,6
 ),
 base AS (

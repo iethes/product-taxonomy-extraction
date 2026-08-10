@@ -18,7 +18,13 @@ echo "$q" | grep -q "CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END" || fail "wo
 echo "$q" | grep -q "cumulative_gmv_pct <= 95" || fail "worklist_query should apply the 95% threshold"
 echo "$q" | grep -q "master_table = 'makanananjing_my'" || fail "worklist_query should scope the taxonomy_map join by CATEGORY"
 echo "$q" | grep -q "canonical_name IS NULL" || fail "worklist_query should filter to unmapped products"
+echo "$q" | grep -q "s.country = 'MY'" || fail "worklist_query should derive country MY from category suffix makanananjing_my"
 echo "PASS: worklist_query"
+
+# --- worklist_query derives country from category suffix, not hardcoded ---
+q=$(worklist_query "alatmusik" "9_alatmusik_id_daily" "alatmusik_id")
+echo "$q" | grep -q "s.country = 'ID'" || fail "worklist_query should derive country ID from category suffix alatmusik_id, not hardcode MY"
+echo "PASS: worklist_query country derivation"
 
 # --- gap_count_query ---
 q=$(gap_count_query "makanananjing" "9_makanananjing_my_daily" "makanananjing_my")
