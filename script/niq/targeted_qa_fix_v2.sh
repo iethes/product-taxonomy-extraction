@@ -231,7 +231,10 @@ main() {
   prompt=$(build_auto_discovery_prompt_v2 "$table" "$category_key" "$worklist_json" "$block_size")
 
   local claude_output
-  claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt")
+  # Piped via stdin, not passed as a CLI argument: this prompt embeds the full worklist JSON (candidates,
+  # sample titles, etc. for up to $block_size rows) and can exceed the kernel's argv size limit (E2BIG,
+  # "Argument list too long") well before it gets anywhere near a real token-budget concern.
+  claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" <<< "$prompt")
 
   local result_json
   result_json=$(echo "$claude_output" | jq -r '.result // empty')
