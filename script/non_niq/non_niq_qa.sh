@@ -103,7 +103,7 @@ build_qa_prompt() {
 
   # Decision-tree step 2 exists only for the 4 categories with a populated product_id_dict
   # mapping table (susubayi, multivitamin, telonoil, kidsuplement); the Sheet has '-' for the
-  # rest. That table's schema was NOT resolved by non_niq_sheet.py's column resolver and varies
+  # rest. That table's schema was NOT resolved by non_niq_embed.py's column resolver and varies
   # per category, so the prompt tells Claude to discover its shape before querying it.
   local step2_block
   if [[ "$product_id_dict" == "-" || "$product_id_dict" == "null" || -z "$product_id_dict" ]]; then
@@ -266,7 +266,7 @@ main() {
   local dataset="$1" platform="$2" max_turns="${3:-300}"
 
   local category_json
-  category_json=$(python3 "$(dirname "$0")/non_niq_sheet.py" categories --country ID \
+  category_json=$(python3 "$(dirname "$0")/non_niq_embed.py" categories --country ID \
     | jq -c --arg ds "$dataset" --arg pl "$platform" '.[] | select(.dataset == $ds and .ecommerce_platform == $pl)')
   if [[ -z "$category_json" ]]; then
     echo "No active config Sheet row for dataset=${dataset} platform=${platform}" >&2
@@ -297,7 +297,7 @@ main() {
   done
 
   local columns_json qa_pk_col dict_identity_col dict_typo_col
-  columns_json=$(python3 "$(dirname "$0")/non_niq_sheet.py" columns --project "$PROJECT" \
+  columns_json=$(python3 "$(dirname "$0")/non_niq_embed.py" columns --project "$PROJECT" \
     --qa-table "$qa_table" --dict-table "$dict_table")
   qa_pk_col=$(echo "$columns_json" | jq -r '.qa_pk_col')
   dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
