@@ -1,17 +1,40 @@
+# py311
+
 # extra_requirements:
 # google-cloud-bigquery
 # google-cloud-bigquery-storage
-# --extra-index-url https://download.pytorch.org/whl/cpu
-# torch
+# torch @ https://download.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl
 # sentence-transformers>=2.7
 
 """Config Sheet + Meilisearch sync + batch query-embedding for the Non-NIQ QA harness.
 
 Single file, deliberately -- Windmill deploys one script at a time and doesn't bundle local
 imports, so a second local module (this used to be split into non_niq_sheet.py) can't be deployed
-alongside it. The pytorch-cpu extra-index-url above mirrors this repo's own pyproject.toml
-[[tool.uv.index]] entry: without it, a plain `pip install torch` can resolve the CUDA-bundled
-default-PyPI build (multi-GB) instead of the ~200MB CPU-only build this Hetzner box actually needs.
+alongside it.
+
+The direct wheel-URL pin on torch is load-bearing, not decoration: on Linux, PyPI's default
+`torch` resolves to the CUDA-accelerated build (pulls in nvidia-cublas-cu12/nvidia-cudnn-cu12/etc
+as transitive deps, several GB) -- PyPI only serves CPU-only wheels by default on Windows/macOS
+(https://docs.astral.sh/uv/guides/integration/pytorch/). Windmill's `#extra_requirements:` block
+only accepts standard pip requirement specifiers, one package per line -- it does NOT accept
+arbitrary pip flags like `--extra-index-url` inline (confirmed against Windmill's own docs and a
+maintainer's reply on the CUDA/private-index topic: that's an instance-level, Enterprise Edition
+setting, not a per-script one -- https://www.windmill.dev/docs/advanced/dependencies_in_python,
+https://github.com/windmill-labs/windmill/discussions/5116). A `name @ https://...whl` direct
+reference is a standard PEP 508 specifier (the same mechanism as Windmill's own documented
+`dependency@git+https://...` example, just an https wheel instead of a git URL), so it fits the
+one thing this block actually supports.
+
+This pin is fragile in a way an index-url wouldn't be: the wheel filename encodes both the torch
+version and the exact Python ABI tag, so it silently stops matching (uv falls through to a
+different, non-CPU build, or errors) if either drifts. The `# py311` annotation above pins
+Windmill's Python version to match this wheel's `cp311` tag -- Windmill's own default is also 3.11
+today, but pin it explicitly rather than depend on that default holding
+(https://www.windmill.dev/docs/getting_started/scripts_quickstart/python#select-python-version).
+Bumping torch means re-pinning both the version number and re-verifying the cp311/manylinux tag
+still exists at https://download.pytorch.org/whl/cpu/torch/ -- this was NOT verified against a
+live Windmill deploy, only against Windmill's documented specifier format and the real wheel index;
+confirm it actually resolves before trusting it in production.
 
 Four operations, dispatched through ONE function (`main`) via its `mode` parameter:
 
