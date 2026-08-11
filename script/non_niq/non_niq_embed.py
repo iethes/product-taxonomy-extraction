@@ -13,29 +13,37 @@ alongside it. The pytorch-cpu extra-index-url above mirrors this repo's own pypr
 [[tool.uv.index]] entry: without it, a plain `pip install torch` can resolve the CUDA-bundled
 default-PyPI build (multi-GB) instead of the ~200MB CPU-only build this Hetzner box actually needs.
 
-Three responsibilities in one file:
+Four operations, dispatched through ONE function (`main`) via its `mode` parameter:
 
-1. `categories`/`columns` CLI -- reads the pipeline config Sheet (published CSV export, read-only)
-   to resolve which BQ tables belong to which category, and resolves the handful of column names
-   that genuinely vary per category's dict/QA table schema (sku_type vs sku_type_complete, prod_id
-   vs product_id, keywords_typo vs keyword_typo) live via INFORMATION_SCHEMA.COLUMNS rather than
-   hardcoding a static, already-stale mapping. Called by non_niq_qa.sh's Claude subprocess.
+1. `mode="categories"` -- reads the pipeline config Sheet (published CSV export, read-only) to
+   resolve which BQ tables belong to which category. Called by non_niq_qa.sh's Claude subprocess.
 
-2. main() / `sync` -- Windmill-deployable batch job. For each active category (or one, via
-   --dataset), reads product_id_dict_qa, keeps only CONFIRMED rows (excludes our own agent's
+2. `mode="columns"` -- resolves the handful of column names that genuinely vary per category's
+   dict/QA table schema (sku_type vs sku_type_complete, prod_id vs product_id, keywords_typo vs
+   keyword_typo) live via INFORMATION_SCHEMA.COLUMNS rather than hardcoding a static, already-stale
+   mapping. Called by non_niq_qa.sh's Claude subprocess.
+
+3. `mode="sync"` (the default) -- Windmill-deployable batch job. For each active category (or one,
+   via `dataset`), reads product_id_dict_qa, keeps only CONFIRMED rows (excludes our own agent's
    unconfident guesses -- see is_confirmed), embeds sku_name, upserts into the category's
    `{dataset}_taxonomy_qa` Meilisearch index as userProvided vectors. Manual trigger only, no
-   schedule -- run on demand from Windmill's UI or `python3 non_niq_embed.py sync`.
+   schedule -- run on demand from Windmill's UI.
 
-3. `embed-query` CLI -- called by non_niq_qa.sh's Claude subprocess to embed a whole worklist
+4. `mode="embed-query"` -- called by non_niq_qa.sh's Claude subprocess to embed a whole worklist
    batch's sku_names in ONE process invocation (not one call per product -- a fresh process per
    product would mean a ~2GB model cold-load per product).
 
-All three share the same model-loading code (splitting them would mean loading
-multilingual-e5-large twice) and now the same Sheet-reading code. Runs on the Hetzner box
-(embedding compute must not run on a laptop -- see design spec).
+Everything dispatches through `main()` because Windmill's execution model has no CLI/argv concept
+-- it imports this file and calls `main(**kwargs)` directly, using its parameter names/defaults to
+build the job's input form, and never executes an `if __name__ == "__main__":` block. So there is
+no argparse anywhere in this file, and bash/CLI callers (non_niq_qa.sh) invoke it the exact same
+way Windmill does -- `python3 -c "from non_niq_embed import main; main(mode=...)"` -- see the
+bottom of non_niq_qa.sh for the exact invocations.
+
+All four operations share the same model-loading code (splitting them would mean loading
+multilingual-e5-large twice) and the same Sheet-reading code. Embedding compute runs on the
+Hetzner box, never a laptop -- see design spec.
 """
-import argparse
 import csv
 import io
 import json
@@ -237,82 +245,61 @@ def embed_query_file(input_path, output_path, model=None):
             f.write(json.dumps({"id": line["id"], "embedding": vec.tolist()}) + "\n")
 
 
-def main(mode="sync", dataset=None):
-    """Windmill entrypoint.
+def main(mode="sync", dataset=None, country="ID", categories=None, csv_file=None,
+         project=None, qa_table=None, dict_table=None, input_file=None, output_file=None):
+    """Single entrypoint for all four operations -- Windmill only ever calls `main(**kwargs)`
+    (no argv, no `if __name__ == "__main__"`), so every mode's parameters live on this one
+    signature, all optional so Windmill's auto-generated form doesn't require fields irrelevant to
+    the selected `mode`. Unused-per-mode parameters are exactly that: unused for that call, not a
+    design smell -- the alternative (one function per mode) can't be triggered by Windmill's
+    kwargs-only calling convention without deploying four separate scripts, which reintroduces the
+    multi-file problem this merge just removed.
 
-    `mode` is deliberately unread: Windmill builds the job's input form by introspecting this
-    signature, so dropping the parameter is a deploy-surface change to the already-deployed job
-    for zero code benefit. Sync is the only mode; give it a second meaning before branching on it.
+    mode="categories": prints (and returns) parse_categories(...) as JSON -- category, country, csv_file.
+    mode="columns":     prints (and returns) resolve_category_columns(...) as JSON -- project, qa_table, dict_table.
+    mode="embed-query": runs embed_query_file(input_file, output_file), returns None.
+    mode="sync" (default): the Meilisearch batch sync -- dataset (optional, scope to one category).
     """
-    client = bigquery.Client(project=PROJECT)
-    model = _load_model()
+    if mode == "categories":
+        csv_text = open(csv_file).read() if csv_file else fetch_config_csv()
+        targets = [c.strip() for c in categories.split(",")] if categories else None
+        rows = parse_categories(csv_text, country=country, target_categories=targets)
+        print(json.dumps(rows))
+        return rows
 
-    categories = parse_categories(fetch_config_csv(), country="ID")
-    if dataset:
-        categories = [c for c in categories if c["dataset"] == dataset]
+    if mode == "columns":
+        client = bigquery.Client(project=project)
+        result = resolve_category_columns(client, project, qa_table, dict_table)
+        print(json.dumps(result))
+        return result
 
-    seen_datasets = set()
-    total = 0
-    for cat in categories:
-        ds = cat["dataset"]
-        qa_table = cat["product_id_dict_qa"]
-        if ds in seen_datasets or qa_table == "-":
-            continue
-        seen_datasets.add(ds)
-        try:
-            n = sync_category(client, MEILI_URL, PROJECT, ds, qa_table, model)
-            print(f"{ds}: synced {n} rows")
-            total += n
-        except Exception as e:
-            print(f"{ds}: ERROR - {type(e).__name__}: {e}")
-    print(f"Total synced: {total}")
-    return total
+    if mode == "embed-query":
+        embed_query_file(input_file, output_file)
+        return None
 
+    if mode == "sync":
+        client = bigquery.Client(project=PROJECT)
+        model = _load_model()
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+        cats = parse_categories(fetch_config_csv(), country="ID")
+        if dataset:
+            cats = [c for c in cats if c["dataset"] == dataset]
 
-def _cmd_categories(args):
-    csv_text = open(args.csv_file).read() if args.csv_file else fetch_config_csv()
-    targets = [c.strip() for c in args.categories.split(",")] if args.categories else None
-    rows = parse_categories(csv_text, country=args.country, target_categories=targets)
-    print(json.dumps(rows))
+        seen_datasets = set()
+        total = 0
+        for cat in cats:
+            ds = cat["dataset"]
+            cat_qa_table = cat["product_id_dict_qa"]
+            if ds in seen_datasets or cat_qa_table == "-":
+                continue
+            seen_datasets.add(ds)
+            try:
+                n = sync_category(client, MEILI_URL, PROJECT, ds, cat_qa_table, model)
+                print(f"{ds}: synced {n} rows")
+                total += n
+            except Exception as e:
+                print(f"{ds}: ERROR - {type(e).__name__}: {e}")
+        print(f"Total synced: {total}")
+        return total
 
-
-def _cmd_columns(args):
-    client = bigquery.Client(project=args.project)
-    result = resolve_category_columns(client, args.project, args.qa_table, args.dict_table)
-    print(json.dumps(result))
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    cat_p = sub.add_parser("categories")
-    cat_p.add_argument("--country", default="ID")
-    cat_p.add_argument("--categories", default=None)
-    cat_p.add_argument("--csv-file", default=None)
-
-    col_p = sub.add_parser("columns")
-    col_p.add_argument("--project", required=True)
-    col_p.add_argument("--qa-table", required=True)
-    col_p.add_argument("--dict-table", required=True)
-
-    sync_p = sub.add_parser("sync")
-    sync_p.add_argument("--dataset", default=None)
-
-    eq_p = sub.add_parser("embed-query")
-    eq_p.add_argument("--input-file", required=True)
-    eq_p.add_argument("--output-file", required=True)
-
-    args = parser.parse_args()
-    if args.command == "categories":
-        _cmd_categories(args)
-    elif args.command == "columns":
-        _cmd_columns(args)
-    elif args.command == "sync":
-        main(mode="sync", dataset=args.dataset)
-    elif args.command == "embed-query":
-        embed_query_file(args.input_file, args.output_file)
+    raise ValueError(f"Unknown mode: {mode!r} (expected categories|columns|embed-query|sync)")

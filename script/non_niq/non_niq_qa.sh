@@ -146,7 +146,9 @@ STEP 1 -- Batch-embed the WHOLE worklist's sku_name text in ONE call, never one 
 (a fresh process per product means a ~2GB multilingual-e5-large model reload per product):
   1. Write /tmp/${dataset}_${platform}_worklist.jsonl -- one line per worklist product:
      {"id": "<product_id>", "text": "<sku_name>"}
-  2. Run: python3 script/non_niq/non_niq_embed.py embed-query --input-file /tmp/${dataset}_${platform}_worklist.jsonl --output-file /tmp/${dataset}_${platform}_vectors.jsonl
+  2. Run (non_niq_embed.py has no CLI/argv -- it's called the same way Windmill calls it, by
+     importing main() and passing keyword args directly):
+     PYTHONPATH=script/non_niq python3 -c "from non_niq_embed import main; main(mode='embed-query', input_file='/tmp/${dataset}_${platform}_worklist.jsonl', output_file='/tmp/${dataset}_${platform}_vectors.jsonl')"
   3. Read back /tmp/${dataset}_${platform}_vectors.jsonl -- one {"id":..., "embedding":[...]} per input line.
 
 STEP 2 -- For each product in the worklist, in order:
@@ -265,8 +267,11 @@ main() {
   fi
   local dataset="$1" platform="$2" max_turns="${3:-300}"
 
+  # non_niq_embed.py has no CLI/argv (Windmill's calling convention is main(**kwargs) only, no
+  # `if __name__ == "__main__"`) -- called here the same way Windmill calls it.
   local category_json
-  category_json=$(python3 "$(dirname "$0")/non_niq_embed.py" categories --country ID \
+  category_json=$(PYTHONPATH="$(dirname "$0")" python3 -c \
+    "from non_niq_embed import main; main(mode='categories', country='ID')" \
     | jq -c --arg ds "$dataset" --arg pl "$platform" '.[] | select(.dataset == $ds and .ecommerce_platform == $pl)')
   if [[ -z "$category_json" ]]; then
     echo "No active config Sheet row for dataset=${dataset} platform=${platform}" >&2
@@ -296,9 +301,16 @@ main() {
     fi
   done
 
+  # Values pass via env vars, not interpolated into the python -c source text, so a table name
+  # can never break out of the string literal it'd otherwise be embedded in.
   local columns_json qa_pk_col dict_identity_col dict_typo_col
-  columns_json=$(python3 "$(dirname "$0")/non_niq_embed.py" columns --project "$PROJECT" \
-    --qa-table "$qa_table" --dict-table "$dict_table")
+  columns_json=$(PYTHONPATH="$(dirname "$0")" NON_NIQ_PROJECT="$PROJECT" \
+    NON_NIQ_QA_TABLE="$qa_table" NON_NIQ_DICT_TABLE="$dict_table" python3 -c "
+import os
+from non_niq_embed import main
+main(mode='columns', project=os.environ['NON_NIQ_PROJECT'],
+     qa_table=os.environ['NON_NIQ_QA_TABLE'], dict_table=os.environ['NON_NIQ_DICT_TABLE'])
+")
   qa_pk_col=$(echo "$columns_json" | jq -r '.qa_pk_col')
   dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
   dict_typo_col=$(echo "$columns_json" | jq -r '.dict_typo_col')

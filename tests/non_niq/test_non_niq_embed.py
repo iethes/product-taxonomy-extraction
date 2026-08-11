@@ -97,19 +97,24 @@ def test_dict_typo_candidates():
     assert pick_column({"keyword_typo"}, DICT_TYPO_CANDIDATES, "dict typo") == "keyword_typo"
     assert pick_column({"keywords_typo"}, DICT_TYPO_CANDIDATES, "dict typo") == "keywords_typo"
 
-# --- categories CLI ---
+# --- main(mode='categories'), invoked the same way Windmill/non_niq_qa.sh call it: import +
+# kwargs, no argv, no `if __name__ == "__main__"` (Windmill has no CLI concept and never executes
+# that block, so this file must not depend on it for anything -- see non_niq_qa.sh's call sites).
 
-def test_cli_categories_prints_json():
-    # exercises the CLI wrapper against a local sample file, no network
-    import tempfile, os
+def test_main_categories_mode_prints_json():
+    import os
+    import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
         f.write(SAMPLE_CSV)
         path = f.name
     try:
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).parent.parent.parent / "script" / "non_niq"),
+                    NON_NIQ_CSV_FILE=path)
         out = subprocess.run(
-            [sys.executable, str(Path(__file__).parent.parent.parent / "script" / "non_niq" / "non_niq_embed.py"), "categories",
-             "--country", "ID", "--csv-file", path],
-            capture_output=True, text=True, check=True,
+            [sys.executable, "-c",
+             "import os; from non_niq_embed import main; "
+             "main(mode='categories', country='ID', csv_file=os.environ['NON_NIQ_CSV_FILE'])"],
+            capture_output=True, text=True, check=True, env=env,
         )
         rows = json.loads(out.stdout)
         assert len(rows) == 2
