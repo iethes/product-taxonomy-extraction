@@ -55,8 +55,11 @@ echo "$prompt" | grep -q "RELEVANT to this category" || fail "prompt must state 
 echo "$prompt" | grep -q "do NOT create a taxonomy entry" || fail "prompt must state irrelevant products are dropped, never routed elsewhere"
 echo "$prompt" | grep -q "babybath.filter_babybath" || fail "prompt must name the correct write-target filter table"
 echo "$prompt" | grep -q "babybath_taxonomy_qa" || fail "prompt must name the Meilisearch index to search"
-echo "$prompt" | grep -q "mode='embed-query'" || fail "prompt must instruct batch embedding via main(mode='embed-query', ...), not per-product -- non_niq_embed.py has no CLI/argv"
-echo "$prompt" | grep -q -- "input_file=" || fail "prompt must instruct the batch (input_file/output_file kwargs) embed-query contract, not a per-product call"
+echo "$prompt" | grep -q "non_niq_helper.py retrieve" || fail "prompt must instruct batch retrieval via non_niq_helper.py's retrieve subcommand, not per-product"
+echo "$prompt" | grep -q -- "--input-file" || fail "prompt must instruct the batch (--input-file/--output-file) retrieve contract, not a per-product call"
+if echo "$prompt" | grep -q "curl.*POST.*search"; then
+  fail "prompt must NOT tell Claude to construct its own Meilisearch search request -- retrieval is pre-computed by non_niq_helper.py"
+fi
 echo "$prompt" | grep -q "sku_type" || fail "prompt must reference the resolved dict identity column"
 echo "$prompt" | grep -q "keywords_typo" || fail "prompt must reference the resolved dict typo column"
 echo "$prompt" | grep -q "prod_id" || fail "prompt must reference the resolved QA primary-key column"

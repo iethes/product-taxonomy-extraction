@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Separate polling loop from script/queue_worker.sh -- claims only script_type='non_niq_qa' rows
+# Separate polling loop from script/niq/queue_worker.sh -- claims only script_type='non_niq_qa' rows
 # from the SAME shared p4ct2g2urhzcfnz.task_queue Postgres table. table_name is encoded as
 # "{dataset}:{platform}" for every row this worker claims (e.g. "babybath:shopee") -- see the
 # Global Constraints in docs/superpowers/plans/2026-08-06-non-niq-agentic-qa.md.
 #
-# Usage: script/non_niq/non_niq_queue_worker.sh
+# Usage: script/non_niq/queue_worker.sh
 # Requires QUEUE_DATABASE_URL (see script/load_env.sh / .env.example).
 
 QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"

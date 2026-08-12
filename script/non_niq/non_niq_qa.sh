@@ -13,6 +13,12 @@ set -euo pipefail
 PROJECT="sincere-hearth-273704"
 MEILI_URL="http://34.124.146.29:7700"
 
+# Resolves regardless of cwd -- non_niq_helper.py needs google-cloud-bigquery and
+# sentence-transformers for real (columns/retrieve), so this must be an interpreter that actually
+# has them: this repo's own uv-managed .venv, not bare `python3` off PATH.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PYTHON_BIN="${REPO_ROOT}/.venv/bin/python3"
+
 default_month_query() {
   local source_table="$1"
   echo "SELECT FORMAT_DATE('%Y-%m', MAX(month)) FROM \`${PROJECT}.${source_table}\`"
@@ -94,16 +100,17 @@ build_qa_prompt() {
   local product_id_dict="${12}"
 
   # The QA table's identity column is `sku_type_complete` on ALL 10 categories -- it needs no
-  # live resolution (non_niq_embed.py's sync_category reads it directly for the same reason).
-  # Only the {dataset}_dict table's identity column varies (sku_type vs sku_type_complete), which
-  # is what $dict_identity_col resolves. Never use $dict_identity_col for a QA-table write: on
+  # live resolution (the Windmill-deployed non_niq_embed.py's sync_category reads it directly for
+  # the same reason -- see docs/windmill-non-niq-embed-prompt.md). Only the {dataset}_dict table's
+  # identity column varies (sku_type vs sku_type_complete), which is what $dict_identity_col
+  # resolves. Never use $dict_identity_col for a QA-table write: on
   # babybath/babycreamlotion/babysunscreen/telonoil it resolves to `sku_type`, a column the QA
   # table does not have.
   local qa_identity_col="sku_type_complete"
 
   # Decision-tree step 2 exists only for the 4 categories with a populated product_id_dict
   # mapping table (susubayi, multivitamin, telonoil, kidsuplement); the Sheet has '-' for the
-  # rest. That table's schema was NOT resolved by non_niq_embed.py's column resolver and varies
+  # rest. That table's schema was NOT resolved by non_niq_helper.py's column resolver and varies
   # per category, so the prompt tells Claude to discover its shape before querying it.
   local step2_block
   if [[ "$product_id_dict" == "-" || "$product_id_dict" == "null" || -z "$product_id_dict" ]]; then
@@ -142,14 +149,22 @@ This is already scoped to top 90% cumulative GMV per platform and prioritized (u
 before agent-flagged-unconfident retry rows, both by gmv_monthly descending) -- process it in
 that order.
 
-STEP 1 -- Batch-embed the WHOLE worklist's sku_name text in ONE call, never one call per product
-(a fresh process per product means a ~2GB multilingual-e5-large model reload per product):
+STEP 1 -- Retrieve Meilisearch candidates for the WHOLE worklist in ONE batch call, never one call
+per product. Embedding and searching are both mechanical, repetitive work -- they are done here in
+Python, not by you, so your per-product loop in STEP 2 never spends a tool call constructing a
+search request:
   1. Write /tmp/${dataset}_${platform}_worklist.jsonl -- one line per worklist product:
      {"id": "<product_id>", "text": "<sku_name>"}
-  2. Run (non_niq_embed.py has no CLI/argv -- it's called the same way Windmill calls it, by
-     importing main() and passing keyword args directly):
-     PYTHONPATH=script/non_niq python3 -c "from non_niq_embed import main; main(mode='embed-query', input_file='/tmp/${dataset}_${platform}_worklist.jsonl', output_file='/tmp/${dataset}_${platform}_vectors.jsonl')"
-  3. Read back /tmp/${dataset}_${platform}_vectors.jsonl -- one {"id":..., "embedding":[...]} per input line.
+  2. Run:
+     ${PYTHON_BIN} ${REPO_ROOT}/script/non_niq/non_niq_helper.py retrieve \\
+       --input-file /tmp/${dataset}_${platform}_worklist.jsonl \\
+       --output-file /tmp/${dataset}_${platform}_candidates.jsonl \\
+       --meili-index ${meili_index}
+  3. Read back /tmp/${dataset}_${platform}_candidates.jsonl -- one line per product:
+     {"id": "<product_id>", "candidates": [{"product_id","sku_name","brand","sku_type_complete"}, ...]}
+     Each product's candidates are already the top hybrid-search results (confirmed exemplars from
+     ${meili_index}) -- this is STEP 2c's retrieval, already done. Do not construct your own
+     Meilisearch search request for any product; just read this file.
 
 STEP 2 -- For each product in the worklist, in order:
 
@@ -174,13 +189,13 @@ STEP 2 -- For each product in the worklist, in order:
 
 ${step2_block}
 
-  2c. Hybrid retrieval: using this product's vector from STEP 1 and its sku_name text, query
-      Meilisearch for candidates:
-        curl -s -X POST "${MEILI_URL}/indexes/${meili_index}/search" -H "Content-Type: application/json" \\
-          -d "{\\"q\\": \\"<sku_name>\\", \\"vector\\": <embedding from STEP 1>, \\"hybrid\\": {\\"embedder\\": \\"default\\", \\"semanticRatio\\": 0.5}, \\"limit\\": 10}"
-      This returns confirmed exemplars (product_id, sku_name, brand, sku_type_complete of similar
-      past-QA'd products), not raw dict rows -- use them as grounding context, then check the
-      candidates' implied dict entries against \`${PROJECT}.${dict_table}\` for the real match.
+  2c. Candidate check: read this product's line from the STEP 1 output file (match by
+      product_id) -- its \`candidates\` array is already the confirmed exemplars (product_id,
+      sku_name, brand, sku_type_complete of similar past-QA'd products) from Meilisearch hybrid
+      search, retrieved for you in STEP 1. Not raw dict rows -- use them as grounding context, then
+      check the candidates' implied dict entries against \`${PROJECT}.${dict_table}\` for the real
+      match. An empty \`candidates\` array means retrieval failed for this product (see STEP 1's
+      output for the warning) -- treat it the same as "no candidates found", do not block on it.
       Does a TRUE matching taxonomy record exist in ${dict_table}?
       YES -> write CORRECTED (re-pointed) brand/${qa_identity_col} values to
              \`${PROJECT}.${qa_table}\`.
@@ -267,11 +282,8 @@ main() {
   fi
   local dataset="$1" platform="$2" max_turns="${3:-300}"
 
-  # non_niq_embed.py has no CLI/argv (Windmill's calling convention is main(**kwargs) only, no
-  # `if __name__ == "__main__"`) -- called here the same way Windmill calls it.
   local category_json
-  category_json=$(PYTHONPATH="$(dirname "$0")" python3 -c \
-    "from non_niq_embed import main; main(mode='categories', country='ID')" \
+  category_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" categories --country ID \
     | jq -c --arg ds "$dataset" --arg pl "$platform" '.[] | select(.dataset == $ds and .ecommerce_platform == $pl)')
   if [[ -z "$category_json" ]]; then
     echo "No active config Sheet row for dataset=${dataset} platform=${platform}" >&2
@@ -301,16 +313,11 @@ main() {
     fi
   done
 
-  # Values pass via env vars, not interpolated into the python -c source text, so a table name
-  # can never break out of the string literal it'd otherwise be embedded in.
+  # Plain CLI args, not string-interpolated into a python -c source -- a table name can never
+  # break out of anything, it's just an argv element.
   local columns_json qa_pk_col dict_identity_col dict_typo_col
-  columns_json=$(PYTHONPATH="$(dirname "$0")" NON_NIQ_PROJECT="$PROJECT" \
-    NON_NIQ_QA_TABLE="$qa_table" NON_NIQ_DICT_TABLE="$dict_table" python3 -c "
-import os
-from non_niq_embed import main
-main(mode='columns', project=os.environ['NON_NIQ_PROJECT'],
-     qa_table=os.environ['NON_NIQ_QA_TABLE'], dict_table=os.environ['NON_NIQ_DICT_TABLE'])
-")
+  columns_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" columns --project "$PROJECT" \
+    --qa-table "$qa_table" --dict-table "$dict_table")
   qa_pk_col=$(echo "$columns_json" | jq -r '.qa_pk_col')
   dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
   dict_typo_col=$(echo "$columns_json" | jq -r '.dict_typo_col')
