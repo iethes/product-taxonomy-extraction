@@ -21,9 +21,23 @@ echo "$q" | grep -q "babybath.master_babybath_id_dev" || fail "worklist_query sh
 echo "$q" | grep -q "babybath.product_id_dict_qa" || fail "worklist_query should reference the QA table"
 echo "$q" | grep -q "prod_id" || fail "worklist_query should use the resolved QA primary-key column, not a hardcoded one"
 echo "$q" | grep -q "cumulative_gmv_pct <= 90" || fail "worklist_query must use the 90% threshold (issue #2), not the epic's 95%"
-echo "$q" | grep -q "SAFE.JSON_VALUE" || fail "worklist_query must use SAFE.JSON_VALUE, never bare JSON_VALUE, when reading _meta"
-if echo "$q" | grep -qE '(^|[^.])JSON_VALUE'; then
-  fail "worklist_query must never call bare JSON_VALUE (only SAFE.JSON_VALUE) on _meta"
+# The config Sheet's ecommerce_platform is lowercase ("shopee") but the source table's own column
+# is Title-Case ("Shopee") -- confirmed live on babybath and telonoil. A lowercase WHERE filter
+# against Title-Case data matches zero rows, always -- this was a real, previously-undetected bug.
+echo "$q" | grep -q "s.ecommerce_platform = 'Shopee'" || fail "worklist_query must capitalize the platform filter to match the source table's Title-Case convention (got lowercase 'shopee' as input)"
+if echo "$q" | grep -q "s.ecommerce_platform = 'shopee'"; then
+  fail "worklist_query must never filter on the raw lowercase platform -- the source table stores Title-Case values, this would match zero rows"
+fi
+echo "$q" | grep -q "sc.ecommerce_platform" || fail "worklist_query must carry ecommerce_platform through to the final SELECT so the filter-table write uses the source table's real (Title-Case) value, not a reconstructed one"
+# SAFE.JSON_VALUE(...) looks like the fix but is NOT valid BigQuery syntax (confirmed live:
+# "SAFE with function json_value is not supported"). The correct, live-verified pattern is
+# JSON_VALUE(SAFE.PARSE_JSON(_meta), ...) -- SAFE composes with PARSE_JSON, not JSON_VALUE.
+echo "$q" | grep -q "JSON_VALUE(SAFE.PARSE_JSON(_meta)" || fail "worklist_query must read _meta via JSON_VALUE(SAFE.PARSE_JSON(_meta), ...)"
+if echo "$q" | grep -q "SAFE.JSON_VALUE"; then
+  fail "worklist_query must never call SAFE.JSON_VALUE -- it is not valid BigQuery syntax, use JSON_VALUE(SAFE.PARSE_JSON(_meta), ...) instead"
+fi
+if echo "$q" | grep -q "JSON_VALUE(_meta,"; then
+  fail "worklist_query must never call JSON_VALUE directly on the raw _meta string -- it must go through SAFE.PARSE_JSON first"
 fi
 echo "$q" | grep -q "ORDER BY priority ASC, gmv_monthly DESC" || fail "worklist_query must order unreviewed before unconfident, then by GMV"
 echo "$q" | grep -q "qa_status = 'Not Reviewed'" || fail "worklist_query must gate priority-0 rows to qa_status = 'Not Reviewed' per design spec"
@@ -53,6 +67,7 @@ prompt=$(build_qa_prompt "babybath" "shopee" "babybath.master_babybath_id_dev" \
 
 echo "$prompt" | grep -q "RELEVANT to this category" || fail "prompt must state the relevance-check step first"
 echo "$prompt" | grep -q "do NOT create a taxonomy entry" || fail "prompt must state irrelevant products are dropped, never routed elsewhere"
+echo "$prompt" | grep -q "worklist row's OWN \`ecommerce_platform\` value verbatim" || fail "prompt must instruct using the worklist's real (Title-Case) ecommerce_platform value for the filter-table write, not a reconstructed/lowercased one"
 echo "$prompt" | grep -q "babybath.filter_babybath" || fail "prompt must name the correct write-target filter table"
 echo "$prompt" | grep -q "babybath_taxonomy_qa" || fail "prompt must name the Meilisearch index to search"
 echo "$prompt" | grep -q "non_niq_helper.py retrieve" || fail "prompt must instruct batch retrieval via non_niq_helper.py's retrieve subcommand, not per-product"

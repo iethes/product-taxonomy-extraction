@@ -32,17 +32,27 @@ default_month_query() {
 # just `priority IS NOT NULL` -- do not re-state the priority predicates in the WHERE clause.
 # BigQuery sorts NULL first under ORDER BY priority ASC, so a duplicated predicate that drifts
 # out of sync would sort excluded rows AHEAD of real priority-0 rows instead of dropping them.
-# Every _meta read uses SAFE.JSON_VALUE -- _meta is not always valid JSON in production
-# (empty strings, literal "nan" both observed live) and bare JSON_VALUE raises on malformed input.
+# Every _meta read uses JSON_VALUE(SAFE.PARSE_JSON(_meta), ...) -- _meta is not always valid JSON
+# in production (empty strings, literal "nan" both observed live), and bare JSON_VALUE raises on
+# malformed input. `SAFE.JSON_VALUE(...)` looks like the obvious fix but is NOT valid BigQuery
+# syntax -- confirmed live: "SAFE with function json_value is not supported." SAFE only composes
+# with PARSE_JSON here; JSON_VALUE then runs on the (possibly NULL, on parse failure) JSON value,
+# which is safe on its own.
 worklist_query() {
   local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5"
+  # The config Sheet's ecommerce_platform is lowercase ("shopee", "lazada", ...) -- issue #1's own
+  # spec says so, and non_niq_qa.sh's CLI args follow that convention. But the source/master
+  # tables' own ecommerce_platform column is Title-Case ("Shopee", "Lazada", "Tiktok", "Tokopedia",
+  # "Blibli") -- confirmed live on babybath and telonoil. A lowercase-vs-Title-Case comparison never
+  # matches, so this capitalizes here rather than pushing the quirk onto every caller.
+  local platform_titlecase="${platform^}"
   cat <<SQL
 WITH base AS (
   SELECT s.product_id, s.sku_name, s.image, s.ecommerce_platform, s.qa_status,
          COALESCE(s.flag_GWP, FALSE) OR REGEXP_CONTAINS(UPPER(s.sku_name), r'\[NOT FOR SALE\]|\[GWP\]') AS flag_GWP,
          s.gmv_monthly
   FROM \`${PROJECT}.${source_table}\` s
-  WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}' AND s.ecommerce_platform = '${platform}'
+  WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}' AND s.ecommerce_platform = '${platform_titlecase}'
 ),
 with_cumulative AS (
   SELECT *,
@@ -56,12 +66,12 @@ scoped AS (
 ),
 qa_state AS (
   SELECT ${qa_pk_col} AS product_id,
-         SAFE.JSON_VALUE(_meta, '\$.qa_confidence') AS qa_confidence,
-         SAFE.JSON_VALUE(_meta, '\$.human_review') AS human_review
+         JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.qa_confidence') AS qa_confidence,
+         JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.human_review') AS human_review
   FROM \`${PROJECT}.${qa_table}\`
 ),
 prioritized AS (
-  SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly,
+  SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly, sc.ecommerce_platform,
     CASE
       WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
       WHEN qs.qa_confidence = 'unconfident' AND COALESCE(qs.human_review, 'false') != 'true' THEN 1
@@ -185,6 +195,9 @@ STEP 2 -- For each product in the worklist, in order:
              (this dataset's OWN filter table -- never write to a different dataset's filter table
              even if the Sheet cross-references one for read context), _meta stamped
              '{"source":"claude_code"}', do NOT create a taxonomy entry. Move to the next product.
+             Use the worklist row's OWN \`ecommerce_platform\` value verbatim (it's the source
+             table's real, Title-Case value, e.g. "Shopee"/"Lazada" -- do not lowercase it or
+             reconstruct it yourself, the Sheet's lowercase convention is NOT what's stored here).
       YES -> continue to 2b.
 
 ${step2_block}
@@ -231,8 +244,11 @@ Hard rules, never relaxed:
 - All writes use bq query DML, never the streaming API -- CLAUDE.md's 90-minute streaming-buffer
   rule. The very next run's retry-cap logic depends on reading back this run's QA rows reliably.
 - Every _meta read you do yourself (e.g. checking whether a product already has an unconfident
-  row) must use SAFE.JSON_VALUE, never bare JSON_VALUE -- some existing _meta values are empty
-  strings or the literal text "nan", and bare JSON_VALUE raises on those.
+  row) must use JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.field'), never bare JSON_VALUE(_meta, ...)
+  and never SAFE.JSON_VALUE(...) -- the latter LOOKS right but is not valid BigQuery syntax
+  ("SAFE with function json_value is not supported"). Some existing _meta values are empty
+  strings or the literal text "nan"; SAFE.PARSE_JSON returns NULL on those instead of raising, and
+  JSON_VALUE on a NULL JSON value is itself safe.
 - Attempt to resolve the ENTIRE worklist within your turn budget this session -- do not
   self-limit to a small sample. Stop early only when genuinely low on turns, and say so honestly
   in findings.
@@ -322,17 +338,30 @@ main() {
   dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
   dict_typo_col=$(echo "$columns_json" | jq -r '.dict_typo_col')
 
+  # Explicit failure checks, not bare `set -e` reliance: a bare `var=$(bq query | tail -1)`
+  # reassignment DOES propagate a pipefail'd bq failure and kill the script under set -e, but
+  # silently -- bq's own error text goes straight to stderr, past this function's own stdout, and
+  # nothing here ever prints "this is why we stopped." That silence is exactly what made a real
+  # bug (SAFE.JSON_VALUE(...) is not valid BigQuery syntax) look like a hang instead of an error.
   local month
-  month=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-    "$(default_month_query "$source_table")" | tail -1)
+  if ! month=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+    "$(default_month_query "$source_table")" | tail -1); then
+    echo "bq query failed while resolving the latest month for ${source_table} -- see bq's error above." >&2
+    echo "QUEUE_SIGNAL: FAILED"
+    exit 1
+  fi
 
   local meili_index="${dataset}_taxonomy_qa"
   local query
   query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform")
 
   local worklist_count
-  worklist_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-    "SELECT COUNT(*) FROM ($query)" | tail -1)
+  if ! worklist_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+    "SELECT COUNT(*) FROM ($query)" | tail -1); then
+    echo "bq query failed while counting the worklist for ${dataset}/${platform} -- see bq's error above." >&2
+    echo "QUEUE_SIGNAL: FAILED"
+    exit 1
+  fi
 
   if [[ "$worklist_count" == "0" ]]; then
     echo "No in-scope worklist for ${dataset}/${platform}/${month} -- nothing to do."
