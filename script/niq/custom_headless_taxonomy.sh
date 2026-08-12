@@ -44,7 +44,6 @@ WITH agg AS (
     SUM(s.gmv_daily) AS gmv_monthly,
     SUM(s.sold_daily) AS sold_monthly,
   FROM \`${PROJECT}.${dataset}.${table}\` s
-  WHERE s.country = '${country}'
   GROUP BY 1,2,3,4,5,6
 ),
 base AS (
@@ -64,7 +63,7 @@ with_cumulative AS (
     ROUND(
       100.0
       * SUM(CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END) OVER (
-          ORDER BY gmv_monthly DESC
+          ORDER BY gmv_monthly DESC, product_id ASC
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         )
       / NULLIF(SUM(CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END) OVER (), 0),
@@ -75,7 +74,7 @@ with_cumulative AS (
 SELECT *
 FROM with_cumulative
 WHERE cumulative_gmv_pct <= 95 AND canonical_name IS NULL
-ORDER BY gmv_monthly DESC
+ORDER BY gmv_monthly DESC, product_id ASC
 SQL
 }
 
@@ -376,7 +375,10 @@ main() {
     prompt=$(build_topup_prompt "$dataset" "$table" "$category" "$block_size" "$gap_count")
   fi
 
-  claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt"
+  # Piped via stdin, not passed as a CLI argument -- same E2BIG class of bug fixed in
+  # targeted_qa_fix_v2.sh; lower risk here since only the fixed worklist_query SQL text is embedded,
+  # not per-row result data, but no reason to carry the same latent fragility.
+  claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" <<< "$prompt"
 
   echo "============================"
   echo "TAXONOMY EXTRACTION FINISHED"
