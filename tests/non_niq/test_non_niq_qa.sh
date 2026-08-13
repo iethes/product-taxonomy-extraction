@@ -162,6 +162,12 @@ echo "PASS: build_qa_prompt"
 [[ "$(extract_json_object 'prose {"status":"complete"} trailing')" == '{"status":"complete"}' ]] || fail "extract_json_object should pull the JSON object out of mixed text"
 echo "PASS: extract_json_object"
 
+# --- extract_result_json ---
+[[ "$(extract_result_json '{"result":"{\"status\":\"complete\"}"}')" == '{"status":"complete"}' ]] || fail "extract_result_json should pull the inner result JSON out of the envelope"
+[[ "$(extract_result_json '{"result":""}')" == "" ]] || fail "extract_result_json should return empty when .result itself is empty"
+[[ "$(extract_result_json 'garbage')" == "" ]] || fail "extract_result_json should return empty when the whole envelope is unparseable"
+echo "PASS: extract_result_json"
+
 complete_output='{"result":"{\"status\":\"complete\"}"}'
 [[ "$(decide_queue_signal "$complete_output")" == "DONE" ]] || fail "complete status should map to DONE"
 blocked_output='{"result":"{\"status\":\"blocked\"}"}'
@@ -169,6 +175,30 @@ blocked_output='{"result":"{\"status\":\"blocked\"}"}'
 garbage_output='not json at all'
 [[ "$(decide_queue_signal "$garbage_output")" == "FAILED" ]] || fail "unparseable output should map to FAILED, never silently succeed"
 echo "PASS: decide_queue_signal"
+
+# --- format_result_summary ---
+# Fields verified against a real `claude -p --output-format json` call during design -- not guessed.
+fake_envelope='{"result":"{\"status\":\"complete\",\"rows_qa_confirmed\":12,\"rows_qa_unconfident\":3,\"rows_filtered\":2,\"rows_created_in_dict\":1,\"findings\":\"all good\",\"blockers\":[]}","total_cost_usd":0.1284843,"num_turns":47,"duration_ms":182340,"modelUsage":{"claude-sonnet-5":{"costUSD":0.1284843,"inputTokens":2,"outputTokens":7,"cacheReadInputTokens":25151,"cacheCreationInputTokens":20138}}}'
+summary=$(format_result_summary "$fake_envelope")
+echo "$summary" | grep -q "Status: complete" || fail "format_result_summary must show the status"
+echo "$summary" | grep -q "Confirmed: 12" || fail "format_result_summary must show rows_qa_confirmed"
+echo "$summary" | grep -q "Unconfident: 3" || fail "format_result_summary must show rows_qa_unconfident"
+echo "$summary" | grep -q "Filtered: 2" || fail "format_result_summary must show rows_filtered"
+echo "$summary" | grep -q "Created: 1" || fail "format_result_summary must show rows_created_in_dict"
+echo "$summary" | grep -q "Turns used: 47" || fail "format_result_summary must show num_turns from the envelope"
+echo "$summary" | grep -q "Duration: 182340ms" || fail "format_result_summary must show duration_ms from the envelope"
+echo "$summary" | grep -q "Total cost: \$0.1284843" || fail "format_result_summary must show total_cost_usd from the envelope"
+echo "$summary" | grep -q "claude-sonnet-5: \$0.1284843" || fail "format_result_summary must show per-model cost from modelUsage"
+echo "$summary" | grep -q "in: 2 tok, out: 7 tok" || fail "format_result_summary must show per-model token usage"
+echo "$summary" | grep -q "all good" || fail "format_result_summary must show findings in full"
+echo "$summary" | grep -q "(none)" || fail "format_result_summary must show (none) for an empty blockers array"
+
+fake_envelope_with_blockers='{"result":"{\"status\":\"blocked\",\"rows_qa_confirmed\":0,\"rows_qa_unconfident\":0,\"rows_filtered\":0,\"rows_created_in_dict\":0,\"findings\":\"none yet\",\"blockers\":[\"missing dict table\",\"auth expired\"]}","total_cost_usd":0.02,"num_turns":3,"duration_ms":5000,"modelUsage":{}}'
+summary2=$(format_result_summary "$fake_envelope_with_blockers")
+echo "$summary2" | grep -q "missing dict table" || fail "format_result_summary must list blockers in full when present"
+echo "$summary2" | grep -q "auth expired" || fail "format_result_summary must list every blocker, not just the first"
+echo "$summary2" | grep -q "no model usage reported" || fail "format_result_summary must handle an empty modelUsage object gracefully"
+echo "PASS: format_result_summary"
 
 # --- main() wiring (grep the script source, no execution) ---
 script_src=$(cat script/non_niq/non_niq_qa.sh)
@@ -178,6 +208,8 @@ grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail 
 grep -qF "product_id_dict=\$(echo \"\$category_json\" | jq -r '.product_id_dict')" <<< "$script_src" || fail "main() must extract product_id_dict from the Sheet row and pass it to build_qa_prompt"
 grep -qF 'for t in "qa_table=$qa_table" "dict_table=$dict_table" "filter_table=$filter_table"' <<< "$script_src" || fail "main() must guard qa_table/dict_table/filter_table against the Sheet's unconfigured '-' marker (and only those three -- '-' is legal for product_id_dict)"
 grep -qF 'source "${REPO_ROOT}/script/load_env.sh"' <<< "$script_src" || fail "main() must source load_env.sh so DISCORD_WEBHOOK_URL (and other .env values) are available whether invoked directly or via the queue worker"
+grep -qF 'format_result_summary "$claude_output"' <<< "$script_src" || fail "main() must print the human-readable summary"
+grep -qF 'echo "$claude_output"' <<< "$script_src" || fail "main() must still echo the raw envelope -- the summary is additive, not a replacement"
 echo "PASS: main() QUEUE_SIGNAL wiring"
 
 echo "ALL TESTS PASSED (part 2: prompt + main)"

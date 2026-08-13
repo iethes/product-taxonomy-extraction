@@ -291,12 +291,16 @@ extract_json_object() {
   printf '%s' "$text" | grep -Pzo '(?s)\{.*\}' | tr -d '\0'
 }
 
-decide_queue_signal() {
+# Shared by decide_queue_signal and format_result_summary -- both need Claude's own inner result
+# JSON (the {status, rows_qa_confirmed, ...} object the prompt's output contract specifies), not
+# the outer claude -p envelope. Claude's .result field is USUALLY that JSON directly, but
+# sometimes wraps it in prose -- extract_json_object is the regex fallback for that case.
+extract_result_json() {
   local claude_output="$1"
   local result_json
   result_json=$(echo "$claude_output" | jq -r '.result // empty' 2>/dev/null) || result_json=""
   if [[ -z "$result_json" ]]; then
-    echo "FAILED"
+    echo ""
     return
   fi
   if ! echo "$result_json" | jq -e . >/dev/null 2>&1; then
@@ -306,6 +310,17 @@ decide_queue_signal() {
       result_json="$extracted"
     fi
   fi
+  echo "$result_json"
+}
+
+decide_queue_signal() {
+  local claude_output="$1"
+  local result_json
+  result_json=$(extract_result_json "$claude_output")
+  if [[ -z "$result_json" ]]; then
+    echo "FAILED"
+    return
+  fi
   local status
   status=$(echo "$result_json" | jq -r '.status // empty' 2>/dev/null) || status=""
   case "$status" in
@@ -313,6 +328,61 @@ decide_queue_signal() {
     complete|partial) echo "DONE" ;;
     *) echo "FAILED" ;;
   esac
+}
+
+# Reads BOTH layers: the outer claude -p envelope (total_cost_usd, modelUsage, num_turns,
+# duration_ms -- confirmed live via a real `claude -p --output-format json` call) and the inner
+# result JSON (status, rows_*, findings, blockers) via the same extract_result_json used by
+# decide_queue_signal. Printed alongside the raw claude_output echo in main(), never replacing it.
+format_result_summary() {
+  local claude_output="$1"
+  local result_json
+  result_json=$(extract_result_json "$claude_output")
+
+  local status rows_confirmed rows_unconfident rows_filtered rows_created findings blockers
+  status=$(echo "$result_json" | jq -r '.status // "unknown"' 2>/dev/null) || status="unknown"
+  rows_confirmed=$(echo "$result_json" | jq -r '.rows_qa_confirmed // "?"' 2>/dev/null) || rows_confirmed="?"
+  rows_unconfident=$(echo "$result_json" | jq -r '.rows_qa_unconfident // "?"' 2>/dev/null) || rows_unconfident="?"
+  rows_filtered=$(echo "$result_json" | jq -r '.rows_filtered // "?"' 2>/dev/null) || rows_filtered="?"
+  rows_created=$(echo "$result_json" | jq -r '.rows_created_in_dict // "?"' 2>/dev/null) || rows_created="?"
+  findings=$(echo "$result_json" | jq -r '
+    if .findings == null then "(none)"
+    elif (.findings | type) == "array" then (.findings | join("\n"))
+    else (.findings | tostring) end' 2>/dev/null) || findings="(unparseable)"
+  blockers=$(echo "$result_json" | jq -r '
+    if .blockers == null or (.blockers | length) == 0 then "(none)"
+    elif (.blockers | type) == "array" then (.blockers | join("\n"))
+    else (.blockers | tostring) end' 2>/dev/null) || blockers="(unparseable)"
+
+  local num_turns duration_ms total_cost
+  num_turns=$(echo "$claude_output" | jq -r '.num_turns // "?"' 2>/dev/null) || num_turns="?"
+  duration_ms=$(echo "$claude_output" | jq -r '.duration_ms // "?"' 2>/dev/null) || duration_ms="?"
+  total_cost=$(echo "$claude_output" | jq -r '.total_cost_usd // "?"' 2>/dev/null) || total_cost="?"
+
+  local per_model
+  per_model=$(echo "$claude_output" | jq -r '
+    (.modelUsage // {}) | to_entries[] |
+    "  \(.key): $\(.value.costUSD) (in: \(.value.inputTokens) tok, out: \(.value.outputTokens) tok, cache_read: \(.value.cacheReadInputTokens) tok, cache_creation: \(.value.cacheCreationInputTokens) tok)"
+  ' 2>/dev/null) || per_model=""
+  [[ -z "$per_model" ]] && per_model="  (no model usage reported)"
+
+  cat <<SUMMARY
+
+=== QA Session Result ===
+Status: ${status}
+Confirmed: ${rows_confirmed} | Unconfident: ${rows_unconfident} | Filtered: ${rows_filtered} | Created: ${rows_created}
+
+Turns used: ${num_turns} | Duration: ${duration_ms}ms | Total cost: \$${total_cost}
+
+Per-model cost:
+${per_model}
+
+Findings:
+${findings}
+
+Blockers:
+${blockers}
+SUMMARY
 }
 
 main() {
@@ -408,6 +478,7 @@ main() {
   local claude_output
   claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt") || true
   echo "$claude_output"
+  format_result_summary "$claude_output"
 
   echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"
 }
