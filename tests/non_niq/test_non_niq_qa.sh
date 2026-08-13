@@ -46,6 +46,29 @@ echo "$q" | grep -q "qa_status = 'Not Reviewed'" || fail "worklist_query must ga
 grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed exactly once (in the prioritized CTE), never restated in the outer WHERE"
 echo "PASS: worklist_query"
 
+# --- worklist_query enrichment (item_description/product_attributes_attrs) ---
+# Shopee + a real enrichment table name -> conditional LEFT JOIN present.
+q_enriched=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "shopee" "0_pipeline_babybath_shopee_id")
+echo "$q_enriched" | grep -q "LEFT JOIN \`sincere-hearth-273704.babybath.0_pipeline_babybath_shopee_id\` e" || fail "worklist_query must LEFT JOIN the Shopee enrichment table when given one"
+echo "$q_enriched" | grep -q "CAST(e.item_itemid AS STRING) = s.product_id" || fail "worklist_query must join the enrichment table on item_itemid = product_id"
+echo "$q_enriched" | grep -q "e.item_description, e.product_attributes_attrs" || fail "worklist_query must select item_description/product_attributes_attrs from the enrichment table when joined"
+echo "$q_enriched" | grep -q "sc.item_description, sc.product_attributes_attrs" || fail "worklist_query must carry item_description/product_attributes_attrs through to the final SELECT"
+
+# Non-Shopee platform -> no join, NULL columns instead, even if an enrichment_table value is passed
+# (confirmed live: non-Shopee 0_pipeline_* tables have a different schema with no description/specs).
+q_noenrich=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "lazada" "0_pipeline_babybath_lazada_id")
+if echo "$q_noenrich" | grep -q "LEFT JOIN \`sincere-hearth-273704.babybath.0_pipeline"; then
+  fail "worklist_query must never join the enrichment table for a non-Shopee platform"
+fi
+echo "$q_noenrich" | grep -q "NULL AS item_description, NULL AS product_attributes_attrs" || fail "worklist_query must select NULL item_description/product_attributes_attrs for non-Shopee platforms"
+
+# No enrichment table given at all (Sheet's "0" column empty) -> same NULL fallback, even for Shopee.
+q_missing=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "shopee")
+if echo "$q_missing" | grep -q "LEFT JOIN \`sincere-hearth-273704.babybath.0_pipeline"; then
+  fail "worklist_query must not attempt a join when no enrichment_table is given"
+fi
+echo "PASS: worklist_query enrichment"
+
 # --- primary_filter_table ---
 single="babybath.filter_babybath"
 [[ "$(primary_filter_table "$single" "babybath")" == "babybath.filter_babybath" ]] || fail "single-value filter_table should return as-is"
@@ -82,6 +105,7 @@ echo "$prompt" | grep -q "never the streaming API" || fail "prompt must repeat t
 echo "$prompt" | grep -q "qa_confidence" || fail "prompt must instruct writing the qa_confidence _meta field"
 echo "$prompt" | grep -q "human_review" || fail "prompt must instruct writing the human_review _meta field on the retry path"
 echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping table is never modified"
+echo "$prompt" | grep -q "product_attributes_attrs" || fail "STEP 2a must mention product_attributes_attrs as additional signal alongside item_description"
 
 # QA-table identity column is hardcoded sku_type_complete and must NOT follow dict_identity_col.
 # Plain `grep sku_type_complete` would pass vacuously here (dict_identity_col="sku_type" is its

@@ -39,19 +39,25 @@ default_month_query() {
 # with PARSE_JSON here; JSON_VALUE then runs on the (possibly NULL, on parse failure) JSON value,
 # which is safe on its own.
 worklist_query() {
-  local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5"
-  # The config Sheet's ecommerce_platform is lowercase ("shopee", "lazada", ...) -- issue #1's own
-  # spec says so, and non_niq_qa.sh's CLI args follow that convention. But the source/master
-  # tables' own ecommerce_platform column is Title-Case ("Shopee", "Lazada", "Tiktok", "Tokopedia",
-  # "Blibli") -- confirmed live on babybath and telonoil. A lowercase-vs-Title-Case comparison never
-  # matches, so this capitalizes here rather than pushing the quirk onto every caller.
+  local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5" enrichment_table="${6:-}"
   local platform_titlecase="${platform^}"
+  # item_description/product_attributes_attrs enrichment is Shopee-only by data availability, not
+  # a scoping choice: confirmed live that non-Shopee 0_pipeline_* tables (e.g. Blibli) have an
+  # entirely different schema with no description/specs columns at all. dataset is derived from
+  # source_table (already "{dataset}.master_..._dev") rather than a separate parameter.
+  local dataset="${source_table%%.*}"
+  local enrichment_join="" enrichment_select="NULL AS item_description, NULL AS product_attributes_attrs"
+  if [[ "$platform_titlecase" == "Shopee" && -n "$enrichment_table" && "$enrichment_table" != "-" ]]; then
+    enrichment_join="LEFT JOIN \`${PROJECT}.${dataset}.${enrichment_table}\` e ON CAST(e.item_itemid AS STRING) = s.product_id"
+    enrichment_select="e.item_description, e.product_attributes_attrs"
+  fi
   cat <<SQL
 WITH base AS (
   SELECT s.product_id, s.sku_name, s.image, s.ecommerce_platform, s.qa_status,
          COALESCE(s.flag_GWP, FALSE) OR REGEXP_CONTAINS(UPPER(s.sku_name), r'\[NOT FOR SALE\]|\[GWP\]') AS flag_GWP,
-         s.gmv_monthly
+         s.gmv_monthly, ${enrichment_select}
   FROM \`${PROJECT}.${source_table}\` s
+  ${enrichment_join}
   WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}' AND s.ecommerce_platform = '${platform_titlecase}'
 ),
 with_cumulative AS (
@@ -72,6 +78,7 @@ qa_state AS (
 ),
 prioritized AS (
   SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly, sc.ecommerce_platform,
+         sc.item_description, sc.product_attributes_attrs,
     CASE
       WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
       WHEN qs.qa_confidence = 'unconfident' AND COALESCE(qs.human_review, 'false') != 'true' THEN 1
@@ -189,7 +196,9 @@ STEP 2 -- For each product in the worklist, in order:
       If the download fails, or the downloaded file is not a readable image (curl happily writes
       a 404 HTML body into a .jpg), say so explicitly in your reasoning for that product and
       treat it as TEXT-ONLY -- which is by itself grounds to mark it unconfident in 2d.
-      Then, with the image + sku_name + item_description together --
+      Then, with the image + sku_name + item_description + product_attributes_attrs together (the
+      worklist's own columns; item_description/product_attributes_attrs are Shopee-only signal and
+      NULL on other platforms -- treat NULL as simply having no extra signal, not as a problem) --
       does this product genuinely belong in "${dataset}"?
       NO  -> write {product_id, ecommerce_platform, sku_name, reason} to \`${PROJECT}.${filter_table}\`
              (this dataset's OWN filter table -- never write to a different dataset's filter table
@@ -307,12 +316,13 @@ main() {
     exit 1
   fi
 
-  local source_table qa_table dict_table filter_table_config product_id_dict
+  local source_table qa_table dict_table filter_table_config product_id_dict enrichment_table
   source_table=$(echo "$category_json" | jq -r '.table')
   qa_table=$(echo "$category_json" | jq -r '.product_id_dict_qa')
   dict_table=$(echo "$category_json" | jq -r '.dict')
   filter_table_config=$(echo "$category_json" | jq -r '.filter_table')
   product_id_dict=$(echo "$category_json" | jq -r '.product_id_dict')
+  enrichment_table=$(echo "$category_json" | jq -r '."0"')
   local filter_table
   filter_table=$(primary_filter_table "$filter_table_config" "$dataset")
 
@@ -353,7 +363,7 @@ main() {
 
   local meili_index="${dataset}_taxonomy_qa"
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table")
 
   local worklist_count
   if ! worklist_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \

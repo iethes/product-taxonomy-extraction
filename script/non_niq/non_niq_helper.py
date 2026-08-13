@@ -50,7 +50,7 @@ CONFIG_CSV_URL = (
 )
 
 ROW_FIELDS = ["category", "dataset", "ecommerce_platform", "table", "product_id_dict_qa",
-              "product_id_dict", "dict", "filter_table"]
+              "product_id_dict", "dict", "filter_table", "0"]
 
 QA_PK_CANDIDATES = ["product_id", "prod_id"]
 DICT_IDENTITY_CANDIDATES = ["sku_type_complete", "sku_type"]
