@@ -120,6 +120,110 @@ def test_retrieve_candidates_one_failure_does_not_abort_batch(monkeypatch):
     assert results[0]["candidates"] == []
     assert len(results[1]["candidates"]) == 1
 
+# --- _format_discord_table ---
+
+def test_format_discord_table_includes_all_nonnull_columns():
+    row = {"brand": "Acme", "sku_type_complete": "Acme Baby Wash 200ml", "packsize": "200 ml", "empty_col": None}
+    msg = non_niq_helper._format_discord_table(row, "babybath")
+    assert "**AI QA**" in msg
+    assert "babybath" in msg
+    assert "brand" in msg and "Acme" in msg
+    assert "sku_type_complete" in msg and "Acme Baby Wash 200ml" in msg
+    assert "packsize" in msg and "200 ml" in msg
+    assert "empty_col" not in msg
+
+def test_format_discord_table_truncates_long_cell_not_whole_row():
+    long_value = "x" * 500
+    row = {"brand": "Acme", "ingredients": long_value}
+    msg = non_niq_helper._format_discord_table(row, "babybath")
+    assert "brand" in msg
+    assert "ingredients" in msg
+    assert long_value not in msg
+    assert "..." in msg
+
+def test_format_discord_table_respects_discord_content_limit():
+    row = {f"col_{i}": "y" * 100 for i in range(50)}
+    msg = non_niq_helper._format_discord_table(row, "babybath")
+    assert len(msg) <= non_niq_helper.DISCORD_CONTENT_LIMIT
+
+# --- notify_discord_new_entry ---
+
+class _FakeRow:
+    def __init__(self, d):
+        self._d = d
+    def items(self):
+        return self._d.items()
+
+class _FakeQueryResult:
+    def __init__(self, rows):
+        self._rows = rows
+    def result(self):
+        return self._rows
+
+class _FakeBQClient:
+    def __init__(self, rows):
+        self._rows = rows
+    def query(self, query, job_config=None):
+        return _FakeQueryResult(self._rows)
+
+def test_notify_discord_posts_formatted_table():
+    posted = {}
+    def fake_post(url, body):
+        posted["url"] = url
+        posted["body"] = body
+    client = _FakeBQClient([_FakeRow({"brand": "Acme", "sku_type_complete": "Acme Wash 200ml"})])
+    non_niq_helper.notify_discord_new_entry(
+        "proj", "babybath.babybath_dict", "Acme", "sku_type_complete", "Acme Wash 200ml", "babybath",
+        client=client, webhook_url="https://discord.example/webhook", post=fake_post,
+    )
+    assert posted["url"] == "https://discord.example/webhook"
+    assert "Acme Wash 200ml" in posted["body"]["content"]
+    assert "**AI QA**" in posted["body"]["content"]
+
+def test_notify_discord_rejects_unknown_identity_col():
+    posted = []
+    def fake_post(url, body):
+        posted.append(body)
+    client = _FakeBQClient([_FakeRow({"brand": "Acme"})])
+    # 'brand' is not a valid dict-identity candidate -- must be refused before ever building SQL.
+    non_niq_helper.notify_discord_new_entry(
+        "proj", "babybath.babybath_dict", "Acme", "brand", "Acme", "babybath",
+        client=client, webhook_url="https://discord.example/webhook", post=fake_post,
+    )
+    assert posted == []
+
+def test_notify_discord_missing_webhook_url_is_non_fatal(monkeypatch):
+    monkeypatch.setattr(non_niq_helper.os, "environ", {})
+    client = _FakeBQClient([_FakeRow({"brand": "Acme", "sku_type": "X"})])
+
+    def should_not_post(*a):
+        raise AssertionError("must not post when no webhook URL is configured")
+
+    # Must not raise -- caller (Claude, via bash) must never see this fail the session.
+    non_niq_helper.notify_discord_new_entry(
+        "proj", "babybath.babybath_dict", "Acme", "sku_type", "X", "babybath",
+        client=client, webhook_url=None, post=should_not_post,
+    )
+
+def test_notify_discord_post_failure_is_non_fatal():
+    def failing_post(url, body):
+        raise RuntimeError("Discord is down")
+    client = _FakeBQClient([_FakeRow({"brand": "Acme", "sku_type": "X"})])
+    # Must not raise past this call -- this is the whole point of the function.
+    non_niq_helper.notify_discord_new_entry(
+        "proj", "babybath.babybath_dict", "Acme", "sku_type", "X", "babybath",
+        client=client, webhook_url="https://discord.example/webhook", post=failing_post,
+    )
+
+def test_notify_discord_no_matching_row_is_non_fatal():
+    client = _FakeBQClient([])
+    posted = []
+    non_niq_helper.notify_discord_new_entry(
+        "proj", "babybath.babybath_dict", "Acme", "sku_type", "X", "babybath",
+        client=client, webhook_url="https://discord.example/webhook", post=lambda u, b: posted.append(b),
+    )
+    assert posted == []
+
 # --- categories CLI (same invocation shape non_niq_qa.sh actually uses: plain argv, no Windmill) ---
 
 def test_cli_categories_prints_json():
