@@ -47,12 +47,30 @@ worklist_query() {
   # source_table (already "{dataset}.master_..._dev") rather than a separate parameter.
   local dataset="${source_table%%.*}"
   local enrichment_cte_and_join="" enrichment_join="" enrichment_select="NULL AS item_description, NULL AS product_attributes_attrs"
-  if [[ "$platform_titlecase" == "Shopee" && -n "$enrichment_table" && "$enrichment_table" != "-" ]]; then
+  if [[ "$platform_titlecase" == "Shopee" && -n "$enrichment_table" && "$enrichment_table" != "-" && "$enrichment_table" != "null" ]]; then
     # enrichment_table is a history table with multiple rows per item_itemid (confirmed live: ~108 rows
     # per item avg). Dedupe to latest row per item before joining to avoid fan-out that corrupts
     # cumulative GMV scoping (which must run post-join, not pre-join).
+    # product_attributes_attrs is raw Shopee attribute JSON -- confirmed live it carries ~13
+    # mostly-null fields per attribute entry around one real {name, value} pair (e.g. "Merek":
+    # "CUSSONS"). Project down to a compact "name=value; name=value" string here so the worklist
+    # this harness ships (to a file Claude reads, not BigQuery) carries only the real signal.
+    # Confirmed live on the FULL (untruncated) enrichment table that the majority (~94% of rows
+    # with a non-null value, measured on babybath/shopee: 88280/94086) store it as Python repr
+    # (single-quoted, None/True/False) rather than valid JSON -- bare SAFE.PARSE_JSON on the raw
+    # string nulls out almost the entire signal, not just an edge case. COALESCE tries the raw
+    # string first (so already-valid JSON, and any row containing a literal apostrophe that would
+    # be corrupted by the quote-swap, is never touched), and only falls back to a None/True/False
+    # -> null/true/false + '->" normalized parse when the raw parse fails. Spot-checked ~90k
+    # recovered rows live: no structural corruption, only benign literal \n/\t sequences surviving
+    # into a few values.
     enrichment_cte_and_join="enrichment_dedup AS (
-  SELECT item_itemid, item_description, product_attributes_attrs
+  SELECT item_itemid, item_description,
+    (SELECT STRING_AGG(CONCAT(JSON_VALUE(a,'\$.name'),'=',JSON_VALUE(a,'\$.value')), '; ')
+     FROM UNNEST(JSON_QUERY_ARRAY(COALESCE(
+       SAFE.PARSE_JSON(product_attributes_attrs),
+       SAFE.PARSE_JSON(REPLACE(REPLACE(REPLACE(REPLACE(product_attributes_attrs, ': None', ': null'), ': True', ': true'), ': False', ': false'), CHR(39), CHR(34)))
+     ))) a) AS product_attributes_attrs
   FROM \`${PROJECT}.${dataset}.${enrichment_table}\`
   QUALIFY ROW_NUMBER() OVER (PARTITION BY item_itemid ORDER BY timestamp DESC) = 1
 ),
@@ -122,8 +140,8 @@ primary_filter_table() {
 
 build_qa_prompt() {
   local dataset="$1" platform="$2" source_table="$3" qa_table="$4" dict_table="$5" filter_table="$6"
-  local qa_pk_col="$7" dict_identity_col="$8" dict_typo_col="$9" meili_index="${10}" worklist_query="${11}"
-  local product_id_dict="${12}"
+  local qa_pk_col="$7" dict_identity_col="$8" dict_typo_col="$9" meili_index="${10}" worklist_file="${11}"
+  local worklist_count="${12}" product_id_dict="${13}"
 
   # The QA table's identity column is `sku_type_complete` on ALL 10 categories -- it needs no
   # live resolution (the Windmill-deployed non_niq_embed.py's sync_category reads it directly for
@@ -169,18 +187,26 @@ Identity columns -- do not mix these up:
 - ${dict_identity_col} is the {dataset}_dict table's identity column, resolved live for this
   category. Use it ONLY when reading/matching against, or minting a new row in, the dict table.
 
-STEP 0 -- Get the live worklist (do not trust any cached number, re-run this yourself):
-${worklist_query}
-This is already scoped to top 90% cumulative GMV per platform and prioritized (unreviewed rows
-before agent-flagged-unconfident retry rows, both by gmv_monthly descending) -- process it in
-that order.
+STEP 0 -- The full worklist has ALREADY been materialized for you at
+${worklist_file}, exactly ${worklist_count} rows, one JSON object per line (JSONL) -- do NOT query
+BigQuery to re-fetch it, and do NOT trust any other row count than ${worklist_count}. Read the file
+(in slices if it's too large for one Read) rather than querying BigQuery for it. Each line has the
+same column shape the worklist query produces: product_id, sku_name, image, gmv_monthly,
+ecommerce_platform, item_description, product_attributes_attrs, priority. It is already scoped to
+top 90% cumulative GMV per platform and prioritized (unreviewed rows before agent-flagged-
+unconfident retry rows, both by gmv_monthly descending) -- process it in that order. If you cannot
+account for all ${worklist_count} rows by the end of your turn budget, explicitly report
+status: partial (or status: blocked if you cannot proceed at all) -- never silently process a
+subset and report status: complete.
 
 STEP 1 -- Retrieve Meilisearch candidates for the WHOLE worklist in ONE batch call, never one call
 per product. Embedding and searching are both mechanical, repetitive work -- they are done here in
 Python, not by you, so your per-product loop in STEP 2 never spends a tool call constructing a
 search request:
-  1. Write /tmp/${dataset}_${platform}_worklist.jsonl -- one line per worklist product:
-     {"id": "<product_id>", "text": "<sku_name>"}
+  1. Derive /tmp/${dataset}_${platform}_worklist.jsonl from ${worklist_file} (STEP 0's file) --
+     one line per worklist product: {"id": "<product_id>", "text": "<sku_name>"}. This is itself
+     mechanical -- don't hand-transcribe rows, run:
+       jq -c '{id: .product_id, text: .sku_name}' ${worklist_file} > /tmp/${dataset}_${platform}_worklist.jsonl
   2. Run:
      ${PYTHON_BIN} ${REPO_ROOT}/script/non_niq/non_niq_helper.py retrieve \\
        --input-file /tmp/${dataset}_${platform}_worklist.jsonl \\
@@ -206,8 +232,10 @@ STEP 2 -- For each product in the worklist, in order:
       a 404 HTML body into a .jpg), say so explicitly in your reasoning for that product and
       treat it as TEXT-ONLY -- which is by itself grounds to mark it unconfident in 2d.
       Then, with the image + sku_name + item_description + product_attributes_attrs together (the
-      worklist's own columns; item_description/product_attributes_attrs are Shopee-only signal and
-      NULL on other platforms -- treat NULL as simply having no extra signal, not as a problem) --
+      worklist's own columns; product_attributes_attrs is a compact "name=value; name=value" string
+      of the product's real Shopee attributes, e.g. brand/size -- not raw JSON;
+      item_description/product_attributes_attrs are Shopee-only signal and NULL on other platforms
+      -- treat NULL as simply having no extra signal, not as a problem) --
       does this product genuinely belong in "${dataset}"?
       NO  -> write {product_id, ecommerce_platform, sku_name, reason} to \`${PROJECT}.${filter_table}\`
              (this dataset's OWN filter table -- never write to a different dataset's filter table
@@ -399,6 +427,7 @@ SUMMARY
 
 main() {
   source "${REPO_ROOT}/script/load_env.sh"
+  [[ -n "${DISCORD_WEBHOOK_URL:-}" ]] || echo "WARNING: DISCORD_WEBHOOK_URL unset -- new-entry Discord notifications will be skipped this run." >&2
   if [[ $# -lt 2 ]]; then
     echo "Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS]" >&2
     exit 1
@@ -463,16 +492,30 @@ main() {
   local query
   query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table")
 
-  local worklist_count
-  if ! worklist_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-    "SELECT COUNT(*) FROM ($query)" | tail -1); then
-    echo "bq query failed while counting the worklist for ${dataset}/${platform} -- see bq's error above." >&2
+  # Materialize the FULL worklist to a file for Claude to Read, instead of handing Claude the raw
+  # SQL to re-run itself -- with item_description/product_attributes_attrs enrichment, the raw
+  # query output is 18-320x larger than before enrichment, and Claude re-running it and only
+  # seeing a truncated slice (while still honestly reporting status=partial) was getting recorded
+  # as QUEUE_SIGNAL: DONE with most of the worklist never actually looked at. See
+  # docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md.
+  # --max_rows is NOT optional here: `bq query` silently defaults to --max_rows=100 (confirmed
+  # live -- a 140-row worklist came back as exactly 100 rows without it), which would reproduce
+  # the exact truncation bug this materialization step exists to fix. 1000000 is comfortably above
+  # any real worklist size (top-90%-cumulative-GMV already caps these to low thousands at most).
+  local worklist_file="/tmp/${dataset}_${platform}_full_worklist.jsonl"
+  if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=json --max_rows=1000000 \
+    "$query" | jq -c '.[]' > "$worklist_file"; then
+    echo "bq query failed while materializing the worklist for ${dataset}/${platform} -- see bq's error above." >&2
     echo "QUEUE_SIGNAL: FAILED"
     exit 1
   fi
 
+  local worklist_count
+  worklist_count=$(wc -l < "$worklist_file" | tr -d ' ')
+
   if [[ "$worklist_count" == "0" ]]; then
     echo "No in-scope worklist for ${dataset}/${platform}/${month} -- nothing to do."
+    rm -f "$worklist_file"
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
     exit 0
   fi
@@ -481,8 +524,8 @@ main() {
 
   local prompt
   prompt=$(build_qa_prompt "$dataset" "$platform" "$source_table" "$qa_table" "$dict_table" \
-    "$filter_table" "$qa_pk_col" "$dict_identity_col" "$dict_typo_col" "$meili_index" "$query" \
-    "$product_id_dict")
+    "$filter_table" "$qa_pk_col" "$dict_identity_col" "$dict_typo_col" "$meili_index" "$worklist_file" \
+    "$worklist_count" "$product_id_dict")
 
   # `|| true` is load-bearing under `set -e`: a non-zero claude exit (turn-limit kill, transport
   # error) can still follow real BigQuery writes, and dying here would swallow the transcript that

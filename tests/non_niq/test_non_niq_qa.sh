@@ -55,6 +55,24 @@ echo "$q_enriched" | grep -q "FROM \`sincere-hearth-273704.babybath.0_pipeline_b
 echo "$q_enriched" | grep -q "LEFT JOIN enrichment_dedup e ON CAST(e.item_itemid AS STRING) = s.product_id" || fail "worklist_query must join the dedup CTE on item_itemid = product_id"
 echo "$q_enriched" | grep -q "e.item_description, e.product_attributes_attrs" || fail "worklist_query must select item_description/product_attributes_attrs from the enrichment_dedup CTE"
 echo "$q_enriched" | grep -q "sc.item_description, sc.product_attributes_attrs" || fail "worklist_query must carry item_description/product_attributes_attrs through to the final SELECT"
+# product_attributes_attrs must be projected down to a compact "name=value" string, not shipped as
+# raw JSON -- live-measured on the FULL (untruncated, 140-row) babybath/shopee/2026-08 worklist:
+# SUM(LENGTH(product_attributes_attrs)) dropped from 279503 (raw) to 28517 (compact) chars.
+echo "$q_enriched" | grep -qF "STRING_AGG(CONCAT(JSON_VALUE(a,'\$.name'),'=',JSON_VALUE(a,'\$.value')), '; ')" || fail "worklist_query's enrichment_dedup CTE must project product_attributes_attrs down to a compact name=value string via STRING_AGG"
+# Bare SAFE.PARSE_JSON(product_attributes_attrs) alone would null out ~94% of real rows (live-
+# measured on the full enrichment table: 88280/94086 non-null only reachable via the fallback --
+# most rows store this column as Python repr, single-quoted with None/True/False, not valid JSON).
+# COALESCE tries the raw string first (so already-valid JSON, and any row whose real content has
+# an apostrophe that the quote-swap would corrupt, is never touched by the fallback) and only
+# normalizes (None/True/False -> null/true/false, ' -> ", via CHR() to dodge quoting hell) when the
+# raw parse fails.
+echo "$q_enriched" | grep -qF "COALESCE(" || fail "worklist_query must try raw SAFE.PARSE_JSON first and fall back to a normalized parse, not null out most real-world rows"
+echo "$q_enriched" | grep -qF "SAFE.PARSE_JSON(product_attributes_attrs)," || fail "worklist_query's COALESCE must try the raw (untouched) product_attributes_attrs first, so already-valid JSON is never run through the Python-repr normalization"
+echo "$q_enriched" | grep -qF "CHR(39), CHR(34)" || fail "worklist_query's Python-repr fallback must swap single quotes for double quotes (via CHR() to avoid bash/SQL quoting issues) so SAFE.PARSE_JSON can parse it"
+echo "$q_enriched" | grep -qF "': None', ': null'" || fail "worklist_query's Python-repr fallback must normalize None/True/False to JSON's null/true/false"
+if echo "$q_enriched" | grep -qE "SELECT item_itemid, item_description, product_attributes_attrs$"; then
+  fail "worklist_query must not select the raw product_attributes_attrs column directly -- it must go through the STRING_AGG compaction"
+fi
 
 # Non-Shopee platform -> no join, NULL columns instead, even if an enrichment_table value is passed
 # (confirmed live: non-Shopee 0_pipeline_* tables have a different schema with no description/specs).
@@ -69,6 +87,15 @@ q_missing=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_i
 if echo "$q_missing" | grep -q "LEFT JOIN \`sincere-hearth-273704.babybath.0_pipeline"; then
   fail "worklist_query must not attempt a join when no enrichment_table is given"
 fi
+
+# enrichment_table literal string "null" (jq -r on a missing/null JSON key) must be treated the
+# same as "-"/empty -- consistency with main()'s three-sentinel guard (line ~432-438), even though
+# this is currently unreachable (parse_categories always emits a "0" key today).
+q_null_sentinel=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "shopee" "null")
+if echo "$q_null_sentinel" | grep -q "LEFT JOIN \`sincere-hearth-273704.babybath.0_pipeline"; then
+  fail "worklist_query must treat the literal string 'null' the same as an unconfigured enrichment_table, never join sincere-hearth-273704.babybath.null"
+fi
+echo "$q_null_sentinel" | grep -q "NULL AS item_description, NULL AS product_attributes_attrs" || fail "worklist_query must select NULL item_description/product_attributes_attrs when enrichment_table is the literal string 'null'"
 echo "PASS: worklist_query enrichment"
 
 # --- primary_filter_table ---
@@ -87,8 +114,26 @@ echo "ALL TESTS PASSED (part 1: SQL builders)"
 # wired to each other.
 prompt=$(build_qa_prompt "babybath" "shopee" "babybath.master_babybath_id_dev" \
   "babybath.product_id_dict_qa" "babybath.babybath_dict" "babybath.filter_babybath" \
-  "prod_id" "sku_type" "keywords_typo" "babybath_taxonomy_qa" "SELECT 1 /* worklist */" \
-  "telonoil.product_id_dict")
+  "prod_id" "sku_type" "keywords_typo" "babybath_taxonomy_qa" "/tmp/babybath_shopee_full_worklist.jsonl" \
+  "42" "telonoil.product_id_dict")
+
+# STEP 0 must point Claude at the materialized worklist FILE + its exact row count, never hand it
+# raw SQL to re-run itself -- re-running the enriched query yourself can render 18-320x larger than
+# before enrichment (live-measured: 46 KB -> 14.7 MB on a 140-row category), which was silently
+# truncating what Claude actually saw while it still reported status: partial (mapped to
+# QUEUE_SIGNAL: DONE, so a truncated run looked identical to a finished one).
+echo "$prompt" | grep -qF "/tmp/babybath_shopee_full_worklist.jsonl" || fail "STEP 0 must reference the materialized worklist file path"
+echo "$prompt" | grep -qF "exactly 42 rows" || fail "STEP 0 must state the exact worklist row count Claude must account for"
+echo "$prompt" | grep -q "do NOT query" || fail "STEP 0 must instruct Claude to Read the file, not query BigQuery for the worklist itself"
+echo "$prompt" | grep -q "status: partial" || fail "STEP 0 must instruct Claude to report status: partial/blocked rather than silently processing a subset"
+if echo "$prompt" | grep -qF "re-run this yourself"; then
+  fail "STEP 0 must no longer tell Claude to re-run the worklist SQL itself"
+fi
+if echo "$prompt" | grep -qF "SELECT 1 /* worklist */"; then
+  fail "prompt must never embed the raw worklist SQL text -- STEP 0 now points at the materialized file instead"
+fi
+echo "$prompt" | grep -qF "Derive /tmp/babybath_shopee_worklist.jsonl from /tmp/babybath_shopee_full_worklist.jsonl" || fail "STEP 1 must derive its {id,text} file from STEP 0's materialized worklist file, not from re-querying"
+echo "$prompt" | grep -qF "jq -c '{id: .product_id, text: .sku_name}' /tmp/babybath_shopee_full_worklist.jsonl" || fail "STEP 1 must give Claude the exact jq one-liner to derive the {id,text} file, not ask it to hand-transcribe rows out of a potentially large worklist file (the same truncation exposure Finding 1 exists to eliminate)"
 
 echo "$prompt" | grep -q "RELEVANT to this category" || fail "prompt must state the relevance-check step first"
 echo "$prompt" | grep -q "do NOT create a taxonomy entry" || fail "prompt must state irrelevant products are dropped, never routed elsewhere"
@@ -147,7 +192,8 @@ echo "$prompt" | grep -q "INFORMATION_SCHEMA.COLUMNS" || fail "step 2b must tell
 # step2_block, unconfigured ('-') branch
 prompt_nodict=$(build_qa_prompt "babybath" "shopee" "babybath.master_babybath_id_dev" \
   "babybath.product_id_dict_qa" "babybath.babybath_dict" "babybath.filter_babybath" \
-  "prod_id" "sku_type" "keywords_typo" "babybath_taxonomy_qa" "SELECT 1 /* worklist */" "-")
+  "prod_id" "sku_type" "keywords_typo" "babybath_taxonomy_qa" "/tmp/babybath_shopee_full_worklist.jsonl" \
+  "42" "-")
 echo "$prompt_nodict" | grep -q "2b. SKIPPED for this category" || fail "an unconfigured ('-') product_id_dict must skip step 2b"
 echo "$prompt_nodict" | grep -q "Go straight to 2c" || fail "the skipped step 2b must send the agent straight to 2c"
 if echo "$prompt_nodict" | grep -q "Prior mapping check against"; then
@@ -224,5 +270,23 @@ grep -qF 'source "${REPO_ROOT}/script/load_env.sh"' <<< "$script_src" || fail "m
 grep -qF 'format_result_summary "$claude_output"' <<< "$script_src" || fail "main() must print the human-readable summary"
 grep -qF 'echo "$claude_output"' <<< "$script_src" || fail "main() must still echo the raw envelope -- the summary is additive, not a replacement"
 echo "PASS: main() QUEUE_SIGNAL wiring"
+
+# --- main() worklist materialization (Finding 1) ---
+grep -qF -- '--max_rows=1000000' <<< "$script_src" || fail "main() must pass --max_rows to bq query when materializing the worklist -- bq query silently defaults to --max_rows=100 (confirmed live: a real 140-row worklist came back as exactly 100 rows without it), which would reproduce the truncation bug this materialization exists to fix"
+grep -qF "worklist_file=\"/tmp/\${dataset}_\${platform}_full_worklist.jsonl\"" <<< "$script_src" || fail "main() must materialize the worklist to a distinctly-named file (not colliding with STEP 1's derived {id,text} file)"
+grep -qF "jq -c '.[]'" <<< "$script_src" || fail "main() must convert bq's JSON array output to true JSONL (one object per line) via jq -c '.[]'"
+grep -qF 'worklist_count=$(wc -l < "$worklist_file"' <<< "$script_src" || fail "main() must derive worklist_count from the materialized file's line count, not a separate redundant COUNT query"
+if grep -qF 'SELECT COUNT(*) FROM ($query)' <<< "$script_src"; then
+  fail "main() must not run a separate COUNT(*) query -- worklist_count comes from the materialized file"
+fi
+grep -qF 'build_qa_prompt "$dataset" "$platform" "$source_table" "$qa_table" "$dict_table" \' <<< "$script_src" || fail "main() must still call build_qa_prompt with the expected leading args"
+grep -qF '"$worklist_file" \' <<< "$script_src" || fail "main() must pass the worklist FILE PATH (not raw SQL) as build_qa_prompt's worklist_file arg"
+grep -qF '"$worklist_count" "$product_id_dict")' <<< "$script_src" || fail "main() must pass worklist_count into build_qa_prompt alongside product_id_dict"
+echo "PASS: main() worklist materialization wiring"
+
+# --- main() DISCORD_WEBHOOK_URL warning (Finding 2) ---
+grep -qF 'DISCORD_WEBHOOK_URL:-' <<< "$script_src" || fail "main() must check DISCORD_WEBHOOK_URL right after sourcing load_env.sh"
+grep -qF 'WARNING: DISCORD_WEBHOOK_URL unset' <<< "$script_src" || fail "main() must warn on its own stderr when DISCORD_WEBHOOK_URL is unset -- otherwise the operator gets zero signal that Discord notifications are being skipped all session (notify_discord_new_entry's own warning only reaches Claude's Bash-tool output, never non_niq_qa.sh's stdout/stderr)"
+echo "PASS: main() DISCORD_WEBHOOK_URL warning wiring"
 
 echo "ALL TESTS PASSED (part 2: prompt + main)"
