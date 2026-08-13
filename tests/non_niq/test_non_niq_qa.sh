@@ -46,6 +46,20 @@ echo "$q" | grep -q "qa_status = 'Not Reviewed'" || fail "worklist_query must ga
 grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed exactly once (in the prioritized CTE), never restated in the outer WHERE"
 echo "PASS: worklist_query"
 
+# --- worklist_query row limit (Finding: unbounded worklists blow the turn budget) ---
+# Default (no 7th arg) must be 300 -- live-observed that large categories (e.g. cookiesbiscuit,
+# 6143 in-scope rows) exhaust a session's turn budget long before finishing.
+echo "$q" | grep -q "LIMIT 300" || fail "worklist_query must default to LIMIT 300 when no row_limit is given"
+q_row_limit=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "shopee" "" "150")
+echo "$q_row_limit" | grep -q "LIMIT 150" || fail "worklist_query must use the given row_limit when one is passed"
+if echo "$q_row_limit" | grep -q "LIMIT 300"; then
+  fail "worklist_query must not fall back to the default 300 when an explicit row_limit is given"
+fi
+# LIMIT must come after ORDER BY priority ASC, gmv_monthly DESC -- otherwise it would truncate an
+# arbitrary (unordered) 300 rows instead of the highest-priority, highest-revenue ones.
+[[ "$q_row_limit" == *$'ORDER BY priority ASC, gmv_monthly DESC\nLIMIT 150'* ]] || fail "LIMIT must come immediately after ORDER BY priority ASC, gmv_monthly DESC, not before it or on an unordered result"
+echo "PASS: worklist_query row limit"
+
 # --- worklist_query enrichment (item_description/product_attributes_attrs) ---
 # Shopee + a real enrichment table name -> enrichment_dedup CTE present with deduplication.
 q_enriched=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "shopee" "0_pipeline_babybath_shopee_id")
@@ -283,6 +297,12 @@ grep -qF 'build_qa_prompt "$dataset" "$platform" "$source_table" "$qa_table" "$d
 grep -qF '"$worklist_file" \' <<< "$script_src" || fail "main() must pass the worklist FILE PATH (not raw SQL) as build_qa_prompt's worklist_file arg"
 grep -qF '"$worklist_count" "$product_id_dict")' <<< "$script_src" || fail "main() must pass worklist_count into build_qa_prompt alongside product_id_dict"
 echo "PASS: main() worklist materialization wiring"
+
+# --- main() row-limit arg (4th positional, defaults to 300) ---
+grep -qF 'max_turns="${3:-300}" max_rows="${4:-300}"' <<< "$script_src" || fail "main() must accept a 4th positional MAX_ROWS arg defaulting to 300"
+grep -qF 'Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS] [MAX_ROWS]' <<< "$script_src" || fail "main()'s usage message must document the new MAX_ROWS arg"
+grep -qF '"$enrichment_table" "$max_rows")' <<< "$script_src" || fail "main() must pass max_rows through to worklist_query as the row_limit arg"
+echo "PASS: main() row-limit arg wiring"
 
 # --- main() DISCORD_WEBHOOK_URL warning (Finding 2) ---
 grep -qF 'DISCORD_WEBHOOK_URL:-' <<< "$script_src" || fail "main() must check DISCORD_WEBHOOK_URL right after sourcing load_env.sh"

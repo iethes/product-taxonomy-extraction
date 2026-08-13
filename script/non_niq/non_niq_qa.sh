@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: script/non_niq/non_niq_qa.sh <DATASET> <PLATFORM> [MAX_TURNS]
+# Usage: script/non_niq/non_niq_qa.sh <DATASET> <PLATFORM> [MAX_TURNS] [MAX_ROWS]
 # e.g.  script/non_niq/non_niq_qa.sh babybath shopee
 #       script/non_niq/non_niq_qa.sh babybath shopee 400
+#       script/non_niq/non_niq_qa.sh cookiesbiscuit shopee 300 150
 #
 # Agentic QA harness for one (dataset, platform) pair -- issue #2's decision tree (relevance ->
 # correct/re-point -> match-or-create), Meilisearch hybrid retrieval instead of the POC's brute
@@ -40,6 +41,12 @@ default_month_query() {
 # which is safe on its own.
 worklist_query() {
   local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5" enrichment_table="${6:-}"
+  # LIMIT keeps a single session's worklist bounded -- live-observed that categories with
+  # thousands of in-scope rows (e.g. cookiesbiscuit: 6143 rows) blow the turn budget long before
+  # finishing, at roughly 1.3 tool calls/product. 300 is a safe default; ORDER BY already runs
+  # priority-then-gmv, so LIMIT keeps the highest-priority, highest-revenue rows either way and
+  # unprocessed rows simply reappear (still priority 0) on the next queue-worker iteration.
+  local row_limit="${7:-300}"
   local platform_titlecase="${platform^}"
   # item_description/product_attributes_attrs enrichment is Shopee-only by data availability, not
   # a scoping choice: confirmed live that non-Shopee 0_pipeline_* tables (e.g. Blibli) have an
@@ -117,6 +124,7 @@ prioritized AS (
 SELECT * FROM prioritized
 WHERE priority IS NOT NULL
 ORDER BY priority ASC, gmv_monthly DESC
+LIMIT ${row_limit}
 SQL
 }
 
@@ -429,10 +437,10 @@ main() {
   source "${REPO_ROOT}/script/load_env.sh"
   [[ -n "${DISCORD_WEBHOOK_URL:-}" ]] || echo "WARNING: DISCORD_WEBHOOK_URL unset -- new-entry Discord notifications will be skipped this run." >&2
   if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS]" >&2
+    echo "Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS] [MAX_ROWS]" >&2
     exit 1
   fi
-  local dataset="$1" platform="$2" max_turns="${3:-300}"
+  local dataset="$1" platform="$2" max_turns="${3:-300}" max_rows="${4:-300}"
 
   local category_json
   category_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" categories --country ID \
@@ -490,7 +498,7 @@ main() {
 
   local meili_index="${dataset}_taxonomy_qa"
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows")
 
   # Materialize the FULL worklist to a file for Claude to Read, instead of handing Claude the raw
   # SQL to re-run itself -- with item_description/product_attributes_attrs enrichment, the raw
