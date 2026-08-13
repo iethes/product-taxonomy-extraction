@@ -340,19 +340,31 @@ format_result_summary() {
   result_json=$(extract_result_json "$claude_output")
 
   local status rows_confirmed rows_unconfident rows_filtered rows_created findings blockers
-  status=$(echo "$result_json" | jq -r '.status // "unknown"' 2>/dev/null) || status="unknown"
-  rows_confirmed=$(echo "$result_json" | jq -r '.rows_qa_confirmed // "?"' 2>/dev/null) || rows_confirmed="?"
-  rows_unconfident=$(echo "$result_json" | jq -r '.rows_qa_unconfident // "?"' 2>/dev/null) || rows_unconfident="?"
-  rows_filtered=$(echo "$result_json" | jq -r '.rows_filtered // "?"' 2>/dev/null) || rows_filtered="?"
-  rows_created=$(echo "$result_json" | jq -r '.rows_created_in_dict // "?"' 2>/dev/null) || rows_created="?"
-  findings=$(echo "$result_json" | jq -r '
-    if .findings == null then "(none)"
-    elif (.findings | type) == "array" then (.findings | join("\n"))
-    else (.findings | tostring) end' 2>/dev/null) || findings="(unparseable)"
-  blockers=$(echo "$result_json" | jq -r '
-    if .blockers == null or (.blockers | length) == 0 then "(none)"
-    elif (.blockers | type) == "array" then (.blockers | join("\n"))
-    else (.blockers | tostring) end' 2>/dev/null) || blockers="(unparseable)"
+  # When result_json is empty (envelope unparseable), jq on empty input produces no output, not
+  # an error -- so the || fallback never fires. Fast-path the empty case explicitly.
+  if [[ -z "$result_json" ]]; then
+    status="unknown"
+    rows_confirmed="?"
+    rows_unconfident="?"
+    rows_filtered="?"
+    rows_created="?"
+    findings="(unparseable)"
+    blockers="(unparseable)"
+  else
+    status=$(echo "$result_json" | jq -r '.status // "unknown"' 2>/dev/null) || status="unknown"
+    rows_confirmed=$(echo "$result_json" | jq -r '.rows_qa_confirmed // "?"' 2>/dev/null) || rows_confirmed="?"
+    rows_unconfident=$(echo "$result_json" | jq -r '.rows_qa_unconfident // "?"' 2>/dev/null) || rows_unconfident="?"
+    rows_filtered=$(echo "$result_json" | jq -r '.rows_filtered // "?"' 2>/dev/null) || rows_filtered="?"
+    rows_created=$(echo "$result_json" | jq -r '.rows_created_in_dict // "?"' 2>/dev/null) || rows_created="?"
+    findings=$(echo "$result_json" | jq -r '
+      if .findings == null then "(none)"
+      elif (.findings | type) == "array" then (.findings | join("\n"))
+      else (.findings | tostring) end' 2>/dev/null) || findings="(unparseable)"
+    blockers=$(echo "$result_json" | jq -r '
+      if .blockers == null or (.blockers | length) == 0 then "(none)"
+      elif (.blockers | type) == "array" then (.blockers | join("\n"))
+      else (.blockers | tostring) end' 2>/dev/null) || blockers="(unparseable)"
+  fi
 
   local num_turns duration_ms total_cost
   num_turns=$(echo "$claude_output" | jq -r '.num_turns // "?"' 2>/dev/null) || num_turns="?"

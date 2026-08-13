@@ -198,6 +198,19 @@ summary2=$(format_result_summary "$fake_envelope_with_blockers")
 echo "$summary2" | grep -q "missing dict table" || fail "format_result_summary must list blockers in full when present"
 echo "$summary2" | grep -q "auth expired" || fail "format_result_summary must list every blocker, not just the first"
 echo "$summary2" | grep -q "no model usage reported" || fail "format_result_summary must handle an empty modelUsage object gracefully"
+
+# Test unparseable envelope (transport error scenario) -- result_json is empty, all result-level
+# fields must degrade to documented defaults, not blank strings (this was the bug: jq on empty
+# input produces no output, not an error, so || fallback never fires).
+garbage_envelope='garbage not json at all'
+summary3=$(format_result_summary "$garbage_envelope")
+echo "$summary3" | grep -q "Status: unknown" || fail "format_result_summary must show status=unknown for unparseable envelope"
+echo "$summary3" | grep -q "Confirmed: ?" || fail "format_result_summary must show rows_confirmed=? for unparseable envelope"
+echo "$summary3" | grep -q "Unconfident: ?" || fail "format_result_summary must show rows_qa_unconfident=? for unparseable envelope"
+echo "$summary3" | grep -q "Filtered: ?" || fail "format_result_summary must show rows_filtered=? for unparseable envelope"
+echo "$summary3" | grep -q "Created: ?" || fail "format_result_summary must show rows_created_in_dict=? for unparseable envelope"
+echo "$summary3" | grep -q "Findings:" || fail "format_result_summary must have a Findings section even for garbage"
+echo "$summary3" | grep -q "(unparseable)" || fail "format_result_summary must show (unparseable) for findings/blockers when result_json is empty"
 echo "PASS: format_result_summary"
 
 # --- main() wiring (grep the script source, no execution) ---
