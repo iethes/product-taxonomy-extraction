@@ -46,13 +46,22 @@ worklist_query() {
   # entirely different schema with no description/specs columns at all. dataset is derived from
   # source_table (already "{dataset}.master_..._dev") rather than a separate parameter.
   local dataset="${source_table%%.*}"
-  local enrichment_join="" enrichment_select="NULL AS item_description, NULL AS product_attributes_attrs"
+  local enrichment_cte_and_join="" enrichment_join="" enrichment_select="NULL AS item_description, NULL AS product_attributes_attrs"
   if [[ "$platform_titlecase" == "Shopee" && -n "$enrichment_table" && "$enrichment_table" != "-" ]]; then
-    enrichment_join="LEFT JOIN \`${PROJECT}.${dataset}.${enrichment_table}\` e ON CAST(e.item_itemid AS STRING) = s.product_id"
+    # enrichment_table is a history table with multiple rows per item_itemid (confirmed live: ~108 rows
+    # per item avg). Dedupe to latest row per item before joining to avoid fan-out that corrupts
+    # cumulative GMV scoping (which must run post-join, not pre-join).
+    enrichment_cte_and_join="enrichment_dedup AS (
+  SELECT item_itemid, item_description, product_attributes_attrs
+  FROM \`${PROJECT}.${dataset}.${enrichment_table}\`
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY item_itemid ORDER BY timestamp DESC) = 1
+),
+"
+    enrichment_join="LEFT JOIN enrichment_dedup e ON CAST(e.item_itemid AS STRING) = s.product_id"
     enrichment_select="e.item_description, e.product_attributes_attrs"
   fi
   cat <<SQL
-WITH base AS (
+WITH ${enrichment_cte_and_join}base AS (
   SELECT s.product_id, s.sku_name, s.image, s.ecommerce_platform, s.qa_status,
          COALESCE(s.flag_GWP, FALSE) OR REGEXP_CONTAINS(UPPER(s.sku_name), r'\[NOT FOR SALE\]|\[GWP\]') AS flag_GWP,
          s.gmv_monthly, ${enrichment_select}

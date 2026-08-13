@@ -47,11 +47,13 @@ grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed e
 echo "PASS: worklist_query"
 
 # --- worklist_query enrichment (item_description/product_attributes_attrs) ---
-# Shopee + a real enrichment table name -> conditional LEFT JOIN present.
+# Shopee + a real enrichment table name -> enrichment_dedup CTE present with deduplication.
 q_enriched=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "shopee" "0_pipeline_babybath_shopee_id")
-echo "$q_enriched" | grep -q "LEFT JOIN \`sincere-hearth-273704.babybath.0_pipeline_babybath_shopee_id\` e" || fail "worklist_query must LEFT JOIN the Shopee enrichment table when given one"
-echo "$q_enriched" | grep -q "CAST(e.item_itemid AS STRING) = s.product_id" || fail "worklist_query must join the enrichment table on item_itemid = product_id"
-echo "$q_enriched" | grep -q "e.item_description, e.product_attributes_attrs" || fail "worklist_query must select item_description/product_attributes_attrs from the enrichment table when joined"
+echo "$q_enriched" | grep -q "enrichment_dedup AS" || fail "worklist_query must create an enrichment_dedup CTE for deduplication"
+echo "$q_enriched" | grep -q "QUALIFY ROW_NUMBER() OVER (PARTITION BY item_itemid ORDER BY timestamp DESC) = 1" || fail "worklist_query must dedupe enrichment table to latest row per item_itemid"
+echo "$q_enriched" | grep -q "FROM \`sincere-hearth-273704.babybath.0_pipeline_babybath_shopee_id\`" || fail "worklist_query must reference the enrichment table in enrichment_dedup CTE"
+echo "$q_enriched" | grep -q "LEFT JOIN enrichment_dedup e ON CAST(e.item_itemid AS STRING) = s.product_id" || fail "worklist_query must join the dedup CTE on item_itemid = product_id"
+echo "$q_enriched" | grep -q "e.item_description, e.product_attributes_attrs" || fail "worklist_query must select item_description/product_attributes_attrs from the enrichment_dedup CTE"
 echo "$q_enriched" | grep -q "sc.item_description, sc.product_attributes_attrs" || fail "worklist_query must carry item_description/product_attributes_attrs through to the final SELECT"
 
 # Non-Shopee platform -> no join, NULL columns instead, even if an enrichment_table value is passed
