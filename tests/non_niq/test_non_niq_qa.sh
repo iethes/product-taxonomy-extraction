@@ -41,6 +41,12 @@ if echo "$q" | grep -q "JSON_VALUE(_meta,"; then
 fi
 echo "$q" | grep -q "ORDER BY priority ASC, gmv_monthly DESC" || fail "worklist_query must order unreviewed before unconfident, then by GMV"
 echo "$q" | grep -q "qa_status = 'Not Reviewed'" || fail "worklist_query must gate priority-0 rows to qa_status = 'Not Reviewed' per design spec"
+# Live-observed: some source image URLs carry a literal embedded double-quote (upstream
+# CSV-quoting artifact) that breaks STEP 2a's curl download unless stripped first.
+echo "$q" | grep -qF "REPLACE(s.image, '\"', '') AS image" || fail "worklist_query must strip literal double-quote characters from image -- unstripped, STEP 2a's curl download 404s on affected rows"
+if echo "$q" | grep -qF "s.sku_name, s.image,"; then
+  fail "worklist_query must not select the raw, unstripped s.image column"
+fi
 # Substring greps cannot catch a dropped comma between CTEs -- assert the join literally.
 [[ "$q" == *$'),\nprioritized AS ('* ]] || fail "the CTE list must be comma-joined before prioritized AS -- otherwise the query is a BigQuery syntax error"
 grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed exactly once (in the prioritized CTE), never restated in the outer WHERE"

@@ -85,9 +85,15 @@ worklist_query() {
     enrichment_join="LEFT JOIN enrichment_dedup e ON CAST(e.item_itemid AS STRING) = s.product_id"
     enrichment_select="e.item_description, e.product_attributes_attrs"
   fi
+  # image carries a live-observed, upstream CSV-quoting artifact: literal double-quote characters
+  # either embedded mid-URL (e.g. .../file/"sg-11134201-..."<) or wrapping the whole real URL --
+  # a real session confirmed this breaks STEP 2a's curl download (every quoted URL 404s) unless
+  # stripped first. REPLACE removes every literal '"' regardless of which shape it takes, leaving
+  # the real URL either way -- do this here, once, rather than relying on the prompt telling Claude
+  # to strip it per-product.
   cat <<SQL
 WITH ${enrichment_cte_and_join}base AS (
-  SELECT s.product_id, s.sku_name, s.image, s.ecommerce_platform, s.qa_status,
+  SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image, s.ecommerce_platform, s.qa_status,
          COALESCE(s.flag_GWP, FALSE) OR REGEXP_CONTAINS(UPPER(s.sku_name), r'\[NOT FOR SALE\]|\[GWP\]') AS flag_GWP,
          s.gmv_monthly, ${enrichment_select}
   FROM \`${PROJECT}.${source_table}\` s
