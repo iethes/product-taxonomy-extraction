@@ -274,12 +274,6 @@ ${step2_block}
                      \`SELECT DISTINCT <column> FROM ${PROJECT}.${dict_table}\` per attribute column
                      before writing a new value, prefer an existing value over inventing one, and
                      match existing formatting exactly (e.g. "150 ml" not "150ml").
-             Step C: notify Discord this entry was created -- run:
-                     ${PYTHON_BIN} ${REPO_ROOT}/script/non_niq/non_niq_helper.py notify-discord \\
-                       --project ${PROJECT} --dict-table ${dict_table} --brand "<brand you just wrote>" \\
-                       --identity-col ${dict_identity_col} --identity-value "<${dict_identity_col} value you just wrote>" \\
-                       --dataset ${dataset}
-                     This reads the row back from BigQuery itself and posts to Discord -- it never fails the session even if Discord is unreachable, so don't wait for or retry it beyond running the command once.
              Then write brand/${qa_identity_col} values pointing at the new entry to
              \`${PROJECT}.${qa_table}\`.
 
@@ -434,8 +428,6 @@ SUMMARY
 }
 
 main() {
-  source "${REPO_ROOT}/script/load_env.sh"
-  [[ -n "${DISCORD_WEBHOOK_URL:-}" ]] || echo "WARNING: DISCORD_WEBHOOK_URL unset -- new-entry Discord notifications will be skipped this run." >&2
   if [[ $# -lt 2 ]]; then
     echo "Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS] [MAX_ROWS]" >&2
     exit 1

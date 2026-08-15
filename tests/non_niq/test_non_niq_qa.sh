@@ -167,11 +167,9 @@ echo "$prompt" | grep -q "qa_confidence" || fail "prompt must instruct writing t
 echo "$prompt" | grep -q "human_review" || fail "prompt must instruct writing the human_review _meta field on the retry path"
 echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping table is never modified"
 echo "$prompt" | grep -q "product_attributes_attrs" || fail "STEP 2a must mention product_attributes_attrs as additional signal alongside item_description"
-echo "$prompt" | grep -q "Step C: notify Discord" || fail "STEP 2c's mint-new-entry branch must notify Discord after Step B, before the QA-table write"
-echo "$prompt" | grep -q "non_niq_helper.py notify-discord" || fail "prompt must instruct calling the notify-discord command"
-echo "$prompt" | grep -q -- "--identity-col sku_type " || fail "notify-discord call must use the resolved dict_identity_col"
-echo "$prompt" | grep -q -- "--dataset babybath" || fail "notify-discord call must pass the dataset"
-echo "$prompt" | grep -q "never fails the session even if Discord is unreachable" || fail "prompt must tell Claude this call is non-blocking, don't wait/retry"
+if echo "$prompt" | grep -q "notify Discord\|notify-discord"; then
+  fail "prompt must not reference Discord notification -- removed from the harness"
+fi
 
 # QA-table identity column is hardcoded sku_type_complete and must NOT follow dict_identity_col.
 # Plain `grep sku_type_complete` would pass vacuously here (dict_identity_col="sku_type" is its
@@ -280,7 +278,6 @@ grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$sc
 grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() must tolerate a non-zero claude exit (|| true) so the transcript still gets echoed under set -e"
 grep -qF "product_id_dict=\$(echo \"\$category_json\" | jq -r '.product_id_dict')" <<< "$script_src" || fail "main() must extract product_id_dict from the Sheet row and pass it to build_qa_prompt"
 grep -qF 'for t in "qa_table=$qa_table" "dict_table=$dict_table" "filter_table=$filter_table"' <<< "$script_src" || fail "main() must guard qa_table/dict_table/filter_table against the Sheet's unconfigured '-' marker (and only those three -- '-' is legal for product_id_dict)"
-grep -qF 'source "${REPO_ROOT}/script/load_env.sh"' <<< "$script_src" || fail "main() must source load_env.sh so DISCORD_WEBHOOK_URL (and other .env values) are available whether invoked directly or via the queue worker"
 grep -qF 'format_result_summary "$claude_output"' <<< "$script_src" || fail "main() must print the human-readable summary"
 grep -qF 'echo "$claude_output"' <<< "$script_src" || fail "main() must still echo the raw envelope -- the summary is additive, not a replacement"
 echo "PASS: main() QUEUE_SIGNAL wiring"
@@ -304,9 +301,9 @@ grep -qF 'Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS] [MAX_ROWS]' <<< "$script_sr
 grep -qF '"$enrichment_table" "$max_rows")' <<< "$script_src" || fail "main() must pass max_rows through to worklist_query as the row_limit arg"
 echo "PASS: main() row-limit arg wiring"
 
-# --- main() DISCORD_WEBHOOK_URL warning (Finding 2) ---
-grep -qF 'DISCORD_WEBHOOK_URL:-' <<< "$script_src" || fail "main() must check DISCORD_WEBHOOK_URL right after sourcing load_env.sh"
-grep -qF 'WARNING: DISCORD_WEBHOOK_URL unset' <<< "$script_src" || fail "main() must warn on its own stderr when DISCORD_WEBHOOK_URL is unset -- otherwise the operator gets zero signal that Discord notifications are being skipped all session (notify_discord_new_entry's own warning only reaches Claude's Bash-tool output, never non_niq_qa.sh's stdout/stderr)"
-echo "PASS: main() DISCORD_WEBHOOK_URL warning wiring"
+if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discord\|notify_discord"; then
+  fail "non_niq_qa.sh must not reference Discord notification or load_env.sh -- removed from the harness"
+fi
+echo "PASS: no Discord references remain"
 
 echo "ALL TESTS PASSED (part 2: prompt + main)"
