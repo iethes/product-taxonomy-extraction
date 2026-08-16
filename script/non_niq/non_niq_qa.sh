@@ -47,6 +47,7 @@ worklist_query() {
   # priority-then-gmv, so LIMIT keeps the highest-priority, highest-revenue rows either way and
   # unprocessed rows simply reappear (still priority 0) on the next queue-worker iteration.
   local row_limit="${7:-300}"
+  local filter_table="${8:-}"
   local platform_titlecase="${platform^}"
   # item_description/product_attributes_attrs enrichment is Shopee-only by data availability, not
   # a scoping choice: confirmed live that non-Shopee 0_pipeline_* tables (e.g. Blibli) have an
@@ -91,6 +92,25 @@ worklist_query() {
   # stripped first. REPLACE removes every literal '"' regardless of which shape it takes, leaving
   # the real URL either way -- do this here, once, rather than relying on the prompt telling Claude
   # to strip it per-product.
+  #
+  # filter_table exclusion: STEP 2a's NO branch writes ONLY to the filter table, never to
+  # product_id_dict_qa -- so a product already confirmed out-of-scope leaves no trace in qa_state
+  # (the only table priority was computed from) and looks identical to a never-processed row on
+  # every future run. Live-confirmed repeatedly (up to 100% of a freshly materialized worklist)
+  # that already-filtered products keep resurfacing as priority-0 rows, burning a full session on
+  # already-resolved work. SELECT DISTINCT also absorbs filter_table's own known duplicate-row
+  # issue (the same gap causes a product to get independently re-filtered in a later session) --
+  # existence is all that matters here, not row count.
+  local filter_cte="" filter_join="" filter_priority_check=""
+  if [[ -n "$filter_table" && "$filter_table" != "-" && "$filter_table" != "null" ]]; then
+    filter_cte="filter_state AS (
+  SELECT DISTINCT product_id FROM \`${PROJECT}.${filter_table}\`
+),
+"
+    filter_join="LEFT JOIN filter_state fs ON fs.product_id = sc.product_id"
+    filter_priority_check="WHEN fs.product_id IS NOT NULL THEN NULL
+      "
+  fi
   cat <<SQL
 WITH ${enrichment_cte_and_join}base AS (
   SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image, s.ecommerce_platform, s.qa_status,
@@ -116,16 +136,17 @@ qa_state AS (
          JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.human_review') AS human_review
   FROM \`${PROJECT}.${qa_table}\`
 ),
-prioritized AS (
+${filter_cte}prioritized AS (
   SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly, sc.ecommerce_platform,
          sc.item_description, sc.product_attributes_attrs,
     CASE
-      WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
+      ${filter_priority_check}WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
       WHEN qs.qa_confidence = 'unconfident' AND COALESCE(qs.human_review, 'false') != 'true' THEN 1
       ELSE NULL
     END AS priority
   FROM scoped sc
   LEFT JOIN qa_state qs ON qs.product_id = sc.product_id
+  ${filter_join}
 )
 SELECT * FROM prioritized
 WHERE priority IS NOT NULL
@@ -496,7 +517,7 @@ main() {
 
   local meili_index="${dataset}_taxonomy_qa"
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table")
 
   # Materialize the FULL worklist to a file for Claude to Read, instead of handing Claude the raw
   # SQL to re-run itself -- with item_description/product_attributes_attrs enrichment, the raw

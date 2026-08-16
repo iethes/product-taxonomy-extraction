@@ -66,6 +66,35 @@ fi
 [[ "$q_row_limit" == *$'ORDER BY priority ASC, gmv_monthly DESC\nLIMIT 150'* ]] || fail "LIMIT must come immediately after ORDER BY priority ASC, gmv_monthly DESC, not before it or on an unordered result"
 echo "PASS: worklist_query row limit"
 
+# --- worklist_query filter_table exclusion (already-filtered products kept resurfacing) ---
+# STEP 2a's NO branch writes ONLY to the filter table, never product_id_dict_qa -- so a filtered
+# product left no trace in the one table priority was computed from, and looked identical to a
+# never-processed row on every future run. Live-confirmed repeatedly (up to 100% of a freshly
+# materialized worklist) that already-filtered products kept resurfacing as priority-0 rows.
+q_filtered=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "shopee" "" "300" "babybath.filter_babybath")
+echo "$q_filtered" | grep -q "filter_state AS" || fail "worklist_query must create a filter_state CTE when filter_table is given"
+echo "$q_filtered" | grep -qF "SELECT DISTINCT product_id FROM \`sincere-hearth-273704.babybath.filter_babybath\`" || fail "worklist_query must select DISTINCT product_id from the filter table -- filter_table has known duplicate rows per product_id, existence is all that matters"
+echo "$q_filtered" | grep -qF "LEFT JOIN filter_state fs ON fs.product_id = sc.product_id" || fail "worklist_query must join filter_state on product_id"
+echo "$q_filtered" | grep -qF "WHEN fs.product_id IS NOT NULL THEN NULL" || fail "worklist_query must exclude (priority NULL) any product already present in the filter table"
+# The filter check must be the FIRST WHEN in the CASE -- CASE evaluates top-down, so if it came
+# after the qa_state checks a filtered product with no qa_state row could still match priority 0.
+[[ "$q_filtered" == *$'CASE\n      WHEN fs.product_id IS NOT NULL THEN NULL\n      WHEN qs.product_id IS NULL'* ]] || fail "the filter_table exclusion must be checked BEFORE the qa_state priority checks in the CASE, not after"
+# Structural comma-join check, same rationale as the base worklist_query test.
+[[ "$q_filtered" == *$'),\nfilter_state AS ('* ]] || fail "filter_state must be comma-joined after qa_state -- otherwise the query is a BigQuery syntax error"
+[[ "$q_filtered" == *$'),\nprioritized AS ('* ]] || fail "prioritized must be comma-joined after filter_state -- otherwise the query is a BigQuery syntax error"
+
+# No filter_table given (backward compatible -- matches $q's 5-arg call above) -> no filter_state,
+# no exclusion, query still valid.
+if echo "$q" | grep -q "filter_state\|fs.product_id"; then
+  fail "worklist_query must not reference filter_state when no filter_table is given"
+fi
+# '-'/'null' sentinels (Sheet's unconfigured markers) must be treated the same as not given.
+q_filter_sentinel=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "shopee" "" "300" "-")
+if echo "$q_filter_sentinel" | grep -q "filter_state\|fs.product_id"; then
+  fail "worklist_query must treat filter_table='-' the same as not given -- no filter_state CTE"
+fi
+echo "PASS: worklist_query filter_table exclusion"
+
 # --- worklist_query enrichment (item_description/product_attributes_attrs) ---
 # Shopee + a real enrichment table name -> enrichment_dedup CTE present with deduplication.
 q_enriched=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "2026-07" "shopee" "0_pipeline_babybath_shopee_id")
@@ -304,8 +333,11 @@ echo "PASS: main() worklist materialization wiring"
 # --- main() row-limit arg (4th positional, defaults to 300) ---
 grep -qF 'max_turns="${3:-300}" max_rows="${4:-300}"' <<< "$script_src" || fail "main() must accept a 4th positional MAX_ROWS arg defaulting to 300"
 grep -qF 'Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS] [MAX_ROWS]' <<< "$script_src" || fail "main()'s usage message must document the new MAX_ROWS arg"
-grep -qF '"$enrichment_table" "$max_rows")' <<< "$script_src" || fail "main() must pass max_rows through to worklist_query as the row_limit arg"
 echo "PASS: main() row-limit arg wiring"
+
+# --- main() passes filter_table into worklist_query (filter-table exclusion wiring) ---
+grep -qF '"$enrichment_table" "$max_rows" "$filter_table")' <<< "$script_src" || fail "main() must pass filter_table through to worklist_query so already-filtered products are excluded from the worklist"
+echo "PASS: main() filter_table exclusion wiring"
 
 if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discord\|notify_discord"; then
   fail "non_niq_qa.sh must not reference Discord notification or load_env.sh -- removed from the harness"
