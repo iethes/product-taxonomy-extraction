@@ -327,10 +327,14 @@ Hard rules, never relaxed:
 - Whenever you write a product to \`${filter_table}\` (2a) OR to \`${qa_table}\` (2b/2c/2d, any
   confidence outcome, no exceptions) -- ALSO run this UPDATE against the source table, once per
   product:
-    UPDATE \`${PROJECT}.${source_table}\` SET qa_status = 'Reviewed' WHERE product_id = '<this product's product_id>'
-  This updates EVERY row for that product_id (all months), not just the current month's row --
-  \`qa_status\` tracks "has this product ever been reviewed", not a per-month fact. Confirmed live
-  that this harness previously never wrote \`qa_status\` back at all -- every product it had ever
+    UPDATE \`${PROJECT}.${source_table}\` SET qa_status = 'Reviewed'
+    WHERE product_id = '<this product's product_id>'
+      AND month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)
+  This updates this month's AND last month's row for that product_id only -- not the product's
+  entire history, and not just the current month's row. \`qa_status\` tracks "has this product been
+  reviewed recently", scoped to match the one-time historical backfill already run for this same
+  gap (limited to the same this-month/last-month window, not all history). Confirmed live that
+  this harness previously never wrote \`qa_status\` back at all -- every product it had ever
   confidently reviewed still showed \`qa_status = 'Not Reviewed'\` on the source table, even though
   \`qa_status\` is a real field other processes write and read (230k+ 'Reviewed' rows exist from
   elsewhere). This is independent of the retry-eligibility logic (that's driven entirely by

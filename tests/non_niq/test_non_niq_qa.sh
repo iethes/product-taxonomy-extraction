@@ -202,12 +202,13 @@ echo "$prompt" | grep -q "qa_confidence" || fail "prompt must instruct writing t
 echo "$prompt" | grep -q "human_review" || fail "prompt must instruct writing the human_review _meta field on the retry path"
 echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping table is never modified"
 # Live-confirmed the harness previously never wrote qa_status back to the source table -- every
-# confidently-QA'd product still showed qa_status='Not Reviewed'. Must UPDATE all rows for that
-# product_id (all months, no month filter), not just the current month's row.
+# confidently-QA'd product still showed qa_status='Not Reviewed'. Scoped to this month + last
+# month only, matching the one-time historical backfill's own window (not all history, not a
+# single exact month).
 echo "$prompt" | grep -qF "UPDATE \`sincere-hearth-273704.babybath.master_babybath_id_dev\` SET qa_status = 'Reviewed'" || fail "prompt must instruct updating qa_status='Reviewed' on the source table after a terminal write"
-echo "$prompt" | grep -q "EVERY row for that product_id (all months)" || fail "prompt must state the qa_status update covers all months, not just the current one"
-if echo "$prompt" | grep -qF "AND month ="; then
-  fail "the qa_status UPDATE must not be scoped to a single month"
+echo "$prompt" | grep -qF "AND month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)" || fail "the qa_status UPDATE must be scoped to this month and last month, matching the backfill's window"
+if echo "$prompt" | grep -qF "AND month = "; then
+  fail "the qa_status UPDATE must not be scoped to a single exact month"
 fi
 echo "$prompt" | grep -q "product_attributes_attrs" || fail "STEP 2a must mention product_attributes_attrs as additional signal alongside item_description"
 if echo "$prompt" | grep -q "notify Discord\|notify-discord"; then
