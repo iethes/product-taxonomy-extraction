@@ -21,8 +21,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${REPO_ROOT}/.venv/bin/python3"
 
 default_month_query() {
-  local source_table="$1"
-  echo "SELECT FORMAT_DATE('%Y-%m', MAX(month)) FROM \`${PROJECT}.${source_table}\`"
+  local source_table="$1" platform="$2"
+  local platform_titlecase="${platform^}"
+  # MUST be scoped per-platform, not global -- live-confirmed different platforms lag each other
+  # (cookiesbiscuit: Blibli's latest month was 2026-07 while Shopee/Lazada/Tiktok/Tokopedia already
+  # had 2026-08). An unscoped MAX(month) resolves to whichever platform is freshest, then
+  # worklist_query's WHERE month=that AND platform=Blibli matches zero rows -- "nothing to do" even
+  # though Blibli genuinely has hundreds of unreviewed products sitting in ITS actual latest month.
+  echo "SELECT FORMAT_DATE('%Y-%m', MAX(month)) FROM \`${PROJECT}.${source_table}\` WHERE ecommerce_platform = '${platform_titlecase}'"
 }
 
 # Scope per issue #2: latest month, top 90% cumulative GMV per ecommerce_platform (NOT the epic's
@@ -532,8 +538,8 @@ main() {
   # bug (SAFE.JSON_VALUE(...) is not valid BigQuery syntax) look like a hang instead of an error.
   local month
   if ! month=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-    "$(default_month_query "$source_table")" | tail -1); then
-    echo "bq query failed while resolving the latest month for ${source_table} -- see bq's error above." >&2
+    "$(default_month_query "$source_table" "$platform")" | tail -1); then
+    echo "bq query failed while resolving the latest month for ${source_table}/${platform} -- see bq's error above." >&2
     echo "QUEUE_SIGNAL: FAILED"
     exit 1
   fi

@@ -10,9 +10,18 @@ source script/non_niq/non_niq_qa.sh
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 # --- default_month_query ---
-q=$(default_month_query "babybath.master_babybath_id_dev")
+# MUST be scoped per-platform, not global -- live-confirmed different platforms lag each other
+# (cookiesbiscuit: Blibli's latest month was 2026-07 while other platforms already had 2026-08).
+# An unscoped MAX(month) resolves to whichever platform is freshest, then worklist_query's
+# month=that AND platform=Blibli filter matches zero rows -- "nothing to do" even though Blibli
+# genuinely has hundreds of unreviewed products in ITS actual latest month.
+q=$(default_month_query "babybath.master_babybath_id_dev" "blibli")
 echo "$q" | grep -q "MAX(month)" || fail "default_month_query should find the latest month"
 echo "$q" | grep -q "babybath.master_babybath_id_dev" || fail "default_month_query should reference the source table"
+echo "$q" | grep -q "ecommerce_platform = 'Blibli'" || fail "default_month_query must scope MAX(month) to the given platform (Title-Case), not resolve it globally"
+if echo "$q" | grep -q "ecommerce_platform = 'blibli'"; then
+  fail "default_month_query must never filter on the raw lowercase platform -- the source table stores Title-Case values"
+fi
 echo "PASS: default_month_query"
 
 # --- worklist_query ---
@@ -326,6 +335,7 @@ echo "PASS: format_result_summary"
 
 # --- main() wiring (grep the script source, no execution) ---
 script_src=$(cat script/non_niq/non_niq_qa.sh)
+grep -qF '"$(default_month_query "$source_table" "$platform")"' <<< "$script_src" || fail "main() must pass platform to default_month_query -- an unscoped MAX(month) picks whichever platform is freshest, causing 'nothing to do' for a lagging platform even when it has unreviewed products in its own latest month"
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() must emit NOTHING_TO_DO when the worklist is empty, before spending a claude -p call"
 grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() must emit the post-run signal derived from decide_queue_signal"
 grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() must tolerate a non-zero claude exit (|| true) so the transcript still gets echoed under set -e"
