@@ -9,6 +9,13 @@ source script/non_niq/non_niq_qa_v2.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+# --- platform_match_clause (Tokopedia's own first-party 'Tokopedia | Shop' channel has NO
+# separate config Sheet row -- 'tokopedia' as a CLI arg must match BOTH BigQuery platform values) ---
+[[ "$(platform_match_clause "Tokopedia")" == "IN ('Tokopedia', 'Tokopedia | Shop')" ]] || fail "platform_match_clause must expand Tokopedia to match both 'Tokopedia' and 'Tokopedia | Shop'"
+[[ "$(platform_match_clause "Shopee")" == "= 'Shopee'" ]] || fail "platform_match_clause must leave non-Tokopedia platforms as a plain equality check"
+[[ "$(platform_match_clause "Blibli")" == "= 'Blibli'" ]] || fail "platform_match_clause must leave non-Tokopedia platforms as a plain equality check"
+echo "PASS: platform_match_clause"
+
 # --- default_month_query (identical shape to v1's, scoped per-platform) ---
 q=$(default_month_query "cookiesbiscuit.master_cookiesbiscuit_id" "shopee")
 echo "$q" | grep -q "MAX(month)" || fail "default_month_query should find the latest month"
@@ -17,6 +24,8 @@ echo "$q" | grep -q "ecommerce_platform = 'Shopee'" || fail "default_month_query
 if echo "$q" | grep -q "ecommerce_platform = 'shopee'"; then
   fail "default_month_query must never filter on the raw lowercase platform"
 fi
+q_tokopedia=$(default_month_query "cookiesbiscuit.master_cookiesbiscuit_id" "tokopedia")
+echo "$q_tokopedia" | grep -qF "ecommerce_platform IN ('Tokopedia', 'Tokopedia | Shop')" || fail "default_month_query must resolve MAX(month) across BOTH Tokopedia platform values, not just plain 'Tokopedia'"
 echo "PASS: default_month_query"
 
 # --- worklist_query (product_tier-based, NOT cumulative-GMV) ---
@@ -42,6 +51,14 @@ echo "$q" | grep -q "qa_confidence = 'unconfident'" || fail "worklist_query (v2)
 echo "$q" | grep -q "LIMIT 300" || fail "worklist_query (v2) must default row_limit to 300"
 grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed exactly once"
 echo "PASS: worklist_query"
+
+# --- worklist_query tokopedia platform expansion ---
+q_tokopedia=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "tokopedia")
+echo "$q_tokopedia" | grep -qF "ecommerce_platform IN ('Tokopedia', 'Tokopedia | Shop')" || fail "worklist_query (v2) must scope the tokopedia worklist to BOTH platform values, not just plain 'Tokopedia'"
+if echo "$q_tokopedia" | grep -qF "ecommerce_platform = 'Tokopedia'"; then
+  fail "worklist_query (v2) must not use a plain equality check for tokopedia -- it would silently exclude 'Tokopedia | Shop' rows"
+fi
+echo "PASS: worklist_query tokopedia platform expansion"
 
 # --- worklist_query filter_table exclusion ---
 q_filtered=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee" "300" "cookiesbiscuitlemonilo.filter_cookiesbiscuit")

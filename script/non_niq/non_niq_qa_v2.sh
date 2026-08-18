@@ -25,6 +25,20 @@ MEILI_URL="http://34.124.146.29:7700"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${REPO_ROOT}/.venv/bin/python3"
 
+# Confirmed live: BigQuery's ecommerce_platform has a distinct 'Tokopedia | Shop' value
+# (Tokopedia's own first-party channel) alongside plain 'Tokopedia', with NO separate config
+# Sheet row -- 'tokopedia' as a CLI platform arg is meant to cover both under the one Sheet row's
+# config (same qa_table/dict_table/filter_table/master_table_prod). Shared by
+# default_month_query() and worklist_query() so the two never drift out of sync on this.
+platform_match_clause() {
+  local platform_titlecase="$1"
+  if [[ "$platform_titlecase" == "Tokopedia" ]]; then
+    echo "IN ('Tokopedia', 'Tokopedia | Shop')"
+  else
+    echo "= '${platform_titlecase}'"
+  fi
+}
+
 default_month_query() {
   local source_table="$1" platform="$2"
   local platform_titlecase="${platform^}"
@@ -33,7 +47,7 @@ default_month_query() {
   # (master_table_prod, no _dev) every cookiesbiscuit platform currently shares the same latest
   # month -- but that's a snapshot-in-time fact, not a guarantee, so this stays scoped per-platform
   # for the same reason v1's fix does.
-  echo "SELECT FORMAT_DATE('%Y-%m', MAX(month)) FROM \`${PROJECT}.${source_table}\` WHERE ecommerce_platform = '${platform_titlecase}'"
+  echo "SELECT FORMAT_DATE('%Y-%m', MAX(month)) FROM \`${PROJECT}.${source_table}\` WHERE ecommerce_platform $(platform_match_clause "$platform_titlecase")"
 }
 
 # Scope: product_tier = 'Tier 1' (precomputed upstream on master_table_prod -- confirmed live,
@@ -73,7 +87,7 @@ WITH scoped AS (
   FROM \`${PROJECT}.${source_table}\`
   WHERE product_tier = 'Tier 1'
     AND FORMAT_DATE('%Y-%m', month) = '${month}'
-    AND ecommerce_platform = '${platform_titlecase}'
+    AND ecommerce_platform $(platform_match_clause "$platform_titlecase")
 ),
 qa_state AS (
   SELECT ${qa_pk_col} AS product_id,
