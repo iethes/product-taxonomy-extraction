@@ -35,7 +35,12 @@ default_month_query() {
 # general 95% -- QA uses a different threshold on purpose). Priority: rows with no QA-table entry
 # yet come first (priority 0), then rows the agent already marked unconfident but hasn't yet
 # capped out on retry (priority 1) -- human_review=true rows are excluded entirely, they're
-# terminal. Priority is computed exactly ONCE, in the `prioritized` CTE, and the outer WHERE is
+# terminal. This guarantee ONLY holds because qa_state (below) aggregates a product's WHOLE
+# product_id_dict_qa history into order-independent flags -- product_id_dict_qa is insert-only,
+# so a raw un-deduped SELECT there would let an old unconfident row leak a since-terminated or
+# since-confirmed product back in (confirmed live, project_non_niq_qa_state_fanout_bug.md: a
+# 380-row worklist was found 100% already-resolved this way). Do not "simplify" qa_state back to
+# a plain SELECT. Priority is computed exactly ONCE, in the `prioritized` CTE, and the outer WHERE is
 # just `priority IS NOT NULL` -- do not re-state the priority predicates in the WHERE clause.
 # BigQuery sorts NULL first under ORDER BY priority ASC, so a duplicated predicate that drifts
 # out of sync would sort excluded rows AHEAD of real priority-0 rows instead of dropping them.
