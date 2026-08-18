@@ -59,6 +59,24 @@ fi
 # Substring greps cannot catch a dropped comma between CTEs -- assert the join literally.
 [[ "$q" == *$'),\nprioritized AS ('* ]] || fail "the CTE list must be comma-joined before prioritized AS -- otherwise the query is a BigQuery syntax error"
 grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed exactly once (in the prioritized CTE), never restated in the outer WHERE"
+# product_id_dict_qa is INSERT-ONLY -- qa_state must aggregate to order-independent flags per
+# product (LOGICAL_OR over the WHOLE history), never a raw un-deduped SELECT (which fans out the
+# LEFT JOIN and leaks already-resolved products back into the worklist forever -- confirmed live,
+# project_non_niq_qa_state_fanout_bug.md) and never a "latest row by timestamp" dedup either
+# (also confirmed live to silently un-terminate products when a later write lands, since
+# product_id_dict_qa has no reliable timestamp column).
+echo "$q" | grep -qF "GROUP BY prod_id" || fail "qa_state must GROUP BY the resolved qa_pk_col, not select raw un-deduped rows"
+echo "$q" | grep -qF "LOGICAL_OR(" || fail "qa_state must use LOGICAL_OR to aggregate qa_confidence/human_review across a product's WHOLE history, not just one (possibly stale) row"
+echo "$q" | grep -qF "has_unconfident_pending" || fail "qa_state must track has_unconfident_pending as an aggregate flag"
+echo "$q" | grep -qF "has_confident" || fail "qa_state must track has_confident as an aggregate flag"
+echo "$q" | grep -qF "has_terminal" || fail "qa_state must track has_terminal as an aggregate flag"
+echo "$q" | grep -qF "WHEN qs.has_unconfident_pending AND NOT qs.has_confident AND NOT qs.has_terminal THEN 1" || fail "priority 1 must require pending-and-never-resolved (order-independent), not a single fanned-out row's confidence"
+if echo "$q" | grep -qF "qs.qa_confidence = 'unconfident'"; then
+  fail "worklist_query must not gate priority 1 on a single un-aggregated qa_state row's qa_confidence -- that's the fan-out bug"
+fi
+if echo "$q" | grep -qiE "ROW_NUMBER\(\).*PARTITION BY.*qa_table|ORDER BY.*timestamp.*DESC.*=\s*1"; then
+  fail "worklist_query must not dedupe qa_state via latest-row-by-timestamp -- confirmed live this silently un-terminates products, use aggregate flags instead"
+fi
 echo "PASS: worklist_query"
 
 # --- worklist_query row limit (Finding: unbounded worklists blow the turn budget) ---

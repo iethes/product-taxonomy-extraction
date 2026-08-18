@@ -137,17 +137,33 @@ scoped AS (
   SELECT * FROM with_cumulative WHERE cumulative_gmv_pct <= 90
 ),
 qa_state AS (
-  SELECT ${qa_pk_col} AS product_id,
-         JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.qa_confidence') AS qa_confidence,
-         JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.human_review') AS human_review
+  -- product_id_dict_qa is INSERT-ONLY -- a product can have many historical rows, not one. A raw
+  -- SELECT (no dedup) fans out the LEFT JOIN below: a product with an OLD unconfident row and a
+  -- NEWER confident row would match on the old row too, leaking a resolved product back into the
+  -- worklist as priority=1 forever. Confirmed live (project memory
+  -- project_non_niq_qa_state_fanout_bug.md): a 380-row worklist was 100% already-resolved this way.
+  -- Deduping to the "latest row by timestamp" is NOT the fix -- also confirmed live (same memory):
+  -- product_id_dict_qa has no timestamp COLUMN (only inside _meta JSON, absent entirely on legacy
+  -- rows), and "latest row" ordering was caught silently UN-TERMINATING products whenever a later
+  -- write landed after a human_review:true row. The correct fix is order-independent aggregate
+  -- flags over the WHOLE history per product: has this product EVER been confident, EVER gone
+  -- terminal, EVER had a still-pending unconfident row -- gate priority 1 on pending-and-never-
+  -- resolved, not on whichever row happens to sort last.
+  SELECT
+    ${qa_pk_col} AS product_id,
+    LOGICAL_OR(JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.qa_confidence') = 'unconfident'
+               AND COALESCE(JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.human_review'), 'false') != 'true') AS has_unconfident_pending,
+    LOGICAL_OR(JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.qa_confidence') = 'confident') AS has_confident,
+    LOGICAL_OR(JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.human_review') = 'true') AS has_terminal
   FROM \`${PROJECT}.${qa_table}\`
+  GROUP BY ${qa_pk_col}
 ),
 ${filter_cte}prioritized AS (
   SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly, sc.ecommerce_platform,
          sc.item_description, sc.product_attributes_attrs,
     CASE
       ${filter_priority_check}WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
-      WHEN qs.qa_confidence = 'unconfident' AND COALESCE(qs.human_review, 'false') != 'true' THEN 1
+      WHEN qs.has_unconfident_pending AND NOT qs.has_confident AND NOT qs.has_terminal THEN 1
       ELSE NULL
     END AS priority
   FROM scoped sc
