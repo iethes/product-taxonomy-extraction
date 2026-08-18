@@ -100,6 +100,15 @@ echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping 
 if echo "$prompt" | grep -q "notify Discord\|notify-discord"; then
   fail "prompt must not reference Discord notification"
 fi
+# _meta must always be a JSON string ({"source":"claude_code","timestamp":"..."}), never a bare
+# string like "claude_code" -- SAFE.PARSE_JSON on a bare string returns NULL, silently losing
+# source/timestamp on every future read of that row.
+echo "$prompt" | grep -qF '{"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}' || fail "prompt must define the baseline _meta JSON format with source+timestamp"
+echo "$prompt" | grep -qF '2026-08-16T19:19:06Z' || fail "prompt must give a concrete ISO 8601 UTC example of the _meta timestamp format"
+if echo "$prompt" | grep -qF "_meta='claude_code'"; then
+  fail "prompt must never instruct stamping _meta as the bare string 'claude_code' -- that is not valid JSON"
+fi
+echo "$prompt" | grep -qF "NOT valid JSON" || fail "prompt must explicitly warn that a bare string _meta value is not valid JSON"
 echo "$prompt" | grep -qF "UPDATE \`sincere-hearth-273704.cookiesbiscuit.master_cookiesbiscuit_id\` SET qa_status = 'Reviewed'" || fail "prompt must instruct updating qa_status='Reviewed' on master_table_prod after a terminal write"
 echo "$prompt" | grep -qF "AND month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)" || fail "the qa_status UPDATE must be scoped to this month + last month"
 if echo "$prompt" | grep -qF "AND month = "; then

@@ -229,7 +229,8 @@ STEP 2 -- For each product in the worklist, in order:
       NO  -> write {product_id, ecommerce_platform, sku_name, reason} to \`${PROJECT}.${filter_table}\`
              (this dataset's OWN filter table -- never write to a different dataset's filter table
              even if the Sheet cross-references one for read context), _meta stamped
-             '{"source":"claude_code"}', do NOT create a taxonomy entry. THEN run the qa_status UPDATE
+             '{"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}' (see the _meta format
+             rule below), do NOT create a taxonomy entry. THEN run the qa_status UPDATE
              (see Hard rules below -- do not skip this, filtered-out products count as reviewed
              too). Move to the next product.
              Use the worklist row's OWN \`ecommerce_platform\` value verbatim (it's the source
@@ -252,7 +253,10 @@ ${step2_block}
              not skip this).
       NO  -> two-step create in \`${PROJECT}.${dict_table}\`:
              Step A: insert brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if you
-                     have common misspellings), _meta='claude_code' stamped here.
+                     have common misspellings), _meta stamped
+                     '{"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}' here (see the
+                     _meta format rule below -- NOT the bare string "claude_code", that is not
+                     valid JSON).
              Step B: populate the remaining attribute columns for this dict's schema, GROUNDED on
                      existing dict rows' actual vocabulary and formatting -- query
                      \`SELECT DISTINCT <column> FROM ${PROJECT}.${dict_table}\` per attribute column
@@ -300,6 +304,13 @@ Hard rules, never relaxed:
   ("SAFE with function json_value is not supported"). Some existing _meta values are empty
   strings or the literal text "nan"; SAFE.PARSE_JSON returns NULL on those instead of raising, and
   JSON_VALUE on a NULL JSON value is itself safe.
+- Every _meta WRITE must be a JSON string, never a bare string. Baseline format, used for every
+  _meta write in this session unless a step above specifies a richer shape (2d's self-QA write
+  adds qa_confidence/human_review on top of this same base):
+    {"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}
+  e.g. {"source":"claude_code","timestamp":"2026-08-16T19:19:06Z"}. A bare string like
+  "claude_code" (no braces/quotes-as-JSON) is NOT valid JSON -- SAFE.PARSE_JSON on it returns
+  NULL, silently losing source/timestamp on every future read of that row.
 - Attempt to resolve the ENTIRE worklist within your turn budget this session -- do not
   self-limit to a small sample. Stop early only when genuinely low on turns, and say so honestly
   in findings.
