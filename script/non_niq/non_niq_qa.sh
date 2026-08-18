@@ -179,6 +179,33 @@ primary_filter_table() {
   echo "${entries[0]}"
 }
 
+# Self-heals qa_status drift on the source table before this run's worklist is computed --
+# UNION of qa_table (via the resolved qa_pk_col) and filter_table's product_ids, both count as
+# "reviewed" (a filter-table write IS a completed review, just with a different outcome). Live-
+# confirmed gap: the one-time historical backfill run for this exact bug covered qa_table only,
+# missing 1044 distinct filtered products (2088 rows) across cookiesbiscuit's Shopee/Lazada/
+# Tokopedia alone -- filter_table writes were never included. Embedding the sync directly in the
+# script (run every invocation) means this can't recur regardless of whether a past or future
+# Claude session actually followed the prompt's own qa_status UPDATE instruction -- no more manual
+# backfills. Idempotent via the qa_status = 'Not Reviewed' guard (cheap no-op on repeat runs).
+# Scoped to this month + last month, matching the original backfill's window -- not a full-history
+# rewrite every run.
+sync_qa_status_query() {
+  local source_table="$1" qa_table="$2" qa_pk_col="$3" filter_table="$4"
+  cat <<SQL
+UPDATE \`${PROJECT}.${source_table}\` s
+SET qa_status = 'Reviewed'
+FROM (
+  SELECT ${qa_pk_col} AS product_id FROM \`${PROJECT}.${qa_table}\`
+  UNION DISTINCT
+  SELECT product_id FROM \`${PROJECT}.${filter_table}\`
+) reviewed
+WHERE s.product_id = reviewed.product_id
+  AND s.qa_status = 'Not Reviewed'
+  AND s.month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)
+SQL
+}
+
 build_qa_prompt() {
   local dataset="$1" platform="$2" source_table="$3" qa_table="$4" dict_table="$5" filter_table="$6"
   local qa_pk_col="$7" dict_identity_col="$8" dict_typo_col="$9" meili_index="${10}" worklist_file="${11}"
@@ -530,6 +557,15 @@ main() {
   qa_pk_col=$(echo "$columns_json" | jq -r '.qa_pk_col')
   dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
   dict_typo_col=$(echo "$columns_json" | jq -r '.dict_typo_col')
+
+  # Self-heal qa_status drift BEFORE computing this run's worklist, so a stale 'Not Reviewed' row
+  # never causes a false "nothing to do" or resurfaces an already-reviewed product. Non-fatal --
+  # unlike the month/worklist queries below, this is pure housekeeping: the session can still do
+  # real QA work even if this sync fails, it just means today's drift isn't self-healed this run.
+  if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+    "$(sync_qa_status_query "$source_table" "$qa_table" "$qa_pk_col" "$filter_table")" >/dev/null 2>&1; then
+    echo "WARNING: qa_status sync failed for ${dataset}/${platform} -- worklist may include already-reviewed rows this run." >&2
+  fi
 
   # Explicit failure checks, not bare `set -e` reliance: a bare `var=$(bq query | tail -1)`
   # reassignment DOES propagate a pipefail'd bq failure and kill the script under set -e, but

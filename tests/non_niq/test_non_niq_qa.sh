@@ -164,6 +164,18 @@ multi="babysunscreen.filter_babysunscreen;sunscreen.filter_sunscreen_hanasui"
 [[ "$(primary_filter_table "$multi" "babysunscreen")" == "babysunscreen.filter_babysunscreen" ]] || fail "should return the table in the row's own dataset, never the cross-dataset one"
 echo "PASS: primary_filter_table"
 
+# --- sync_qa_status_query (self-heals qa_status drift -- a one-time historical backfill covering
+# only qa_table missed 1044 distinct filtered products across cookiesbiscuit's Shopee/Lazada/
+# Tokopedia; filter_table writes are just as much "reviewed" as qa_table writes) ---
+sq=$(sync_qa_status_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "babybath.filter_babybath")
+echo "$sq" | grep -qF "UPDATE \`sincere-hearth-273704.babybath.master_babybath_id_dev\` s" || fail "sync_qa_status_query must UPDATE the source table"
+echo "$sq" | grep -qF "SELECT prod_id AS product_id FROM \`sincere-hearth-273704.babybath.product_id_dict_qa\`" || fail "sync_qa_status_query must select the resolved qa_pk_col from the QA table, not a hardcoded column name"
+echo "$sq" | grep -qF "UNION DISTINCT" || fail "sync_qa_status_query must UNION qa_table and filter_table product_ids -- both count as reviewed"
+echo "$sq" | grep -qF "SELECT product_id FROM \`sincere-hearth-273704.babybath.filter_babybath\`" || fail "sync_qa_status_query must also include filter_table product_ids -- this is the exact gap the historical backfill missed"
+echo "$sq" | grep -qF "AND s.qa_status = 'Not Reviewed'" || fail "sync_qa_status_query must be idempotent (only touch still-unreviewed rows), cheap no-op on repeat runs"
+echo "$sq" | grep -qF "AND s.month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)" || fail "sync_qa_status_query must scope to this month + last month, matching the original backfill's window, not a full-history rewrite"
+echo "PASS: sync_qa_status_query"
+
 echo "ALL TESTS PASSED (part 1: SQL builders)"
 
 # --- build_qa_prompt ---
@@ -336,6 +348,18 @@ echo "PASS: format_result_summary"
 # --- main() wiring (grep the script source, no execution) ---
 script_src=$(cat script/non_niq/non_niq_qa.sh)
 grep -qF '"$(default_month_query "$source_table" "$platform")"' <<< "$script_src" || fail "main() must pass platform to default_month_query -- an unscoped MAX(month) picks whichever platform is freshest, causing 'nothing to do' for a lagging platform even when it has unreviewed products in its own latest month"
+# main() must call sync_qa_status_query BEFORE the worklist is computed (so a stale 'Not Reviewed'
+# row never causes a false NOTHING_TO_DO or resurfaces an already-reviewed product), and must
+# treat its failure as non-fatal (a WARNING, not exit 1) -- unlike the month/worklist bq calls,
+# this is pure housekeeping the session can proceed without.
+grep -qF '"$(sync_qa_status_query "$source_table" "$qa_table" "$qa_pk_col" "$filter_table")"' <<< "$script_src" || fail "main() must call sync_qa_status_query with the resolved source/qa/filter tables and qa_pk_col"
+grep -qF 'WARNING: qa_status sync failed' <<< "$script_src" || fail "main() must warn (not exit 1) if the qa_status sync fails -- it's housekeeping, not a session blocker"
+if grep -A2 -qF 'sync_qa_status_query "$source_table"' <<< "$script_src" | grep -qF 'QUEUE_SIGNAL: FAILED'; then
+  fail "the qa_status sync failure path must not emit QUEUE_SIGNAL: FAILED -- it must be non-fatal"
+fi
+sync_pos=$(grep -n 'sync_qa_status_query "\$source_table"' <<< "$script_src" | head -1 | cut -d: -f1)
+worklist_pos=$(grep -n 'query=\$(worklist_query' <<< "$script_src" | head -1 | cut -d: -f1)
+[[ "$sync_pos" -lt "$worklist_pos" ]] || fail "the qa_status sync must run BEFORE worklist_query, so its effects are reflected in this run's worklist"
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() must emit NOTHING_TO_DO when the worklist is empty, before spending a claude -p call"
 grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() must emit the post-run signal derived from decide_queue_signal"
 grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() must tolerate a non-zero claude exit (|| true) so the transcript still gets echoed under set -e"
