@@ -11,10 +11,10 @@ from non_niq_helper import (
 import non_niq_helper
 
 SAMPLE_CSV = """country,category_1,category_2,category,dataset,is_active,ecommerce_platform,raw_table,children,filter_column,filter_value,,0,exclude_tiktok,variant,filter_variant,phasing,1,2-1,2-2,2-3,5,9,double_date,is_daily,10,9_table,table,master_table_prod,product_id_dict_qa,product_id_dict,product_id_dict_image_qa,product_id_image_taxonomy,dict,filter_table,sku_type_complete,PIC,isDoubleDate,keywords,taxonomy_url ,taxonomy_spreadsheet_id, taxonomy_sheet_name,labelling_config,last_active_month,qa_ai_labelling
-ID,Mom & Baby,Baby Care,Baby Bath & Shampoo,babybath,TRUE,shopee,babybath.raw_babybath_shopee,,,,,0_pipeline_babybath_shopee_id,,,,,,,,,,,,,,,babybath.master_babybath_id_dev,,babybath.product_id_dict_qa,babybath.product_id_dict,,,babybath.babybath_dict,babybath.filter_babybath,sku_type_complete,David,-,,,,,,,
-ID,Mom & Baby,Baby Care,Baby Bath & Shampoo,babybath,FALSE,lazada,babybath.raw_babybath_lazada,,,,,,,,,,,,,,,,,,babybath.master_babybath_id_dev,,babybath.product_id_dict_qa,babybath.product_id_dict,,,babybath.babybath_dict,babybath.filter_babybath,sku_type_complete,David,-,,,,,,,
-US,Mom & Baby,Baby Care,Baby Bath & Shampoo,babybath,TRUE,shopee,babybath.raw_babybath_shopee_us,,,,,0_pipeline_babybath_shopee_us,,,,,,,,,,,,,,,babybath.master_babybath_us_dev,,babybath.product_id_dict_qa,babybath.product_id_dict,,,babybath.babybath_dict,babybath.filter_babybath,sku_type_complete,David,-,,,,,,,
-ID,Beauty,Skincare,Facial Serum,facialserum,TRUE,shopee,facialserum.raw_facialserum_shopee,,,,,0_pipeline_facialserum_shopee_id,,,,,,,,,,,,,,,facialserum.master_facialserum_id_dev,,facialserum.product_id_dict_qa,-,,,facialserum.facialserum_dict,facialserum.filter_facialserum,sku_type_complete,David,-,,,,,,,
+ID,Mom & Baby,Baby Care,Baby Bath & Shampoo,babybath,TRUE,shopee,babybath.raw_babybath_shopee,,,,,0_pipeline_babybath_shopee_id,,,,,,,,,,,,,,,babybath.master_babybath_id_dev,babybath.master_babybath_id,babybath.product_id_dict_qa,babybath.product_id_dict,,,babybath.babybath_dict,babybath.filter_babybath,sku_type_complete,David,-,,,,,,,
+ID,Mom & Baby,Baby Care,Baby Bath & Shampoo,babybath,FALSE,lazada,babybath.raw_babybath_lazada,,,,,,,,,,,,,,,,,,,,babybath.master_babybath_id_dev,babybath.master_babybath_id,babybath.product_id_dict_qa,babybath.product_id_dict,,,babybath.babybath_dict,babybath.filter_babybath,sku_type_complete,David,-,,,,,,,
+US,Mom & Baby,Baby Care,Baby Bath & Shampoo,babybath,TRUE,shopee,babybath.raw_babybath_shopee_us,,,,,0_pipeline_babybath_shopee_us,,,,,,,,,,,,,,,babybath.master_babybath_us_dev,babybath.master_babybath_us,babybath.product_id_dict_qa,babybath.product_id_dict,,,babybath.babybath_dict,babybath.filter_babybath,sku_type_complete,David,-,,,,,,,
+ID,Beauty,Skincare,Facial Serum,facialserum,TRUE,shopee,facialserum.raw_facialserum_shopee,,,,,0_pipeline_facialserum_shopee_id,,,,,,,,,,,,,,,facialserum.master_facialserum_id_dev,facialserum.master_facialserum_id,facialserum.product_id_dict_qa,-,,,facialserum.facialserum_dict,facialserum.filter_facialserum,sku_type_complete,David,-,,,,,,,
 """
 
 # --- parse_categories ---
@@ -33,6 +33,7 @@ def test_row_shape():
     assert babybath["dict"] == "babybath.babybath_dict"
     assert babybath["filter_table"] == "babybath.filter_babybath"
     assert babybath["table"] == "babybath.master_babybath_id_dev"
+    assert babybath["master_table_prod"] == "babybath.master_babybath_id"
     assert babybath["0"] == "0_pipeline_babybath_shopee_id"
 
 def test_row_enrichment_table_empty_when_sheet_cell_blank():

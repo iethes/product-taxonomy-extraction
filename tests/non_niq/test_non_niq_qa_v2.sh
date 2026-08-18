@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Self-test for script/non_niq/non_niq_qa_v2.sh's pure helper functions.
+# No network, BQ, or claude calls -- mirrors test_non_niq_qa.sh's convention.
+# Run: bash tests/non_niq/test_non_niq_qa_v2.sh
+
+cd "$(dirname "$0")/../.."
+source script/non_niq/non_niq_qa_v2.sh
+
+fail() { echo "FAIL: $1" >&2; exit 1; }
+
+# --- default_month_query (identical shape to v1's, scoped per-platform) ---
+q=$(default_month_query "cookiesbiscuit.master_cookiesbiscuit_id" "shopee")
+echo "$q" | grep -q "MAX(month)" || fail "default_month_query should find the latest month"
+echo "$q" | grep -q "cookiesbiscuit.master_cookiesbiscuit_id" || fail "default_month_query should reference the source table"
+echo "$q" | grep -q "ecommerce_platform = 'Shopee'" || fail "default_month_query must scope MAX(month) to the given platform (Title-Case)"
+if echo "$q" | grep -q "ecommerce_platform = 'shopee'"; then
+  fail "default_month_query must never filter on the raw lowercase platform"
+fi
+echo "PASS: default_month_query"
+
+# --- worklist_query (product_tier-based, NOT cumulative-GMV) ---
+q=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee")
+echo "$q" | grep -qF "product_tier = 'Tier 1'" || fail "worklist_query (v2) must filter on the precomputed product_tier column, not recompute GMV percentiles"
+if echo "$q" | grep -qi "cumulative_gmv_pct\|OVER (ORDER BY gmv_monthly"; then
+  fail "worklist_query (v2) must NOT recompute a cumulative GMV window -- explicit user decision to trust product_tier instead"
+fi
+echo "$q" | grep -q "cookiesbiscuit.master_cookiesbiscuit_id" || fail "worklist_query (v2) should reference the source table"
+echo "$q" | grep -q "prod_id" || fail "worklist_query (v2) should use the resolved QA primary-key column"
+echo "$q" | grep -q "ecommerce_platform = 'Shopee'" || fail "worklist_query (v2) must capitalize the platform filter to Title-Case"
+if echo "$q" | grep -q "ecommerce_platform = 'shopee'"; then
+  fail "worklist_query (v2) must never filter on the raw lowercase platform"
+fi
+echo "$q" | grep -qF "REPLACE(image, '\"', '')" || fail "worklist_query (v2) must strip embedded double-quotes from image, same fix as v1"
+echo "$q" | grep -q "JSON_VALUE(SAFE.PARSE_JSON(_meta)" || fail "worklist_query (v2) must read _meta via JSON_VALUE(SAFE.PARSE_JSON(_meta), ...)"
+if echo "$q" | grep -q "SAFE.JSON_VALUE"; then
+  fail "worklist_query (v2) must never call SAFE.JSON_VALUE -- not valid BigQuery syntax"
+fi
+echo "$q" | grep -q "ORDER BY priority ASC, gmv_monthly DESC" || fail "worklist_query (v2) must order unreviewed before unconfident, then by GMV"
+echo "$q" | grep -q "qa_status = 'Not Reviewed'" || fail "worklist_query (v2) must gate priority-0 rows to qa_status = 'Not Reviewed'"
+echo "$q" | grep -q "qa_confidence = 'unconfident'" || fail "worklist_query (v2) must keep the retry-once mechanism (priority 1)"
+echo "$q" | grep -q "LIMIT 300" || fail "worklist_query (v2) must default row_limit to 300"
+grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed exactly once"
+echo "PASS: worklist_query"
+
+# --- worklist_query filter_table exclusion ---
+q_filtered=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee" "300" "cookiesbiscuitlemonilo.filter_cookiesbiscuit")
+echo "$q_filtered" | grep -q "filter_state AS" || fail "worklist_query (v2) must create a filter_state CTE when filter_table is given"
+echo "$q_filtered" | grep -qF "SELECT DISTINCT product_id FROM \`sincere-hearth-273704.cookiesbiscuitlemonilo.filter_cookiesbiscuit\`" || fail "worklist_query (v2) must select DISTINCT product_id from the filter table"
+echo "$q_filtered" | grep -qF "WHEN fs.product_id IS NOT NULL THEN NULL" || fail "worklist_query (v2) must exclude already-filtered products"
+[[ "$q_filtered" == *$'CASE\n      WHEN fs.product_id IS NOT NULL THEN NULL\n      WHEN qs.product_id IS NULL'* ]] || fail "the filter_table exclusion must be checked FIRST in the CASE, before the qa_state checks"
+if echo "$q" | grep -q "filter_state\|fs.product_id"; then
+  fail "worklist_query (v2) must not reference filter_state when no filter_table is given"
+fi
+echo "PASS: worklist_query filter_table exclusion"
+
+# --- primary_filter_table (identical to v1's) ---
+single="babybath.filter_babybath"
+[[ "$(primary_filter_table "$single" "babybath")" == "babybath.filter_babybath" ]] || fail "single-value filter_table should return as-is"
+multi="babysunscreen.filter_babysunscreen;sunscreen.filter_sunscreen_hanasui"
+[[ "$(primary_filter_table "$multi" "babysunscreen")" == "babysunscreen.filter_babysunscreen" ]] || fail "should return the table in the row's own dataset"
+echo "PASS: primary_filter_table"
+
+# --- sync_qa_status_query (targets master_table_prod, separate from v1's _dev sync) ---
+sq=$(sync_qa_status_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "cookiesbiscuitlemonilo.filter_cookiesbiscuit")
+echo "$sq" | grep -qF "UPDATE \`sincere-hearth-273704.cookiesbiscuit.master_cookiesbiscuit_id\` s" || fail "sync_qa_status_query (v2) must UPDATE the master_table_prod source table"
+echo "$sq" | grep -qF "SELECT prod_id AS product_id FROM \`sincere-hearth-273704.cookiesbiscuitlemonilo.product_id_dict_qa\`" || fail "sync_qa_status_query (v2) must select the resolved qa_pk_col from the QA table"
+echo "$sq" | grep -qF "UNION DISTINCT" || fail "sync_qa_status_query (v2) must UNION qa_table and filter_table product_ids"
+echo "$sq" | grep -qF "SELECT product_id FROM \`sincere-hearth-273704.cookiesbiscuitlemonilo.filter_cookiesbiscuit\`" || fail "sync_qa_status_query (v2) must also include filter_table product_ids"
+echo "$sq" | grep -qF "AND s.qa_status = 'Not Reviewed'" || fail "sync_qa_status_query (v2) must be idempotent"
+echo "$sq" | grep -qF "AND s.month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)" || fail "sync_qa_status_query (v2) must scope to this month + last month"
+echo "PASS: sync_qa_status_query"
+
+echo "ALL TESTS PASSED (part 1: SQL builders)"
+
+# --- build_qa_prompt ---
+prompt=$(build_qa_prompt "cookiesbiscuit" "shopee" "cookiesbiscuit.master_cookiesbiscuit_id" \
+  "cookiesbiscuitlemonilo.product_id_dict_qa" "cookiesbiscuitlemonilo.cookiesbiscuitlemonilo_dict" \
+  "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \
+  "prod_id" "sku_type_complete" "keywords_typo" "cookiesbiscuit_taxonomy_qa" "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" \
+  "42" "cookiesbiscuitlemonilo.product_id_dict")
+
+echo "$prompt" | grep -qF "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" || fail "STEP 0 must reference the materialized worklist file path"
+echo "$prompt" | grep -qF "exactly 42 rows" || fail "STEP 0 must state the exact worklist row count"
+echo "$prompt" | grep -qF "product_tier = 'Tier 1'" || fail "STEP 0 must describe the product_tier scoping, not GMV percentile scoping"
+if echo "$prompt" | grep -qi "cumulative GMV\|top 90%"; then
+  fail "prompt (v2) must not reference the v1 GMV-percentile scoping concept"
+fi
+if echo "$prompt" | grep -q "item_description\|product_attributes_attrs"; then
+  fail "prompt (v2) must not reference the Shopee enrichment feature -- not carried over from v1"
+fi
+echo "$prompt" | grep -q "non_niq_helper.py retrieve" || fail "prompt must instruct batch retrieval via non_niq_helper.py's retrieve subcommand"
+echo "$prompt" | grep -q "sku_type_complete" || fail "prompt must reference the resolved dict identity column"
+echo "$prompt" | grep -q "keywords_typo" || fail "prompt must reference the resolved dict typo column"
+echo "$prompt" | grep -q "prod_id" || fail "prompt must reference the resolved QA primary-key column"
+echo "$prompt" | grep -q "never the streaming API" || fail "prompt must repeat the DML-only / no-streaming-API constraint"
+echo "$prompt" | grep -q "qa_confidence" || fail "prompt must instruct writing the qa_confidence _meta field"
+echo "$prompt" | grep -q "human_review" || fail "prompt must instruct writing the human_review _meta field"
+echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping table is never modified"
+if echo "$prompt" | grep -q "notify Discord\|notify-discord"; then
+  fail "prompt must not reference Discord notification"
+fi
+echo "$prompt" | grep -qF "UPDATE \`sincere-hearth-273704.cookiesbiscuit.master_cookiesbiscuit_id\` SET qa_status = 'Reviewed'" || fail "prompt must instruct updating qa_status='Reviewed' on master_table_prod after a terminal write"
+echo "$prompt" | grep -qF "AND month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)" || fail "the qa_status UPDATE must be scoped to this month + last month"
+if echo "$prompt" | grep -qF "AND month = "; then
+  fail "the qa_status UPDATE must not be scoped to a single exact month"
+fi
+# Same reliability requirement as v1: inline reminders at every terminal-write branch, not just
+# a single Hard rule at the end of a long multi-product-loop prompt.
+qa_status_reminders=$(echo "$prompt" | grep -c "run the qa_status UPDATE")
+[[ "$qa_status_reminders" -eq 4 ]] || fail "expected exactly 4 inline qa_status UPDATE reminders (2a NO, 2b YES, 2c YES, 2c NO-create), got $qa_status_reminders"
+
+# step2_block SKIPPED branch (product_id_dict unconfigured) -- 3 reminders, not 4 (2b never fires).
+prompt_nodict=$(build_qa_prompt "cookiesbiscuit" "shopee" "cookiesbiscuit.master_cookiesbiscuit_id" \
+  "cookiesbiscuitlemonilo.product_id_dict_qa" "cookiesbiscuitlemonilo.cookiesbiscuitlemonilo_dict" \
+  "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \
+  "prod_id" "sku_type_complete" "keywords_typo" "cookiesbiscuit_taxonomy_qa" "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" \
+  "42" "-")
+echo "$prompt_nodict" | grep -q "2b. SKIPPED for this category" || fail "an unconfigured ('-') product_id_dict must skip step 2b"
+qa_status_reminders_nodict=$(echo "$prompt_nodict" | grep -c "run the qa_status UPDATE")
+[[ "$qa_status_reminders_nodict" -eq 3 ]] || fail "expected exactly 3 inline qa_status UPDATE reminders when 2b is skipped, got $qa_status_reminders_nodict"
+echo "PASS: build_qa_prompt"
+
+# --- extract_json_object / decide_queue_signal / format_result_summary (identical contract to v1) ---
+[[ "$(extract_json_object 'prose {"status":"complete"} trailing')" == '{"status":"complete"}' ]] || fail "extract_json_object should pull the JSON object out of mixed text"
+echo "PASS: extract_json_object"
+
+[[ "$(extract_result_json '{"result":"{\"status\":\"complete\"}"}')" == '{"status":"complete"}' ]] || fail "extract_result_json should pull the inner result JSON out of the envelope"
+[[ "$(extract_result_json '{"result":""}')" == "" ]] || fail "extract_result_json should return empty when .result itself is empty"
+echo "PASS: extract_result_json"
+
+[[ "$(decide_queue_signal '{"result":"{\"status\":\"blocked\"}"}')" == "BLOCKED" ]] || fail "decide_queue_signal should map status=blocked to BLOCKED"
+[[ "$(decide_queue_signal '{"result":"{\"status\":\"complete\"}"}')" == "DONE" ]] || fail "decide_queue_signal should map status=complete to DONE"
+[[ "$(decide_queue_signal '{"result":"{\"status\":\"partial\"}"}')" == "DONE" ]] || fail "decide_queue_signal should map status=partial to DONE"
+[[ "$(decide_queue_signal 'garbage')" == "FAILED" ]] || fail "decide_queue_signal should map unparseable output to FAILED"
+echo "PASS: decide_queue_signal"
+
+garbage_envelope='garbage not json at all'
+summary=$(format_result_summary "$garbage_envelope")
+echo "$summary" | grep -q "Status: unknown" || fail "format_result_summary must show status=unknown for unparseable envelope"
+echo "$summary" | grep -q "(unparseable)" || fail "format_result_summary must show (unparseable) for findings/blockers when result_json is empty"
+echo "PASS: format_result_summary"
+
+# --- main() wiring (grep the script source, no execution) ---
+script_src=$(cat script/non_niq/non_niq_qa_v2.sh)
+grep -qF "source_table=\$(echo \"\$category_json\" | jq -r '.master_table_prod')" <<< "$script_src" || fail "main() (v2) must resolve source_table from master_table_prod, not table"
+if grep -qF "jq -r '.table')" <<< "$script_src"; then
+  fail "main() (v2) must not read the v1 'table' (_dev) Sheet column at all"
+fi
+grep -qF '"source_table=$source_table" "qa_table=$qa_table" "dict_table=$dict_table" "filter_table=$filter_table"' <<< "$script_src" || fail "main() (v2) must guard source_table alongside the other required tables -- unlike v1, v2's worklist depends entirely on it"
+grep -qF '"$(default_month_query "$source_table" "$platform")"' <<< "$script_src" || fail "main() (v2) must pass platform to default_month_query"
+grep -qF '"$(sync_qa_status_query "$source_table" "$qa_table" "$qa_pk_col" "$filter_table")"' <<< "$script_src" || fail "main() (v2) must call sync_qa_status_query with the resolved tables"
+grep -qF 'WARNING: qa_status sync failed' <<< "$script_src" || fail "main() (v2) must warn (not exit 1) if the qa_status sync fails"
+sync_pos=$(grep -n 'sync_qa_status_query "\$source_table"' <<< "$script_src" | head -1 | cut -d: -f1)
+worklist_pos=$(grep -n 'query=\$(worklist_query' <<< "$script_src" | head -1 | cut -d: -f1)
+[[ "$sync_pos" -lt "$worklist_pos" ]] || fail "the qa_status sync must run BEFORE worklist_query"
+grep -qF -- '--max_rows=1000000' <<< "$script_src" || fail "main() (v2) must pass --max_rows to bq query when materializing the worklist"
+grep -qF "worklist_file=\"/tmp/\${dataset}_\${platform}_v2_full_worklist.jsonl\"" <<< "$script_src" || fail "main() (v2) must materialize the worklist to a v2-distinctly-named file"
+grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() (v2) must emit NOTHING_TO_DO when the worklist is empty"
+grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() (v2) must emit the post-run signal derived from decide_queue_signal"
+grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() (v2) must tolerate a non-zero claude exit"
+grep -qF 'format_result_summary "$claude_output"' <<< "$script_src" || fail "main() (v2) must print the human-readable summary"
+grep -qF 'echo "$claude_output"' <<< "$script_src" || fail "main() (v2) must still echo the raw envelope"
+if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discord\|notify_discord\|enrichment_table"; then
+  fail "non_niq_qa_v2.sh must not reference Discord notification, load_env.sh, or the v1 enrichment feature"
+fi
+echo "PASS: main() wiring"
+
+echo "ALL TESTS PASSED (part 2: prompt + main)"
