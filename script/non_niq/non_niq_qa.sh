@@ -201,7 +201,8 @@ build_qa_prompt() {
       \`SELECT * FROM \\\`${PROJECT}.${product_id_dict}\\\` LIMIT 1\` (or read its
       INFORMATION_SCHEMA.COLUMNS), then query it precisely for this product's row. Do NOT assume
       a column name. If a mapping row exists for this product: is that mapping CORRECT?
-      YES -> write those SAME brand/${qa_identity_col} values to \`${PROJECT}.${qa_table}\`, then go to 2d.
+      YES -> write those SAME brand/${qa_identity_col} values to \`${PROJECT}.${qa_table}\`, THEN
+             run the qa_status UPDATE (see Hard rules below -- do not skip this), then go to 2d.
       NO, or no mapping row for this product -> continue to 2c."
   fi
 
@@ -275,7 +276,9 @@ STEP 2 -- For each product in the worklist, in order:
       NO  -> write {product_id, ecommerce_platform, sku_name, reason} to \`${PROJECT}.${filter_table}\`
              (this dataset's OWN filter table -- never write to a different dataset's filter table
              even if the Sheet cross-references one for read context), _meta stamped
-             '{"source":"claude_code"}', do NOT create a taxonomy entry. Move to the next product.
+             '{"source":"claude_code"}', do NOT create a taxonomy entry. THEN run the qa_status UPDATE
+             (see Hard rules below -- do not skip this, filtered-out products count as reviewed
+             too). Move to the next product.
              Use the worklist row's OWN \`ecommerce_platform\` value verbatim (it's the source
              table's real, Title-Case value, e.g. "Shopee"/"Lazada" -- do not lowercase it or
              reconstruct it yourself, the Sheet's lowercase convention is NOT what's stored here).
@@ -292,7 +295,8 @@ ${step2_block}
       output for the warning) -- treat it the same as "no candidates found", do not block on it.
       Does a TRUE matching taxonomy record exist in ${dict_table}?
       YES -> write CORRECTED (re-pointed) brand/${qa_identity_col} values to
-             \`${PROJECT}.${qa_table}\`.
+             \`${PROJECT}.${qa_table}\`, THEN run the qa_status UPDATE (see Hard rules below -- do
+             not skip this).
       NO  -> two-step create in \`${PROJECT}.${dict_table}\`:
              Step A: insert brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if you
                      have common misspellings), _meta='claude_code' stamped here.
@@ -302,7 +306,8 @@ ${step2_block}
                      before writing a new value, prefer an existing value over inventing one, and
                      match existing formatting exactly (e.g. "150 ml" not "150ml").
              Then write brand/${qa_identity_col} values pointing at the new entry to
-             \`${PROJECT}.${qa_table}\`.
+             \`${PROJECT}.${qa_table}\`, THEN run the qa_status UPDATE (see Hard rules below -- do
+             not skip this).
 
   2d. Self-QA: as an explicit, separate judgment (not folded into 2a-2c's reasoning), state how
       confident you are in the decision you just made for this product. Then:
@@ -324,9 +329,9 @@ Hard rules, never relaxed:
   corrections only ever land in \`${PROJECT}.${qa_table}\`.
 - All writes use bq query DML, never the streaming API -- CLAUDE.md's 90-minute streaming-buffer
   rule. The very next run's retry-cap logic depends on reading back this run's QA rows reliably.
-- Whenever you write a product to \`${filter_table}\` (2a) OR to \`${qa_table}\` (2b/2c/2d, any
-  confidence outcome, no exceptions) -- ALSO run this UPDATE against the source table, once per
-  product:
+- The "qa_status UPDATE" referenced at every write branch in STEP 2 above is this exact statement
+  -- run it EVERY time you write a product to \`${filter_table}\` (2a) OR to \`${qa_table}\`
+  (2b/2c, any confidence outcome, no exceptions), once per product:
     UPDATE \`${PROJECT}.${source_table}\` SET qa_status = 'Reviewed'
     WHERE product_id = '<this product's product_id>'
       AND month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)
@@ -337,7 +342,9 @@ Hard rules, never relaxed:
   this harness previously never wrote \`qa_status\` back at all -- every product it had ever
   confidently reviewed still showed \`qa_status = 'Not Reviewed'\` on the source table, even though
   \`qa_status\` is a real field other processes write and read (230k+ 'Reviewed' rows exist from
-  elsewhere). This is independent of the retry-eligibility logic (that's driven entirely by
+  elsewhere) -- this is exactly what caused analysts to keep asking why "reviewed" products still
+  showed as unreviewed. Getting this wrong (or skipping it) reproduces that same complaint. This
+  UPDATE is independent of the retry-eligibility logic (that's driven entirely by
   \`${qa_table}\`'s own \`_meta.qa_confidence\`/\`human_review\`, never by \`qa_status\`) -- so update
   it even on an unconfident-first-attempt row, not just on confident/terminal outcomes.
 - Every _meta read you do yourself (e.g. checking whether a product already has an unconfident

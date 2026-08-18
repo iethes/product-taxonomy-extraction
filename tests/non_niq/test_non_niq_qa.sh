@@ -210,6 +210,11 @@ echo "$prompt" | grep -qF "AND month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONT
 if echo "$prompt" | grep -qF "AND month = "; then
   fail "the qa_status UPDATE must not be scoped to a single exact month"
 fi
+# A single Hard rule stated once at the end of a long prompt is easy for an LLM to drop across a
+# long multi-product session -- inline a reminder at EVERY terminal-write branch (2a NO, 2b YES,
+# 2c YES, 2c NO-then-create) instead of relying solely on the Hard rules section.
+qa_status_reminders=$(echo "$prompt" | grep -c "run the qa_status UPDATE")
+[[ "$qa_status_reminders" -eq 4 ]] || fail "expected exactly 4 inline qa_status UPDATE reminders (2a NO, 2b YES, 2c YES, 2c NO-create), got $qa_status_reminders"
 echo "$prompt" | grep -q "product_attributes_attrs" || fail "STEP 2a must mention product_attributes_attrs as additional signal alongside item_description"
 if echo "$prompt" | grep -q "notify Discord\|notify-discord"; then
   fail "prompt must not reference Discord notification -- removed from the harness"
@@ -258,6 +263,10 @@ fi
 if echo "$prompt_nodict" | grep -qF "${PROJECT}.-"; then
   fail "an unconfigured product_id_dict must never reach the prompt as a table reference"
 fi
+# prompt_nodict (product_id_dict unconfigured, 2b skipped) should have 3 inline qa_status
+# reminders: 2a NO, 2c YES, 2c NO-create -- not 2b's, since 2b never fires for this category.
+qa_status_reminders_nodict=$(echo "$prompt_nodict" | grep -c "run the qa_status UPDATE")
+[[ "$qa_status_reminders_nodict" -eq 3 ]] || fail "expected exactly 3 inline qa_status UPDATE reminders when 2b is skipped, got $qa_status_reminders_nodict"
 echo "PASS: build_qa_prompt"
 
 # --- extract_json_object / decide_queue_signal (local duplicates, same contract as headless_taxonomy.sh) ---
