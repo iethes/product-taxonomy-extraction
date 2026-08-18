@@ -324,6 +324,18 @@ Hard rules, never relaxed:
   corrections only ever land in \`${PROJECT}.${qa_table}\`.
 - All writes use bq query DML, never the streaming API -- CLAUDE.md's 90-minute streaming-buffer
   rule. The very next run's retry-cap logic depends on reading back this run's QA rows reliably.
+- Whenever you write a product to \`${filter_table}\` (2a) OR to \`${qa_table}\` (2b/2c/2d, any
+  confidence outcome, no exceptions) -- ALSO run this UPDATE against the source table, once per
+  product:
+    UPDATE \`${PROJECT}.${source_table}\` SET qa_status = 'Reviewed' WHERE product_id = '<this product's product_id>'
+  This updates EVERY row for that product_id (all months), not just the current month's row --
+  \`qa_status\` tracks "has this product ever been reviewed", not a per-month fact. Confirmed live
+  that this harness previously never wrote \`qa_status\` back at all -- every product it had ever
+  confidently reviewed still showed \`qa_status = 'Not Reviewed'\` on the source table, even though
+  \`qa_status\` is a real field other processes write and read (230k+ 'Reviewed' rows exist from
+  elsewhere). This is independent of the retry-eligibility logic (that's driven entirely by
+  \`${qa_table}\`'s own \`_meta.qa_confidence\`/\`human_review\`, never by \`qa_status\`) -- so update
+  it even on an unconfident-first-attempt row, not just on confident/terminal outcomes.
 - Every _meta read you do yourself (e.g. checking whether a product already has an unconfident
   row) must use JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.field'), never bare JSON_VALUE(_meta, ...)
   and never SAFE.JSON_VALUE(...) -- the latter LOOKS right but is not valid BigQuery syntax
