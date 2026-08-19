@@ -182,17 +182,11 @@ multi="babysunscreen.filter_babysunscreen;sunscreen.filter_sunscreen_hanasui"
 [[ "$(primary_filter_table "$multi" "babysunscreen")" == "babysunscreen.filter_babysunscreen" ]] || fail "should return the table in the row's own dataset, never the cross-dataset one"
 echo "PASS: primary_filter_table"
 
-# --- sync_qa_status_query (self-heals qa_status drift -- a one-time historical backfill covering
-# only qa_table missed 1044 distinct filtered products across cookiesbiscuit's Shopee/Lazada/
-# Tokopedia; filter_table writes are just as much "reviewed" as qa_table writes) ---
-sq=$(sync_qa_status_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_qa" "prod_id" "babybath.filter_babybath")
-echo "$sq" | grep -qF "UPDATE \`sincere-hearth-273704.babybath.master_babybath_id_dev\` s" || fail "sync_qa_status_query must UPDATE the source table"
-echo "$sq" | grep -qF "SELECT prod_id AS product_id FROM \`sincere-hearth-273704.babybath.product_id_dict_qa\`" || fail "sync_qa_status_query must select the resolved qa_pk_col from the QA table, not a hardcoded column name"
-echo "$sq" | grep -qF "UNION DISTINCT" || fail "sync_qa_status_query must UNION qa_table and filter_table product_ids -- both count as reviewed"
-echo "$sq" | grep -qF "SELECT product_id FROM \`sincere-hearth-273704.babybath.filter_babybath\`" || fail "sync_qa_status_query must also include filter_table product_ids -- this is the exact gap the historical backfill missed"
-echo "$sq" | grep -qF "AND s.qa_status = 'Not Reviewed'" || fail "sync_qa_status_query must be idempotent (only touch still-unreviewed rows), cheap no-op on repeat runs"
-echo "$sq" | grep -qF "AND s.month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)" || fail "sync_qa_status_query must scope to this month + last month, matching the original backfill's window, not a full-history rewrite"
-echo "PASS: sync_qa_status_query"
+# sync_qa_status_query removed -- a separate external QA-labelling update process now owns
+# flipping qa_status based on product_id_dict_qa, this harness must never write it.
+if declare -F sync_qa_status_query >/dev/null; then
+  fail "sync_qa_status_query must not exist -- qa_status writing is owned by an external process now"
+fi
 
 echo "ALL TESTS PASSED (part 1: SQL builders)"
 
@@ -240,20 +234,12 @@ echo "$prompt" | grep -q "never the streaming API" || fail "prompt must repeat t
 echo "$prompt" | grep -q "qa_confidence" || fail "prompt must instruct writing the qa_confidence _meta field"
 echo "$prompt" | grep -q "human_review" || fail "prompt must instruct writing the human_review _meta field on the retry path"
 echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping table is never modified"
-# Live-confirmed the harness previously never wrote qa_status back to the source table -- every
-# confidently-QA'd product still showed qa_status='Not Reviewed'. Scoped to this month + last
-# month only, matching the one-time historical backfill's own window (not all history, not a
-# single exact month).
-echo "$prompt" | grep -qF "UPDATE \`sincere-hearth-273704.babybath.master_babybath_id_dev\` SET qa_status = 'Reviewed'" || fail "prompt must instruct updating qa_status='Reviewed' on the source table after a terminal write"
-echo "$prompt" | grep -qF "AND month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)" || fail "the qa_status UPDATE must be scoped to this month and last month, matching the backfill's window"
-if echo "$prompt" | grep -qF "AND month = "; then
-  fail "the qa_status UPDATE must not be scoped to a single exact month"
+# qa_status writing is owned by a separate external QA-labelling update process now -- this
+# harness must never instruct writing to it.
+if echo "$prompt" | grep -qi "qa_status = 'Reviewed'\|run the qa_status UPDATE\|SET qa_status"; then
+  fail "prompt must never instruct writing to qa_status -- that's owned by an external process now"
 fi
-# A single Hard rule stated once at the end of a long prompt is easy for an LLM to drop across a
-# long multi-product session -- inline a reminder at EVERY terminal-write branch (2a NO, 2b YES,
-# 2c YES, 2c NO-then-create) instead of relying solely on the Hard rules section.
-qa_status_reminders=$(echo "$prompt" | grep -c "run the qa_status UPDATE")
-[[ "$qa_status_reminders" -eq 4 ]] || fail "expected exactly 4 inline qa_status UPDATE reminders (2a NO, 2b YES, 2c YES, 2c NO-create), got $qa_status_reminders"
+echo "$prompt" | grep -qF "Never write to \`qa_status\`" || fail "prompt's Hard rules must explicitly state qa_status is never written by this harness"
 echo "$prompt" | grep -q "product_attributes_attrs" || fail "STEP 2a must mention product_attributes_attrs as additional signal alongside item_description"
 if echo "$prompt" | grep -q "notify Discord\|notify-discord"; then
   fail "prompt must not reference Discord notification -- removed from the harness"
@@ -302,10 +288,9 @@ fi
 if echo "$prompt_nodict" | grep -qF "${PROJECT}.-"; then
   fail "an unconfigured product_id_dict must never reach the prompt as a table reference"
 fi
-# prompt_nodict (product_id_dict unconfigured, 2b skipped) should have 3 inline qa_status
-# reminders: 2a NO, 2c YES, 2c NO-create -- not 2b's, since 2b never fires for this category.
-qa_status_reminders_nodict=$(echo "$prompt_nodict" | grep -c "run the qa_status UPDATE")
-[[ "$qa_status_reminders_nodict" -eq 3 ]] || fail "expected exactly 3 inline qa_status UPDATE reminders when 2b is skipped, got $qa_status_reminders_nodict"
+if echo "$prompt_nodict" | grep -qi "run the qa_status UPDATE\|SET qa_status"; then
+  fail "prompt_nodict must never instruct writing to qa_status either"
+fi
 echo "PASS: build_qa_prompt"
 
 # --- extract_json_object / decide_queue_signal (local duplicates, same contract as headless_taxonomy.sh) ---
@@ -366,18 +351,14 @@ echo "PASS: format_result_summary"
 # --- main() wiring (grep the script source, no execution) ---
 script_src=$(cat script/non_niq/non_niq_qa.sh)
 grep -qF '"$(default_month_query "$source_table" "$platform")"' <<< "$script_src" || fail "main() must pass platform to default_month_query -- an unscoped MAX(month) picks whichever platform is freshest, causing 'nothing to do' for a lagging platform even when it has unreviewed products in its own latest month"
-# main() must call sync_qa_status_query BEFORE the worklist is computed (so a stale 'Not Reviewed'
-# row never causes a false NOTHING_TO_DO or resurfaces an already-reviewed product), and must
-# treat its failure as non-fatal (a WARNING, not exit 1) -- unlike the month/worklist bq calls,
-# this is pure housekeeping the session can proceed without.
-grep -qF '"$(sync_qa_status_query "$source_table" "$qa_table" "$qa_pk_col" "$filter_table")"' <<< "$script_src" || fail "main() must call sync_qa_status_query with the resolved source/qa/filter tables and qa_pk_col"
-grep -qF 'WARNING: qa_status sync failed' <<< "$script_src" || fail "main() must warn (not exit 1) if the qa_status sync fails -- it's housekeeping, not a session blocker"
-if grep -A2 -qF 'sync_qa_status_query "$source_table"' <<< "$script_src" | grep -qF 'QUEUE_SIGNAL: FAILED'; then
-  fail "the qa_status sync failure path must not emit QUEUE_SIGNAL: FAILED -- it must be non-fatal"
+# qa_status writing is owned by a separate external QA-labelling update process now -- main() must
+# never call any qa_status sync or SET qa_status.
+if grep -q "sync_qa_status_query" <<< "$script_src"; then
+  fail "main() must not reference sync_qa_status_query -- that function no longer exists, qa_status writing is owned by an external process now"
 fi
-sync_pos=$(grep -n 'sync_qa_status_query "\$source_table"' <<< "$script_src" | head -1 | cut -d: -f1)
-worklist_pos=$(grep -n 'query=\$(worklist_query' <<< "$script_src" | head -1 | cut -d: -f1)
-[[ "$sync_pos" -lt "$worklist_pos" ]] || fail "the qa_status sync must run BEFORE worklist_query, so its effects are reflected in this run's worklist"
+if grep -qi "SET qa_status" <<< "$script_src"; then
+  fail "main() must never write to qa_status -- that's owned by an external process now"
+fi
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() must emit NOTHING_TO_DO when the worklist is empty, before spending a claude -p call"
 grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() must emit the post-run signal derived from decide_queue_signal"
 grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() must tolerate a non-zero claude exit (|| true) so the transcript still gets echoed under set -e"

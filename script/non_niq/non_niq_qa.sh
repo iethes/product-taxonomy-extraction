@@ -200,33 +200,6 @@ primary_filter_table() {
   echo "${entries[0]}"
 }
 
-# Self-heals qa_status drift on the source table before this run's worklist is computed --
-# UNION of qa_table (via the resolved qa_pk_col) and filter_table's product_ids, both count as
-# "reviewed" (a filter-table write IS a completed review, just with a different outcome). Live-
-# confirmed gap: the one-time historical backfill run for this exact bug covered qa_table only,
-# missing 1044 distinct filtered products (2088 rows) across cookiesbiscuit's Shopee/Lazada/
-# Tokopedia alone -- filter_table writes were never included. Embedding the sync directly in the
-# script (run every invocation) means this can't recur regardless of whether a past or future
-# Claude session actually followed the prompt's own qa_status UPDATE instruction -- no more manual
-# backfills. Idempotent via the qa_status = 'Not Reviewed' guard (cheap no-op on repeat runs).
-# Scoped to this month + last month, matching the original backfill's window -- not a full-history
-# rewrite every run.
-sync_qa_status_query() {
-  local source_table="$1" qa_table="$2" qa_pk_col="$3" filter_table="$4"
-  cat <<SQL
-UPDATE \`${PROJECT}.${source_table}\` s
-SET qa_status = 'Reviewed'
-FROM (
-  SELECT ${qa_pk_col} AS product_id FROM \`${PROJECT}.${qa_table}\`
-  UNION DISTINCT
-  SELECT product_id FROM \`${PROJECT}.${filter_table}\`
-) reviewed
-WHERE s.product_id = reviewed.product_id
-  AND s.qa_status = 'Not Reviewed'
-  AND s.month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)
-SQL
-}
-
 build_qa_prompt() {
   local dataset="$1" platform="$2" source_table="$3" qa_table="$4" dict_table="$5" filter_table="$6"
   local qa_pk_col="$7" dict_identity_col="$8" dict_typo_col="$9" meili_index="${10}" worklist_file="${11}"
@@ -255,8 +228,7 @@ build_qa_prompt() {
       \`SELECT * FROM \\\`${PROJECT}.${product_id_dict}\\\` LIMIT 1\` (or read its
       INFORMATION_SCHEMA.COLUMNS), then query it precisely for this product's row. Do NOT assume
       a column name. If a mapping row exists for this product: is that mapping CORRECT?
-      YES -> write those SAME brand/${qa_identity_col} values to \`${PROJECT}.${qa_table}\`, THEN
-             run the qa_status UPDATE (see Hard rules below -- do not skip this), then go to 2d.
+      YES -> write those SAME brand/${qa_identity_col} values to \`${PROJECT}.${qa_table}\`, then go to 2d.
       NO, or no mapping row for this product -> continue to 2c."
   fi
 
@@ -330,9 +302,7 @@ STEP 2 -- For each product in the worklist, in order:
       NO  -> write {product_id, ecommerce_platform, sku_name, reason} to \`${PROJECT}.${filter_table}\`
              (this dataset's OWN filter table -- never write to a different dataset's filter table
              even if the Sheet cross-references one for read context), _meta stamped
-             '{"source":"claude_code"}', do NOT create a taxonomy entry. THEN run the qa_status UPDATE
-             (see Hard rules below -- do not skip this, filtered-out products count as reviewed
-             too). Move to the next product.
+             '{"source":"claude_code"}', do NOT create a taxonomy entry. Move to the next product.
              Use the worklist row's OWN \`ecommerce_platform\` value verbatim (it's the source
              table's real, Title-Case value, e.g. "Shopee"/"Lazada" -- do not lowercase it or
              reconstruct it yourself, the Sheet's lowercase convention is NOT what's stored here).
@@ -349,8 +319,7 @@ ${step2_block}
       output for the warning) -- treat it the same as "no candidates found", do not block on it.
       Does a TRUE matching taxonomy record exist in ${dict_table}?
       YES -> write CORRECTED (re-pointed) brand/${qa_identity_col} values to
-             \`${PROJECT}.${qa_table}\`, THEN run the qa_status UPDATE (see Hard rules below -- do
-             not skip this).
+             \`${PROJECT}.${qa_table}\`.
       NO  -> two-step create in \`${PROJECT}.${dict_table}\`:
              Step A: insert brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if you
                      have common misspellings), _meta='claude_code' stamped here.
@@ -360,8 +329,7 @@ ${step2_block}
                      before writing a new value, prefer an existing value over inventing one, and
                      match existing formatting exactly (e.g. "150 ml" not "150ml").
              Then write brand/${qa_identity_col} values pointing at the new entry to
-             \`${PROJECT}.${qa_table}\`, THEN run the qa_status UPDATE (see Hard rules below -- do
-             not skip this).
+             \`${PROJECT}.${qa_table}\`.
 
   2d. Self-QA: as an explicit, separate judgment (not folded into 2a-2c's reasoning), state how
       confident you are in the decision you just made for this product. Then:
@@ -383,24 +351,10 @@ Hard rules, never relaxed:
   corrections only ever land in \`${PROJECT}.${qa_table}\`.
 - All writes use bq query DML, never the streaming API -- CLAUDE.md's 90-minute streaming-buffer
   rule. The very next run's retry-cap logic depends on reading back this run's QA rows reliably.
-- The "qa_status UPDATE" referenced at every write branch in STEP 2 above is this exact statement
-  -- run it EVERY time you write a product to \`${filter_table}\` (2a) OR to \`${qa_table}\`
-  (2b/2c, any confidence outcome, no exceptions), once per product:
-    UPDATE \`${PROJECT}.${source_table}\` SET qa_status = 'Reviewed'
-    WHERE product_id = '<this product's product_id>'
-      AND month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)
-  This updates this month's AND last month's row for that product_id only -- not the product's
-  entire history, and not just the current month's row. \`qa_status\` tracks "has this product been
-  reviewed recently", scoped to match the one-time historical backfill already run for this same
-  gap (limited to the same this-month/last-month window, not all history). Confirmed live that
-  this harness previously never wrote \`qa_status\` back at all -- every product it had ever
-  confidently reviewed still showed \`qa_status = 'Not Reviewed'\` on the source table, even though
-  \`qa_status\` is a real field other processes write and read (230k+ 'Reviewed' rows exist from
-  elsewhere) -- this is exactly what caused analysts to keep asking why "reviewed" products still
-  showed as unreviewed. Getting this wrong (or skipping it) reproduces that same complaint. This
-  UPDATE is independent of the retry-eligibility logic (that's driven entirely by
-  \`${qa_table}\`'s own \`_meta.qa_confidence\`/\`human_review\`, never by \`qa_status\`) -- so update
-  it even on an unconfident-first-attempt row, not just on confident/terminal outcomes.
+- Never write to \`qa_status\` on the source table. A separate QA-labelling update process reads
+  \`${qa_table}\` independently and flips \`qa_status\` to 'Reviewed' once a product has a row there
+  -- this harness's job is only to write \`${qa_table}\`/\`${dict_table}\`/\`${filter_table}\`, never
+  \`qa_status\` itself.
 - Every _meta read you do yourself (e.g. checking whether a product already has an unconfident
   row) must use JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.field'), never bare JSON_VALUE(_meta, ...)
   and never SAFE.JSON_VALUE(...) -- the latter LOOKS right but is not valid BigQuery syntax
@@ -578,15 +532,6 @@ main() {
   qa_pk_col=$(echo "$columns_json" | jq -r '.qa_pk_col')
   dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
   dict_typo_col=$(echo "$columns_json" | jq -r '.dict_typo_col')
-
-  # Self-heal qa_status drift BEFORE computing this run's worklist, so a stale 'Not Reviewed' row
-  # never causes a false "nothing to do" or resurfaces an already-reviewed product. Non-fatal --
-  # unlike the month/worklist queries below, this is pure housekeeping: the session can still do
-  # real QA work even if this sync fails, it just means today's drift isn't self-healed this run.
-  if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-    "$(sync_qa_status_query "$source_table" "$qa_table" "$qa_pk_col" "$filter_table")" >/dev/null 2>&1; then
-    echo "WARNING: qa_status sync failed for ${dataset}/${platform} -- worklist may include already-reviewed rows this run." >&2
-  fi
 
   # Explicit failure checks, not bare `set -e` reliance: a bare `var=$(bq query | tail -1)`
   # reassignment DOES propagate a pipefail'd bq failure and kill the script under set -e, but

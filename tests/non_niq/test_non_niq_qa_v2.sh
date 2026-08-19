@@ -96,15 +96,11 @@ multi="babysunscreen.filter_babysunscreen;sunscreen.filter_sunscreen_hanasui"
 [[ "$(primary_filter_table "$multi" "babysunscreen")" == "babysunscreen.filter_babysunscreen" ]] || fail "should return the table in the row's own dataset"
 echo "PASS: primary_filter_table"
 
-# --- sync_qa_status_query (targets master_table_prod, separate from v1's _dev sync) ---
-sq=$(sync_qa_status_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "cookiesbiscuitlemonilo.filter_cookiesbiscuit")
-echo "$sq" | grep -qF "UPDATE \`sincere-hearth-273704.cookiesbiscuit.master_cookiesbiscuit_id\` s" || fail "sync_qa_status_query (v2) must UPDATE the master_table_prod source table"
-echo "$sq" | grep -qF "SELECT prod_id AS product_id FROM \`sincere-hearth-273704.cookiesbiscuitlemonilo.product_id_dict_qa\`" || fail "sync_qa_status_query (v2) must select the resolved qa_pk_col from the QA table"
-echo "$sq" | grep -qF "UNION DISTINCT" || fail "sync_qa_status_query (v2) must UNION qa_table and filter_table product_ids"
-echo "$sq" | grep -qF "SELECT product_id FROM \`sincere-hearth-273704.cookiesbiscuitlemonilo.filter_cookiesbiscuit\`" || fail "sync_qa_status_query (v2) must also include filter_table product_ids"
-echo "$sq" | grep -qF "AND s.qa_status = 'Not Reviewed'" || fail "sync_qa_status_query (v2) must be idempotent"
-echo "$sq" | grep -qF "AND s.month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)" || fail "sync_qa_status_query (v2) must scope to this month + last month"
-echo "PASS: sync_qa_status_query"
+# sync_qa_status_query removed -- a separate external QA-labelling update process now owns
+# flipping qa_status based on product_id_dict_qa, this harness must never write it.
+if declare -F sync_qa_status_query >/dev/null; then
+  fail "sync_qa_status_query must not exist -- qa_status writing is owned by an external process now"
+fi
 
 echo "ALL TESTS PASSED (part 1: SQL builders)"
 
@@ -144,25 +140,22 @@ if echo "$prompt" | grep -qF "_meta='claude_code'"; then
   fail "prompt must never instruct stamping _meta as the bare string 'claude_code' -- that is not valid JSON"
 fi
 echo "$prompt" | grep -qF "NOT valid JSON" || fail "prompt must explicitly warn that a bare string _meta value is not valid JSON"
-echo "$prompt" | grep -qF "UPDATE \`sincere-hearth-273704.cookiesbiscuit.master_cookiesbiscuit_id\` SET qa_status = 'Reviewed'" || fail "prompt must instruct updating qa_status='Reviewed' on master_table_prod after a terminal write"
-echo "$prompt" | grep -qF "AND month >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 1 MONTH)" || fail "the qa_status UPDATE must be scoped to this month + last month"
-if echo "$prompt" | grep -qF "AND month = "; then
-  fail "the qa_status UPDATE must not be scoped to a single exact month"
+# qa_status writing is owned by a separate external QA-labelling update process now -- this
+# harness must never instruct writing to it.
+if grep -qi "qa_status = 'Reviewed'\|run the qa_status UPDATE\|SET qa_status" <<< "$prompt"; then
+  fail "prompt must never instruct writing to qa_status -- that's owned by an external process now"
 fi
-# Same reliability requirement as v1: inline reminders at every terminal-write branch, not just
-# a single Hard rule at the end of a long multi-product-loop prompt.
-qa_status_reminders=$(echo "$prompt" | grep -c "run the qa_status UPDATE")
-[[ "$qa_status_reminders" -eq 4 ]] || fail "expected exactly 4 inline qa_status UPDATE reminders (2a NO, 2b YES, 2c YES, 2c NO-create), got $qa_status_reminders"
+echo "$prompt" | grep -qF "Never write to \`qa_status\`" || fail "prompt's Hard rules must explicitly state qa_status is never written by this harness"
 
-# step2_block SKIPPED branch (product_id_dict unconfigured) -- 3 reminders, not 4 (2b never fires).
 prompt_nodict=$(build_qa_prompt "cookiesbiscuit" "shopee" "cookiesbiscuit.master_cookiesbiscuit_id" \
   "cookiesbiscuitlemonilo.product_id_dict_qa" "cookiesbiscuitlemonilo.cookiesbiscuitlemonilo_dict" \
   "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \
   "prod_id" "sku_type_complete" "keywords_typo" "cookiesbiscuit_taxonomy_qa" "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" \
   "42" "-")
 echo "$prompt_nodict" | grep -q "2b. SKIPPED for this category" || fail "an unconfigured ('-') product_id_dict must skip step 2b"
-qa_status_reminders_nodict=$(echo "$prompt_nodict" | grep -c "run the qa_status UPDATE")
-[[ "$qa_status_reminders_nodict" -eq 3 ]] || fail "expected exactly 3 inline qa_status UPDATE reminders when 2b is skipped, got $qa_status_reminders_nodict"
+if grep -qi "run the qa_status UPDATE\|SET qa_status" <<< "$prompt_nodict"; then
+  fail "prompt_nodict must never instruct writing to qa_status either"
+fi
 echo "PASS: build_qa_prompt"
 
 # --- extract_json_object / decide_queue_signal / format_result_summary (identical contract to v1) ---
@@ -193,11 +186,14 @@ if grep -qF "jq -r '.table')" <<< "$script_src"; then
 fi
 grep -qF '"source_table=$source_table" "qa_table=$qa_table" "dict_table=$dict_table" "filter_table=$filter_table"' <<< "$script_src" || fail "main() (v2) must guard source_table alongside the other required tables -- unlike v1, v2's worklist depends entirely on it"
 grep -qF '"$(default_month_query "$source_table" "$platform")"' <<< "$script_src" || fail "main() (v2) must pass platform to default_month_query"
-grep -qF '"$(sync_qa_status_query "$source_table" "$qa_table" "$qa_pk_col" "$filter_table")"' <<< "$script_src" || fail "main() (v2) must call sync_qa_status_query with the resolved tables"
-grep -qF 'WARNING: qa_status sync failed' <<< "$script_src" || fail "main() (v2) must warn (not exit 1) if the qa_status sync fails"
-sync_pos=$(grep -n 'sync_qa_status_query "\$source_table"' <<< "$script_src" | head -1 | cut -d: -f1)
-worklist_pos=$(grep -n 'query=\$(worklist_query' <<< "$script_src" | head -1 | cut -d: -f1)
-[[ "$sync_pos" -lt "$worklist_pos" ]] || fail "the qa_status sync must run BEFORE worklist_query"
+# qa_status writing is owned by a separate external QA-labelling update process now -- main() must
+# never call any qa_status sync or SET qa_status.
+if grep -q "sync_qa_status_query" <<< "$script_src"; then
+  fail "main() (v2) must not reference sync_qa_status_query -- that function no longer exists, qa_status writing is owned by an external process now"
+fi
+if grep -qi "SET qa_status" <<< "$script_src"; then
+  fail "main() (v2) must never write to qa_status -- that's owned by an external process now"
+fi
 grep -qF -- '--max_rows=1000000' <<< "$script_src" || fail "main() (v2) must pass --max_rows to bq query when materializing the worklist"
 grep -qF "worklist_file=\"/tmp/\${dataset}_\${platform}_v2_full_worklist.jsonl\"" <<< "$script_src" || fail "main() (v2) must materialize the worklist to a v2-distinctly-named file"
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() (v2) must emit NOTHING_TO_DO when the worklist is empty"
