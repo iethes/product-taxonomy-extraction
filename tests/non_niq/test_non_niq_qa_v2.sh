@@ -184,6 +184,18 @@ if grep -qi "qa_status = 'Reviewed'\|run the qa_status UPDATE\|SET qa_status" <<
 fi
 echo "$prompt" | grep -qF "Never write to \`qa_status\`" || fail "prompt's Hard rules must explicitly state qa_status is never written by this harness"
 
+# --- dict-column generation patterns (self-bootstrapping per-category config) ---
+echo "$prompt" | grep -qF "script/non_niq/dict_patterns/cookiesbiscuit.json" || fail "Step A must reference this dataset's dict_patterns config path"
+echo "$prompt" | grep -qF '"sources"' || fail "Step A must describe the dict_patterns JSON schema's sources key"
+echo "$prompt" | grep -qF '"separator"' || fail "Step A must describe the dict_patterns JSON schema's separator key"
+echo "$prompt" | grep -qi "sample ~10-20 existing rows" || fail "Step A must instruct inferring the pattern by sampling existing dict rows when no config exists"
+echo "$prompt" | grep -qi "skipping any source that's null/empty" || fail "Step A must state that composition skips null/empty sources"
+echo "$prompt" | grep -qF "non-null EXCEPT keywords_typo" || fail "Step B must state the universal NOT NULL rule naming the resolved typo column"
+if echo "$prompt" | grep -qi 'REPO_ROOT}/script/non_niq/dict_patterns/${dataset}'; then
+  fail "prompt must interpolate the real dataset name into the dict_patterns path, not leave a literal \${dataset} placeholder"
+fi
+echo "PASS: dict-column generation patterns"
+
 prompt_nodict=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.master_cookiesbiscuit_id" \
   "cookiesbiscuitlemonilo.product_id_dict_qa" "cookiesbiscuitlemonilo.cookiesbiscuitlemonilo_dict" \
   "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \

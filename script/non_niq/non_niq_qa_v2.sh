@@ -304,16 +304,37 @@ ${step2_block}
       YES -> write CORRECTED (re-pointed) brand/${qa_identity_col} values to
              \`${PROJECT}.${qa_table}\`.
       NO  -> two-step create in \`${PROJECT}.${dict_table}\`:
-             Step A: insert brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if you
-                     have common misspellings), _meta stamped
-                     '{"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}' here (see the
-                     _meta format rule below -- NOT the bare string "claude_code", that is not
-                     valid JSON).
+             Step A: FIRST resolve this category's generated-column pattern. Read
+                     ${REPO_ROOT}/script/non_niq/dict_patterns/${dataset}.json.
+                     - EXISTS -> follow it mechanically: each key is a generated column (e.g.
+                       sku_type_complete, keywords), its "sources" is the ordered list of other
+                       dict-table columns it's composed from, "separator" is how they're joined.
+                       Populate every listed source column first (grounded via
+                       \`SELECT DISTINCT <column> FROM ${PROJECT}.${dict_table}\`, same technique
+                       as Step B below), skipping any source that's null/empty when composing --
+                       never emit a literal "null" or a dangling separator.
+                     - MISSING -> infer the pattern yourself: sample ~10-20 existing rows from
+                       \`${PROJECT}.${dict_table}\` and work out how sku_type_complete/keywords
+                       (and any other generated columns this category has) are actually composed
+                       from other columns. Then Write your inferred pattern to
+                       ${REPO_ROOT}/script/non_niq/dict_patterns/${dataset}.json in the schema
+                       above, so the next session for this dataset reads it instead of
+                       re-inferring.
+                     Then insert brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if
+                     you have common misspellings) into \`${PROJECT}.${dict_table}\`, _meta
+                     stamped '{"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}' here
+                     (see the _meta format rule below -- NOT the bare string "claude_code", that
+                     is not valid JSON).
              Step B: populate the remaining attribute columns for this dict's schema, GROUNDED on
                      existing dict rows' actual vocabulary and formatting -- query
                      \`SELECT DISTINCT <column> FROM ${PROJECT}.${dict_table}\` per attribute column
                      before writing a new value, prefer an existing value over inventing one, and
-                     match existing formatting exactly (e.g. "150 ml" not "150ml").
+                     match existing formatting exactly (e.g. "150 ml" not "150ml"). Every column
+                     on the new row must be non-null EXCEPT ${dict_typo_col} -- after inserting,
+                     verify with a \`SELECT\` for any NULL in a non-\`${dict_typo_col}\` column on
+                     the just-inserted row (never trust bq's "affected rows" report as proof the
+                     row is complete), and fix any NULL found (grounded via SELECT DISTINCT, same
+                     as above) before moving on.
              Then write brand/${qa_identity_col} values pointing at the new entry to
              \`${PROJECT}.${qa_table}\`.
 
