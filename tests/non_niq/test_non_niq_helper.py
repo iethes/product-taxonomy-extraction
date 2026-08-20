@@ -121,6 +121,80 @@ def test_retrieve_candidates_one_failure_does_not_abort_batch(monkeypatch):
     assert results[0]["candidates"] == []
     assert len(results[1]["candidates"]) == 1
 
+# --- E5 prefix formatting (corpus side) ---
+
+def test_format_passage_text_for_indexed_corpus():
+    assert non_niq_helper._format_passage_text("baby shampoo") == "passage: baby shampoo"
+
+# --- ensure_index ---
+
+def test_ensure_index_creates_when_missing(monkeypatch):
+    calls = []
+    def fake_meili_request(meili_url, method, path, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            return {"results": []}
+        return {}
+    monkeypatch.setattr(non_niq_helper, "_meili_request", fake_meili_request)
+    non_niq_helper.ensure_index("http://fake", "babybath_taxonomy_qa")
+    methods_paths = [(m, p) for m, p, _ in calls]
+    assert ("POST", "/indexes") in methods_paths
+    assert ("PATCH", "/indexes/babybath_taxonomy_qa/settings") in methods_paths
+
+def test_ensure_index_skips_create_when_already_exists(monkeypatch):
+    calls = []
+    def fake_meili_request(meili_url, method, path, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            return {"results": [{"uid": "babybath_taxonomy_qa"}]}
+        return {}
+    monkeypatch.setattr(non_niq_helper, "_meili_request", fake_meili_request)
+    non_niq_helper.ensure_index("http://fake", "babybath_taxonomy_qa")
+    methods = [m for m, _, _ in calls]
+    assert "POST" not in methods
+    assert "PATCH" in methods
+
+# --- index_documents ---
+
+def test_index_documents_doc_shape(monkeypatch):
+    posted = []
+    def fake_meili_request(meili_url, method, path, body=None):
+        if method == "GET":
+            return {"results": [{"uid": "babybath_taxonomy_qa"}]}
+        if method == "POST" and path.endswith("/documents"):
+            posted.append(body)
+        return {}
+    monkeypatch.setattr(non_niq_helper, "_meili_request", fake_meili_request)
+    lines = [{"product_id": 123, "sku_name": "Baby Shampoo 200ml", "sku_type_complete": "Shampoo 200 ml", "brand": "Acme"}]
+    count = non_niq_helper.index_documents(lines, "http://fake", "babybath_taxonomy_qa", model=_FakeModel())
+    assert count == 1
+    doc = posted[0][0]
+    assert doc["product_id"] == "123"
+    assert doc["sku_name"] == "Baby Shampoo 200ml"
+    assert doc["sku_type_complete"] == "Shampoo 200 ml"
+    assert doc["brand"] == "Acme"
+    assert doc["_vectors"]["default"] == [float(len("passage: Baby Shampoo 200ml"))]
+
+def test_index_documents_batches_at_batch_size(monkeypatch):
+    posted_batches = []
+    def fake_meili_request(meili_url, method, path, body=None):
+        if method == "GET":
+            return {"results": [{"uid": "idx"}]}
+        if method == "POST" and path.endswith("/documents"):
+            posted_batches.append(len(body))
+        return {}
+    monkeypatch.setattr(non_niq_helper, "_meili_request", fake_meili_request)
+    lines = [{"product_id": i, "sku_name": f"p{i}", "sku_type_complete": "T", "brand": "B"} for i in range(non_niq_helper.BATCH_SIZE + 10)]
+    non_niq_helper.index_documents(lines, "http://fake", "idx", model=_FakeModel())
+    assert posted_batches == [non_niq_helper.BATCH_SIZE, 10]
+
+def test_index_documents_empty_input_is_noop(monkeypatch):
+    calls = []
+    monkeypatch.setattr(non_niq_helper, "_meili_request", lambda *a, **k: calls.append(1))
+    count = non_niq_helper.index_documents([], "http://fake", "idx", model=_FakeModel())
+    assert count == 0
+    assert calls == []
+
 # --- _format_discord_table ---
 
 def test_format_discord_table_includes_all_nonnull_columns():

@@ -4,12 +4,14 @@ batch embed+retrieve against Meilisearch. Runs on the same Hetzner box as non_ni
 this repo's own .venv (uv-managed -- CPU-only torch is already correctly pinned there through
 pyproject.toml's [tool.uv.sources], no Windmill-specific dependency handling needed here).
 
-Meilisearch *indexing* (embedding the {dataset}_taxonomy_qa corpus) is Windmill's job now, deployed
-separately -- see docs/windmill-non-niq-embed-prompt.md for that script. This helper only ever
-READS from Meilisearch (the `retrieve` command), never writes to it.
+Meilisearch: this helper both reads (the `retrieve` command, used every QA session) and writes
+(the `index` command, called once at the end of a v2 QA session for newly-minted taxonomy entries
+-- see non_niq_qa_v2.sh's STEP 3). Windmill's non_niq_embed.py (docs/windmill-non-niq-embed-prompt.md)
+remains a separate, manual-trigger whole-corpus resync -- the two write paths don't conflict,
+Meilisearch upserts are idempotent by product_id (the index's declared primaryKey).
 
 Plain CLI (no Windmill involved, so no reason for the kwargs-only calling convention the deployed
-script needs) -- three subcommands, called directly from non_niq_qa.sh's bash:
+script needs) -- subcommands, called directly from non_niq_qa.sh/non_niq_qa_v2.sh's bash:
 
   categories --country ID [--categories "A,B"] [--csv-file PATH]
       Reads the pipeline config Sheet (published CSV export) -> JSON list of active categories.
@@ -29,6 +31,13 @@ script needs) -- three subcommands, called directly from non_niq_qa.sh's bash:
       sku_type_complete). A single product's search failure doesn't abort the batch -- it gets
       empty candidates and a warning is printed, so one Meilisearch hiccup doesn't cost the whole
       worklist's retrieval.
+
+  index --input-file DOCS.jsonl --meili-index IDX [--meili-url URL]
+      Embeds each product's sku_name as an E5 passage (asymmetric retrieval -- corpus side, not
+      query side) and upserts into Meilisearch, creating/configuring the index first if it
+      doesn't exist yet. Input: one {"product_id","sku_name","sku_type_complete","brand"} per
+      line. Batched at BATCH_SIZE per POST (a 1024-dim vector serialises to ~20KB of JSON, so a
+      single POST would blow past Meilisearch's 100MB payload limit above a few thousand rows).
 """
 import argparse
 import csv
@@ -44,6 +53,7 @@ from sentence_transformers import SentenceTransformer
 MEILI_URL = "http://34.124.146.29:7700"
 MODEL_NAME = "intfloat/multilingual-e5-large"
 BATCH_SIZE = 256
+EMBED_DIM = 1024
 
 DISCORD_CONTENT_LIMIT = 2000
 DISCORD_CELL_TRUNCATE = 200
@@ -132,6 +142,13 @@ def _format_query_text(text):
     return f"query: {text}"
 
 
+def _format_passage_text(text):
+    """Format text for the indexed corpus side (E5 asymmetric retrieval) -- mirrors
+    non_niq_embed.py's Windmill-deployed version, kept in sync by convention (both index the same
+    Meilisearch corpus, so both must embed with the same asymmetric prefix)."""
+    return f"passage: {text}"
+
+
 def _meili_request(meili_url, method, path, body=None):
     url = f"{meili_url}{path}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -167,6 +184,54 @@ def retrieve_candidates(lines, meili_url, meili_index, limit=10, model=None):
             candidates = []
         results.append({"id": line["id"], "candidates": candidates})
     return results
+
+
+# ---------------------------------------------------------------------------
+# Indexing: embed + upsert newly-minted taxonomy entries into Meilisearch
+# ---------------------------------------------------------------------------
+
+def ensure_index(meili_url, index_uid):
+    """Create the index if it doesn't exist yet, then (re-)apply settings either way -- cheap and
+    idempotent, so no need to branch on whether settings already match. Same conventions as
+    non_niq_embed.py's Windmill-deployed version (docs/windmill-non-niq-embed-prompt.md), so a
+    v2-created index and a Windmill-synced index are interchangeable."""
+    existing = _meili_request(meili_url, "GET", "/indexes?limit=200")
+    uids = {r["uid"] for r in existing.get("results", [])}
+    if index_uid not in uids:
+        _meili_request(meili_url, "POST", "/indexes", {"uid": index_uid, "primaryKey": "product_id"})
+    _meili_request(meili_url, "PATCH", f"/indexes/{index_uid}/settings", {
+        "searchableAttributes": ["sku_name", "sku_type_complete", "brand"],
+        "embedders": {"default": {"source": "userProvided", "dimensions": EMBED_DIM}},
+    })
+
+
+def index_documents(lines, meili_url, meili_index, model=None):
+    """lines: list of {"product_id","sku_name","sku_type_complete","brand"} -- the shape v2's
+    STEP 3 batches up from its own session writes. Embeds sku_name as an E5 passage (corpus side),
+    upserts into meili_index (creating/configuring it first if needed), batched at BATCH_SIZE -- a
+    1024-dim vector serialises to ~20KB of JSON, so a single POST for a large batch would blow
+    past Meilisearch's 100MB payload limit. Returns the number of documents submitted; a caller
+    with zero qualifying products should simply not call this (STEP 3's prompt instructs that),
+    but an empty list is handled as a no-op regardless."""
+    if not lines:
+        return 0
+    model = model or SentenceTransformer(MODEL_NAME)
+    ensure_index(meili_url, meili_index)
+    texts = [_format_passage_text(l["sku_name"]) for l in lines]
+    vectors = model.encode(texts, batch_size=BATCH_SIZE, show_progress_bar=False, normalize_embeddings=True)
+    docs = [
+        {
+            "product_id": str(l["product_id"]),
+            "sku_name": l["sku_name"],
+            "sku_type_complete": l["sku_type_complete"],
+            "brand": l["brand"],
+            "_vectors": {"default": vec.tolist()},
+        }
+        for l, vec in zip(lines, vectors)
+    ]
+    for i in range(0, len(docs), BATCH_SIZE):
+        _meili_request(meili_url, "POST", f"/indexes/{meili_index}/documents", docs[i:i + BATCH_SIZE])
+    return len(docs)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +332,12 @@ def _cmd_retrieve(args):
     print(f"Retrieved candidates for {len(results)} products -> {args.output_file}")
 
 
+def _cmd_index(args):
+    lines = [json.loads(l) for l in open(args.input_file) if l.strip()]
+    count = index_documents(lines, args.meili_url, args.meili_index)
+    print(f"Indexed {count} products -> {args.meili_index}")
+
+
 def _cmd_notify_discord(args):
     notify_discord_new_entry(args.project, args.dict_table, args.brand, args.identity_col,
                               args.identity_value, args.dataset)
@@ -293,6 +364,11 @@ def main():
     ret_p.add_argument("--meili-url", default=MEILI_URL)
     ret_p.add_argument("--limit", type=int, default=10)
 
+    index_p = sub.add_parser("index")
+    index_p.add_argument("--input-file", required=True)
+    index_p.add_argument("--meili-index", required=True)
+    index_p.add_argument("--meili-url", default=MEILI_URL)
+
     notify_p = sub.add_parser("notify-discord")
     notify_p.add_argument("--project", required=True)
     notify_p.add_argument("--dict-table", required=True)
@@ -308,6 +384,8 @@ def main():
         _cmd_columns(args)
     elif args.command == "retrieve":
         _cmd_retrieve(args)
+    elif args.command == "index":
+        _cmd_index(args)
     elif args.command == "notify-discord":
         _cmd_notify_discord(args)
 
