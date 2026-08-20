@@ -40,7 +40,7 @@ echo "$q" | grep -q "ecommerce_platform = 'Shopee'" || fail "worklist_query (v2)
 if echo "$q" | grep -q "ecommerce_platform = 'shopee'"; then
   fail "worklist_query (v2) must never filter on the raw lowercase platform"
 fi
-echo "$q" | grep -qF "REPLACE(image, '\"', '')" || fail "worklist_query (v2) must strip embedded double-quotes from image, same fix as v1"
+echo "$q" | grep -qF "REPLACE(s.image, '\"', '')" || fail "worklist_query (v2) must strip embedded double-quotes from image, same fix as v1"
 echo "$q" | grep -q "JSON_VALUE(SAFE.PARSE_JSON(_meta)" || fail "worklist_query (v2) must read _meta via JSON_VALUE(SAFE.PARSE_JSON(_meta), ...)"
 if echo "$q" | grep -q "SAFE.JSON_VALUE"; then
   fail "worklist_query (v2) must never call SAFE.JSON_VALUE -- not valid BigQuery syntax"
@@ -79,7 +79,7 @@ fi
 echo "PASS: worklist_query tokopedia platform expansion"
 
 # --- worklist_query filter_table exclusion ---
-q_filtered=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee" "300" "cookiesbiscuitlemonilo.filter_cookiesbiscuit")
+q_filtered=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee" "" "300" "cookiesbiscuitlemonilo.filter_cookiesbiscuit")
 echo "$q_filtered" | grep -q "filter_state AS" || fail "worklist_query (v2) must create a filter_state CTE when filter_table is given"
 echo "$q_filtered" | grep -qF "SELECT DISTINCT product_id FROM \`sincere-hearth-273704.cookiesbiscuitlemonilo.filter_cookiesbiscuit\`" || fail "worklist_query (v2) must select DISTINCT product_id from the filter table"
 echo "$q_filtered" | grep -qF "WHEN fs.product_id IS NOT NULL THEN NULL" || fail "worklist_query (v2) must exclude already-filtered products"
@@ -88,6 +88,43 @@ if echo "$q" | grep -q "filter_state\|fs.product_id"; then
   fail "worklist_query (v2) must not reference filter_state when no filter_table is given"
 fi
 echo "PASS: worklist_query filter_table exclusion"
+
+# --- worklist_query enrichment (item_description/product_attributes_attrs, ported from v1) ---
+q_enriched=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee" "0_pipeline_cookiesbiscuit_shopee_id")
+echo "$q_enriched" | grep -q "enrichment_dedup AS" || fail "worklist_query (v2) must create an enrichment_dedup CTE for deduplication"
+echo "$q_enriched" | grep -q "QUALIFY ROW_NUMBER() OVER (PARTITION BY item_itemid ORDER BY timestamp DESC) = 1" || fail "worklist_query (v2) must dedupe enrichment table to latest row per item_itemid"
+echo "$q_enriched" | grep -q "FROM \`sincere-hearth-273704.cookiesbiscuit.0_pipeline_cookiesbiscuit_shopee_id\`" || fail "worklist_query (v2) must reference the enrichment table in enrichment_dedup CTE"
+echo "$q_enriched" | grep -q "LEFT JOIN enrichment_dedup e ON CAST(e.item_itemid AS STRING) = s.product_id" || fail "worklist_query (v2) must join the dedup CTE on item_itemid = product_id"
+echo "$q_enriched" | grep -q "e.item_description, e.product_attributes_attrs" || fail "worklist_query (v2) must select item_description/product_attributes_attrs from the enrichment_dedup CTE"
+echo "$q_enriched" | grep -q "sc.item_description, sc.product_attributes_attrs" || fail "worklist_query (v2) must carry item_description/product_attributes_attrs through to the final SELECT"
+echo "$q_enriched" | grep -qF "STRING_AGG(CONCAT(JSON_VALUE(a,'\$.name'),'=',JSON_VALUE(a,'\$.value')), '; ')" || fail "worklist_query (v2)'s enrichment_dedup CTE must project product_attributes_attrs down to a compact name=value string via STRING_AGG"
+echo "$q_enriched" | grep -qF "COALESCE(" || fail "worklist_query (v2) must try raw SAFE.PARSE_JSON first and fall back to a normalized parse"
+echo "$q_enriched" | grep -qF "SAFE.PARSE_JSON(product_attributes_attrs)," || fail "worklist_query (v2)'s COALESCE must try the raw product_attributes_attrs first, so already-valid JSON is never run through Python-repr normalization"
+echo "$q_enriched" | grep -qF "CHR(39), CHR(34)" || fail "worklist_query (v2)'s Python-repr fallback must swap single quotes for double quotes"
+echo "$q_enriched" | grep -qF "': None', ': null'" || fail "worklist_query (v2)'s Python-repr fallback must normalize None/True/False to JSON's null/true/false"
+
+# Non-Shopee platform -> no join, NULL columns instead, even if an enrichment_table value is passed.
+q_noenrich=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "blibli" "0_pipeline_cookiesbiscuit_blibli_id")
+if echo "$q_noenrich" | grep -q "enrichment_dedup AS"; then
+  fail "worklist_query (v2) must never build the enrichment CTE for a non-Shopee platform"
+fi
+echo "$q_noenrich" | grep -q "NULL AS item_description, NULL AS product_attributes_attrs" || fail "worklist_query (v2) must select NULL item_description/product_attributes_attrs for non-Shopee platforms"
+
+# No enrichment table given at all (Sheet's "0" column empty) -> same NULL fallback, even for Shopee.
+q_missing=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee")
+if echo "$q_missing" | grep -q "enrichment_dedup AS"; then
+  fail "worklist_query (v2) must not attempt a join when no enrichment_table is given"
+fi
+echo "$q_missing" | grep -q "NULL AS item_description, NULL AS product_attributes_attrs" || fail "worklist_query (v2) must select NULL item_description/product_attributes_attrs when enrichment_table is omitted"
+
+# enrichment_table literal string "null" (jq -r on a missing/null JSON key) must be treated the
+# same as an unconfigured enrichment_table -- consistency with main()'s three-sentinel guard.
+q_null_sentinel=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee" "null")
+if echo "$q_null_sentinel" | grep -q "enrichment_dedup AS"; then
+  fail "worklist_query (v2) must treat the literal string 'null' the same as an unconfigured enrichment_table"
+fi
+echo "$q_null_sentinel" | grep -q "NULL AS item_description, NULL AS product_attributes_attrs" || fail "worklist_query (v2) must select NULL item_description/product_attributes_attrs when enrichment_table is the literal string 'null'"
+echo "PASS: worklist_query enrichment"
 
 # --- primary_filter_table (identical to v1's) ---
 single="babybath.filter_babybath"
@@ -117,9 +154,9 @@ echo "$prompt" | grep -qF "product_tier = 'Tier 1'" || fail "STEP 0 must describ
 if echo "$prompt" | grep -qi "cumulative GMV\|top 90%"; then
   fail "prompt (v2) must not reference the v1 GMV-percentile scoping concept"
 fi
-if echo "$prompt" | grep -q "item_description\|product_attributes_attrs"; then
-  fail "prompt (v2) must not reference the Shopee enrichment feature -- not carried over from v1"
-fi
+echo "$prompt" | grep -q "item_description, product_attributes_attrs, priority" || fail "STEP 0 must list item_description/product_attributes_attrs in the worklist row shape"
+echo "$prompt" | grep -q "product_attributes_attrs" || fail "STEP 2a must mention product_attributes_attrs as additional signal alongside item_description"
+echo "$prompt" | grep -qi "Shopee-only signal and NULL on other platforms" || fail "STEP 2a must note item_description/product_attributes_attrs are Shopee-only and NULL elsewhere"
 echo "$prompt" | grep -q "non_niq_helper.py retrieve" || fail "prompt must instruct batch retrieval via non_niq_helper.py's retrieve subcommand"
 echo "$prompt" | grep -q "sku_type_complete" || fail "prompt must reference the resolved dict identity column"
 echo "$prompt" | grep -q "keywords_typo" || fail "prompt must reference the resolved dict typo column"
@@ -204,9 +241,11 @@ grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$sc
 grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() (v2) must tolerate a non-zero claude exit"
 grep -qF 'format_result_summary "$claude_output"' <<< "$script_src" || fail "main() (v2) must print the human-readable summary"
 grep -qF 'echo "$claude_output"' <<< "$script_src" || fail "main() (v2) must still echo the raw envelope"
-if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discord\|notify_discord\|enrichment_table"; then
-  fail "non_niq_qa_v2.sh must not reference Discord notification, load_env.sh, or the v1 enrichment feature"
+if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discord\|notify_discord"; then
+  fail "non_niq_qa_v2.sh must not reference Discord notification or load_env.sh"
 fi
+grep -qF "enrichment_table=\$(echo \"\$category_json\" | jq -r '.\"0\"')" <<< "$script_src" || fail "main() (v2) must resolve enrichment_table from the Sheet's \"0\" column, same as v1"
+grep -qF '"$enrichment_table" "$max_rows" "$filter_table")' <<< "$script_src" || fail "main() (v2) must thread enrichment_table through to worklist_query"
 echo "PASS: main() wiring"
 
 echo "ALL TESTS PASSED (part 2: prompt + main)"

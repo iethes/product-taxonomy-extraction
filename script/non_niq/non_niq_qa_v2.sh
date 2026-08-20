@@ -66,12 +66,40 @@ default_month_query() {
 # retry-eligible) and the filter_table exclusion are otherwise identical to v1's worklist_query --
 # same qa_state/filter_state join shape, same confidence-loop semantics.
 worklist_query() {
-  local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5"
+  local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5" enrichment_table="${6:-}"
   # Same LIMIT rationale as v1: a single agent session's turn budget can't process an unbounded
   # worklist. 300 is the same safe default.
-  local row_limit="${6:-300}"
-  local filter_table="${7:-}"
+  local row_limit="${7:-300}"
+  local filter_table="${8:-}"
   local platform_titlecase="${platform^}"
+  # item_description/product_attributes_attrs enrichment is Shopee-only by data availability --
+  # ported VERBATIM from non_niq_qa.sh's worklist_query (v1), already debugged there (confirmed
+  # live: non-Shopee 0_pipeline_* tables have a different schema with no description/specs
+  # columns at all). dataset is derived from source_table (already "{dataset}.master_..." per
+  # master_table_prod's own convention) rather than a separate parameter.
+  local dataset="${source_table%%.*}"
+  local enrichment_cte_and_join="" enrichment_join="" enrichment_select="NULL AS item_description, NULL AS product_attributes_attrs"
+  if [[ "$platform_titlecase" == "Shopee" && -n "$enrichment_table" && "$enrichment_table" != "-" && "$enrichment_table" != "null" ]]; then
+    # enrichment_table is a history table with multiple rows per item_itemid (confirmed live on
+    # v1: ~108 rows per item avg). Dedupe to latest row per item before joining.
+    # product_attributes_attrs is raw Shopee attribute JSON, projected down to a compact
+    # "name=value; name=value" string -- same COALESCE-based Python-repr-vs-JSON fallback v1 uses
+    # (confirmed live there: ~94% of populated rows are Python repr(), not valid JSON, so a bare
+    # SAFE.PARSE_JSON alone would null out almost all real signal).
+    enrichment_cte_and_join="enrichment_dedup AS (
+  SELECT item_itemid, item_description,
+    (SELECT STRING_AGG(CONCAT(JSON_VALUE(a,'\$.name'),'=',JSON_VALUE(a,'\$.value')), '; ')
+     FROM UNNEST(JSON_QUERY_ARRAY(COALESCE(
+       SAFE.PARSE_JSON(product_attributes_attrs),
+       SAFE.PARSE_JSON(REPLACE(REPLACE(REPLACE(REPLACE(product_attributes_attrs, ': None', ': null'), ': True', ': true'), ': False', ': false'), CHR(39), CHR(34)))
+     ))) a) AS product_attributes_attrs
+  FROM \`${PROJECT}.${dataset}.${enrichment_table}\`
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY item_itemid ORDER BY timestamp DESC) = 1
+),
+"
+    enrichment_join="LEFT JOIN enrichment_dedup e ON CAST(e.item_itemid AS STRING) = s.product_id"
+    enrichment_select="e.item_description, e.product_attributes_attrs"
+  fi
   # image carries the same live-observed embedded-double-quote artifact v1 found and fixed --
   # stripping here, once, rather than relying on the prompt to strip it per-product.
   #
@@ -91,12 +119,13 @@ worklist_query() {
       "
   fi
   cat <<SQL
-WITH scoped AS (
-  SELECT product_id, sku_name, REPLACE(image, '"', '') AS image, ecommerce_platform, qa_status, gmv_monthly
-  FROM \`${PROJECT}.${source_table}\`
-  WHERE product_tier = 'Tier 1'
-    AND FORMAT_DATE('%Y-%m', month) = '${month}'
-    AND ecommerce_platform $(platform_match_clause "$platform_titlecase")
+WITH ${enrichment_cte_and_join}scoped AS (
+  SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image, s.ecommerce_platform, s.qa_status, s.gmv_monthly, ${enrichment_select}
+  FROM \`${PROJECT}.${source_table}\` s
+  ${enrichment_join}
+  WHERE s.product_tier = 'Tier 1'
+    AND FORMAT_DATE('%Y-%m', s.month) = '${month}'
+    AND s.ecommerce_platform $(platform_match_clause "$platform_titlecase")
 ),
 qa_state AS (
   -- product_id_dict_qa is INSERT-ONLY -- a product can have many historical rows, not one. A raw
@@ -123,6 +152,7 @@ qa_state AS (
 ),
 ${filter_cte}prioritized AS (
   SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly, sc.ecommerce_platform,
+         sc.item_description, sc.product_attributes_attrs,
     CASE
       ${filter_priority_check}WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
       WHEN qs.has_unconfident_pending AND NOT qs.has_confident AND NOT qs.has_terminal THEN 1
@@ -202,7 +232,8 @@ STEP 0 -- The full worklist has ALREADY been materialized for you at
 ${worklist_file}, exactly ${worklist_count} rows, one JSON object per line (JSONL) -- do NOT query
 BigQuery to re-fetch it, and do NOT trust any other row count than ${worklist_count}. Read the file
 (in slices if it's too large for one Read) rather than querying BigQuery for it. Each line has:
-product_id, sku_name, image, gmv_monthly, ecommerce_platform, priority. It is already scoped to
+product_id, sku_name, image, gmv_monthly, ecommerce_platform,
+item_description, product_attributes_attrs, priority. It is already scoped to
 product_tier = 'Tier 1' and prioritized (unreviewed rows before agent-flagged-unconfident retry
 rows, both by gmv_monthly descending) -- process it in that order. If you cannot account for all
 ${worklist_count} rows by the end of your turn budget, explicitly report status: partial (or
@@ -244,8 +275,12 @@ STEP 2 -- For each product in the worklist, in order:
       If the download fails, or the downloaded file is not a readable image (curl happily writes
       a 404 HTML body into a .jpg), say so explicitly in your reasoning for that product and
       treat it as TEXT-ONLY -- which is by itself grounds to mark it unconfident in 2d.
-      Then, with the image + sku_name together -- does this product genuinely belong in
-      "${dataset}"?
+      Then, with the image + sku_name + item_description + product_attributes_attrs together (the
+      worklist's own columns; product_attributes_attrs is a compact "name=value; name=value" string
+      of the product's real Shopee attributes, e.g. brand/size -- not raw JSON;
+      item_description/product_attributes_attrs are Shopee-only signal and NULL on other platforms
+      -- treat NULL as simply having no extra signal, not as a problem) -- does this product
+      genuinely belong in "${dataset}"?
       NO  -> write {product_id, ecommerce_platform, sku_name, reason} to \`${PROJECT}.${filter_table}\`
              (this dataset's OWN filter table -- never write to a different dataset's filter table
              even if the Sheet cross-references one for read context), _meta stamped
@@ -459,12 +494,13 @@ main() {
 
   # source_table here is master_table_prod (Sheet column AC, no "_dev" suffix) -- the ONLY
   # difference in table resolution vs v1, which uses `table` (AB). Everything else is identical.
-  local source_table qa_table dict_table filter_table_config product_id_dict
+  local source_table qa_table dict_table filter_table_config product_id_dict enrichment_table
   source_table=$(echo "$category_json" | jq -r '.master_table_prod')
   qa_table=$(echo "$category_json" | jq -r '.product_id_dict_qa')
   dict_table=$(echo "$category_json" | jq -r '.dict')
   filter_table_config=$(echo "$category_json" | jq -r '.filter_table')
   product_id_dict=$(echo "$category_json" | jq -r '.product_id_dict')
+  enrichment_table=$(echo "$category_json" | jq -r '."0"')
   local filter_table
   filter_table=$(primary_filter_table "$filter_table_config" "$dataset")
   log "Config resolved: source_table=${source_table}, qa_table=${qa_table}, dict_table=${dict_table}, filter_table=${filter_table}"
@@ -505,7 +541,7 @@ main() {
 
   local meili_index="${dataset}_taxonomy_qa"
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$max_rows" "$filter_table")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table")
 
   # Materialize the FULL worklist to a file for Claude to Read -- same rationale as v1: handing
   # Claude raw SQL to re-run risks output truncation on large worklists silently passing as
