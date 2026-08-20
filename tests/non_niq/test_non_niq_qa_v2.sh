@@ -105,7 +105,7 @@ fi
 echo "ALL TESTS PASSED (part 1: SQL builders)"
 
 # --- build_qa_prompt ---
-prompt=$(build_qa_prompt "cookiesbiscuit" "shopee" "cookiesbiscuit.master_cookiesbiscuit_id" \
+prompt=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.master_cookiesbiscuit_id" \
   "cookiesbiscuitlemonilo.product_id_dict_qa" "cookiesbiscuitlemonilo.cookiesbiscuitlemonilo_dict" \
   "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \
   "prod_id" "sku_type_complete" "keywords_typo" "cookiesbiscuit_taxonomy_qa" "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" \
@@ -147,7 +147,7 @@ if grep -qi "qa_status = 'Reviewed'\|run the qa_status UPDATE\|SET qa_status" <<
 fi
 echo "$prompt" | grep -qF "Never write to \`qa_status\`" || fail "prompt's Hard rules must explicitly state qa_status is never written by this harness"
 
-prompt_nodict=$(build_qa_prompt "cookiesbiscuit" "shopee" "cookiesbiscuit.master_cookiesbiscuit_id" \
+prompt_nodict=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.master_cookiesbiscuit_id" \
   "cookiesbiscuitlemonilo.product_id_dict_qa" "cookiesbiscuitlemonilo.cookiesbiscuitlemonilo_dict" \
   "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \
   "prod_id" "sku_type_complete" "keywords_typo" "cookiesbiscuit_taxonomy_qa" "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" \
@@ -195,7 +195,10 @@ if grep -qi "SET qa_status" <<< "$script_src"; then
   fail "main() (v2) must never write to qa_status -- that's owned by an external process now"
 fi
 grep -qF -- '--max_rows=1000000' <<< "$script_src" || fail "main() (v2) must pass --max_rows to bq query when materializing the worklist"
-grep -qF "worklist_file=\"/tmp/\${dataset}_\${platform}_v2_full_worklist.jsonl\"" <<< "$script_src" || fail "main() (v2) must materialize the worklist to a v2-distinctly-named file"
+grep -qF 'local dataset="$1" platform="$2" country="${3:-ID}"' <<< "$script_src" || fail "main() (v2) must accept an optional COUNTRY positional arg, defaulting to ID"
+grep -qF 'categories --country "$country"' <<< "$script_src" || fail "main() (v2) must pass the resolved country through to non_niq_helper.py categories"
+grep -qF 'country="${country^^}"' <<< "$script_src" || fail "main() (v2) must uppercase a lowercase COUNTRY arg (e.g. th -> TH) before matching the Sheet"
+grep -qF "worklist_file=\"/tmp/\${dataset}_\${platform}_\${country}_v2_full_worklist.jsonl\"" <<< "$script_src" || fail "main() (v2) must materialize the worklist to a v2-distinctly-named, country-scoped file"
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() (v2) must emit NOTHING_TO_DO when the worklist is empty"
 grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() (v2) must emit the post-run signal derived from decide_queue_signal"
 grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() (v2) must tolerate a non-zero claude exit"

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: script/non_niq/non_niq_qa_v2.sh <DATASET> <PLATFORM> [MAX_TURNS] [MAX_ROWS]
+# Usage: script/non_niq/non_niq_qa_v2.sh <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS]
 # e.g.  script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee
-#       script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee 500 400
+#       script/non_niq/non_niq_qa_v2.sh lighting shopee TH
+#       script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee ID 500 400
 #
 # v2 differs from non_niq_qa.sh (v1) in exactly one respect: how the worklist is SOURCED.
 # v1 reads the Sheet's `table` (AB, "..._dev") column and computes top-90%-cumulative-GMV itself
@@ -19,6 +20,13 @@ set -euo pipefail
 
 PROJECT="sincere-hearth-273704"
 MEILI_URL="http://34.124.146.29:7700"
+
+# One line per phase transition -- enough to tell (from outside) whether the script is still
+# resolving config, waiting on a bq query, or has handed off to the claude subprocess, without
+# spamming a line per row/product (that's claude's own transcript, not this wrapper's job).
+log() {
+  echo "[$(date '+%H:%M:%S')] $*"
+}
 
 # Resolves regardless of cwd -- non_niq_helper.py needs google-cloud-bigquery and
 # sentence-transformers for real (columns/retrieve), so this must be an interpreter that actually
@@ -149,9 +157,9 @@ primary_filter_table() {
 }
 
 build_qa_prompt() {
-  local dataset="$1" platform="$2" source_table="$3" qa_table="$4" dict_table="$5" filter_table="$6"
-  local qa_pk_col="$7" dict_identity_col="$8" dict_typo_col="$9" meili_index="${10}" worklist_file="${11}"
-  local worklist_count="${12}" product_id_dict="${13}"
+  local dataset="$1" platform="$2" country="$3" source_table="$4" qa_table="$5" dict_table="$6" filter_table="$7"
+  local qa_pk_col="$8" dict_identity_col="$9" dict_typo_col="${10}" meili_index="${11}" worklist_file="${12}"
+  local worklist_count="${13}" product_id_dict="${14}"
 
   # The QA table's identity column is `sku_type_complete` -- same resolution as v1.
   local qa_identity_col="sku_type_complete"
@@ -172,7 +180,7 @@ build_qa_prompt() {
 
   cat <<PROMPT
 Non-NIQ Agentic QA session (v2 -- product_tier-based worklist) for dataset=${dataset},
-platform=${platform}. See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the
+platform=${platform}, country=${country}. See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the
 decision tree, confidence loop, and _meta conventions this still implements -- read it in full
 before starting. The only difference from the original design: the worklist below comes from
 master_table_prod's precomputed product_tier column, not a self-computed GMV percentile.
@@ -205,16 +213,19 @@ STEP 1 -- Retrieve Meilisearch candidates for the WHOLE worklist in ONE batch ca
 per product. Embedding and searching are both mechanical, repetitive work -- they are done here in
 Python, not by you, so your per-product loop in STEP 2 never spends a tool call constructing a
 search request:
-  1. Derive /tmp/${dataset}_${platform}_v2_worklist.jsonl from ${worklist_file} (STEP 0's file) --
+  1. Derive /tmp/${dataset}_${platform}_${country}_v2_worklist.jsonl from ${worklist_file} (STEP 0's file) --
      one line per worklist product: {"id": "<product_id>", "text": "<sku_name>"}. This is itself
      mechanical -- don't hand-transcribe rows, run:
-       jq -c '{id: .product_id, text: .sku_name}' ${worklist_file} > /tmp/${dataset}_${platform}_v2_worklist.jsonl
+       jq -c '{id: .product_id, text: .sku_name}' ${worklist_file} > /tmp/${dataset}_${platform}_${country}_v2_worklist.jsonl
   2. Run:
      ${PYTHON_BIN} ${REPO_ROOT}/script/non_niq/non_niq_helper.py retrieve \\
-       --input-file /tmp/${dataset}_${platform}_v2_worklist.jsonl \\
-       --output-file /tmp/${dataset}_${platform}_v2_candidates.jsonl \\
+       --input-file /tmp/${dataset}_${platform}_${country}_v2_worklist.jsonl \\
+       --output-file /tmp/${dataset}_${platform}_${country}_v2_candidates.jsonl \\
        --meili-index ${meili_index}
-  3. Read back /tmp/${dataset}_${platform}_v2_candidates.jsonl -- one line per product:
+     Run this synchronously and wait for it to finish before continuing -- never background this
+     call or any other tool call in this session. This is a one-shot session with no way to resume;
+     ending your turn before completing the full worklist is not a valid outcome.
+  3. Read back /tmp/${dataset}_${platform}_${country}_v2_candidates.jsonl -- one line per product:
      {"id": "<product_id>", "candidates": [{"product_id","sku_name","brand","sku_type_complete"}, ...]}
      Each product's candidates are already the top hybrid-search results (confirmed exemplars from
      ${meili_index}) -- this is STEP 2c's retrieval, already done. Do not construct your own
@@ -225,8 +236,8 @@ STEP 2 -- For each product in the worklist, in order:
   2a. RELEVANT to this category? This judgment is MULTIMODAL -- you must actually LOOK at the
       product image, not just read its URL. The image URL is the worklist's \`image\` column.
       For each product, download it to a local file and then open that file with the Read tool:
-        curl -sSL --max-time 30 "<image_url>" -o /tmp/${dataset}_v2_<product_id>.jpg
-        (then: Read /tmp/${dataset}_v2_<product_id>.jpg)
+        curl -sSL --max-time 30 "<image_url>" -o /tmp/${dataset}_${platform}_${country}_v2_<product_id>.jpg
+        (then: Read /tmp/${dataset}_${platform}_${country}_v2_<product_id>.jpg)
       Do this BEFORE making any relevance / brand / sku_type judgment for the product. Text-only
       reasoning on sku_name is exactly the failure mode this harness exists to fix -- do not skip
       the download and infer from the URL or the name.
@@ -287,6 +298,11 @@ ${step2_block}
         If you ARE confident on this retry, write the confident shape as above.
 
 Hard rules, never relaxed:
+- NEVER background any tool call (no async/background execution, of any command, at any step) and
+  NEVER end your turn to wait for one to finish -- this is a single one-shot session with no way to
+  resume and no notification will ever arrive. Always issue tool calls synchronously and wait for
+  each one's real result before proceeding. Ending your turn before the full worklist is processed
+  is not a valid outcome under any circumstance.
 - Mapping table (any product_id_dict / prior-engine table) is NEVER modified by this harness --
   corrections only ever land in \`${PROJECT}.${qa_table}\`.
 - All writes use bq query DML, never the streaming API -- CLAUDE.md's 90-minute streaming-buffer
@@ -425,16 +441,18 @@ SUMMARY
 
 main() {
   if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS] [MAX_ROWS]" >&2
+    echo "Usage: $0 <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS]" >&2
     exit 1
   fi
-  local dataset="$1" platform="$2" max_turns="${3:-300}" max_rows="${4:-300}"
+  local dataset="$1" platform="$2" country="${3:-ID}" max_turns="${4:-300}" max_rows="${5:-300}"
+  country="${country^^}"
 
+  log "Resolving config Sheet row for ${dataset}/${platform}/${country}..."
   local category_json
-  category_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" categories --country ID \
+  category_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" categories --country "$country" \
     | jq -c --arg ds "$dataset" --arg pl "$platform" '.[] | select(.dataset == $ds and .ecommerce_platform == $pl)')
   if [[ -z "$category_json" ]]; then
-    echo "No active config Sheet row for dataset=${dataset} platform=${platform}" >&2
+    echo "No active config Sheet row for dataset=${dataset} platform=${platform} country=${country}" >&2
     echo "QUEUE_SIGNAL: FAILED"
     exit 1
   fi
@@ -449,6 +467,7 @@ main() {
   product_id_dict=$(echo "$category_json" | jq -r '.product_id_dict')
   local filter_table
   filter_table=$(primary_filter_table "$filter_table_config" "$dataset")
+  log "Config resolved: source_table=${source_table}, qa_table=${qa_table}, dict_table=${dict_table}, filter_table=${filter_table}"
 
   # '-' is the Sheet's "not configured" marker -- fatal for every table this v2 harness reads or
   # writes (source_table now included, since v2's worklist depends entirely on it).
@@ -463,15 +482,18 @@ main() {
 
   # Plain CLI args, not string-interpolated into a python -c source -- a table name can never
   # break out of anything, it's just an argv element.
+  log "Resolving qa/dict column names via BigQuery INFORMATION_SCHEMA..."
   local columns_json qa_pk_col dict_identity_col dict_typo_col
   columns_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" columns --project "$PROJECT" \
     --qa-table "$qa_table" --dict-table "$dict_table")
   qa_pk_col=$(echo "$columns_json" | jq -r '.qa_pk_col')
   dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
   dict_typo_col=$(echo "$columns_json" | jq -r '.dict_typo_col')
+  log "Columns resolved: qa_pk_col=${qa_pk_col}, dict_identity_col=${dict_identity_col}, dict_typo_col=${dict_typo_col}"
 
   # Explicit failure checks, not bare `set -e` reliance -- same rationale as v1: a silent bq
   # failure inside a `var=$(...)` reassignment looks like a hang, not an error, under set -e alone.
+  log "Querying BigQuery for the latest month on ${source_table}/${platform}..."
   local month
   if ! month=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
     "$(default_month_query "$source_table" "$platform")" | tail -1); then
@@ -479,6 +501,7 @@ main() {
     echo "QUEUE_SIGNAL: FAILED"
     exit 1
   fi
+  log "Latest month resolved: ${month}"
 
   local meili_index="${dataset}_taxonomy_qa"
   local query
@@ -488,10 +511,11 @@ main() {
   # Claude raw SQL to re-run risks output truncation on large worklists silently passing as
   # status: partial -> QUEUE_SIGNAL: DONE. --max_rows=1000000 is NOT optional -- bq query silently
   # defaults to --max_rows=100 otherwise (v1 confirmed this live).
-  local worklist_file="/tmp/${dataset}_${platform}_v2_full_worklist.jsonl"
+  log "Querying BigQuery to materialize the worklist (product_tier=Tier 1, limit=${max_rows})..."
+  local worklist_file="/tmp/${dataset}_${platform}_${country}_v2_full_worklist.jsonl"
   if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=json --max_rows=1000000 \
     "$query" | jq -c '.[]' > "$worklist_file"; then
-    echo "bq query failed while materializing the worklist for ${dataset}/${platform} (v2) -- see bq's error above." >&2
+    echo "bq query failed while materializing the worklist for ${dataset}/${platform}/${country} (v2) -- see bq's error above." >&2
     echo "QUEUE_SIGNAL: FAILED"
     exit 1
   fi
@@ -500,24 +524,31 @@ main() {
   worklist_count=$(wc -l < "$worklist_file" | tr -d ' ')
 
   if [[ "$worklist_count" == "0" ]]; then
-    echo "No in-scope worklist for ${dataset}/${platform}/${month} (v2, product_tier=Tier 1) -- nothing to do."
+    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, product_tier=Tier 1) -- nothing to do."
     rm -f "$worklist_file"
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
     exit 0
   fi
 
-  echo "${dataset}/${platform} (v2), month=${month}, worklist_count=${worklist_count}"
+  log "Worklist materialized: ${worklist_count} rows (${dataset}/${platform}/${country}, month=${month})"
 
   local prompt
-  prompt=$(build_qa_prompt "$dataset" "$platform" "$source_table" "$qa_table" "$dict_table" \
+  prompt=$(build_qa_prompt "$dataset" "$platform" "$country" "$source_table" "$qa_table" "$dict_table" \
     "$filter_table" "$qa_pk_col" "$dict_identity_col" "$dict_typo_col" "$meili_index" "$worklist_file" \
     "$worklist_count" "$product_id_dict")
+
+  # claude -p --output-format json buffers ALL of its output until the subprocess exits -- there is
+  # no incremental progress from here until it returns, potentially several minutes for a large
+  # worklist (it embeds+retrieves via Meilisearch, then works the per-product QA loop internally).
+  # Logged explicitly so that gap reads as "expected, still running" rather than "hung".
+  log "Delegating to claude (max_turns=${max_turns}) -- embeds+retrieves via Meilisearch, then runs the per-product QA loop. No further progress output until it returns."
 
   # `|| true` is load-bearing under `set -e` -- same rationale as v1: a non-zero claude exit can
   # still follow real BigQuery writes, and dying here would swallow the transcript that says what
   # was written.
   local claude_output
   claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt") || true
+  log "claude subprocess returned, formatting summary..."
   echo "$claude_output"
   format_result_summary "$claude_output"
 

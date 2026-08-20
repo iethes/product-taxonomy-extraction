@@ -274,6 +274,9 @@ search request:
        --input-file /tmp/${dataset}_${platform}_worklist.jsonl \\
        --output-file /tmp/${dataset}_${platform}_candidates.jsonl \\
        --meili-index ${meili_index}
+     Run this synchronously and wait for it to finish before continuing -- never background this
+     call or any other tool call in this session. This is a one-shot session with no way to resume;
+     ending your turn before completing the full worklist is not a valid outcome.
   3. Read back /tmp/${dataset}_${platform}_candidates.jsonl -- one line per product:
      {"id": "<product_id>", "candidates": [{"product_id","sku_name","brand","sku_type_complete"}, ...]}
      Each product's candidates are already the top hybrid-search results (confirmed exemplars from
@@ -347,6 +350,11 @@ ${step2_block}
         If you ARE confident on this retry, write the confident shape as above.
 
 Hard rules, never relaxed:
+- NEVER background any tool call (no async/background execution, of any command, at any step) and
+  NEVER end your turn to wait for one to finish -- this is a single one-shot session with no way to
+  resume and no notification will ever arrive. Always issue tool calls synchronously and wait for
+  each one's real result before proceeding. Ending your turn before the full worklist is processed
+  is not a valid outcome under any circumstance.
 - Mapping table (any product_id_dict / prior-engine table) is NEVER modified by this harness --
   corrections only ever land in \`${PROJECT}.${qa_table}\`.
 - All writes use bq query DML, never the streaming API -- CLAUDE.md's 90-minute streaming-buffer
