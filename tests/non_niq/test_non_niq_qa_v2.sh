@@ -196,6 +196,15 @@ if echo "$prompt" | grep -qi 'REPO_ROOT}/script/non_niq/dict_patterns/${dataset}
 fi
 echo "PASS: dict-column generation patterns"
 
+# --- STEP 3: batched Meilisearch write-back for newly-minted taxonomy entries ---
+echo "$prompt" | grep -qF "STEP 3 -- Meilisearch write-back" || fail "prompt must include STEP 3 for Meilisearch write-back"
+echo "$prompt" | grep -qF "non_niq_helper.py index" || fail "STEP 3 must invoke non_niq_helper.py's index subcommand"
+echo "$prompt" | grep -qF -- "--meili-index cookiesbiscuit_taxonomy_qa" || fail "STEP 3 must pass the resolved meili_index to the index command"
+echo "$prompt" | grep -qi "never index an unconfident guess" || fail "STEP 3 must explicitly exclude unconfident guesses from indexing"
+echo "$prompt" | grep -qi "zero qualifying products, skip" || fail "STEP 3 must instruct skipping the call entirely when there's nothing to index"
+echo "$prompt" | grep -qi "never one call per product" || fail "STEP 3 must state the batch-not-per-product rule, same as STEP 1"
+echo "PASS: STEP 3 Meilisearch write-back"
+
 prompt_nodict=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.master_cookiesbiscuit_id" \
   "cookiesbiscuitlemonilo.product_id_dict_qa" "cookiesbiscuitlemonilo.cookiesbiscuitlemonilo_dict" \
   "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \

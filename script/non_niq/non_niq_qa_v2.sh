@@ -353,6 +353,24 @@ ${step2_block}
         -- this is terminal, the product will not re-enter future worklists for this harness.
         If you ARE confident on this retry, write the confident shape as above.
 
+STEP 3 -- Meilisearch write-back for newly-minted taxonomy entries. After STEP 2 finishes, some
+products may have (a) required a brand-new \`${dict_table}\` entry (STEP 2c's NO branch) AND
+(b) ended up recorded \`qa_confidence: "confident"\` in STEP 2d -- these are the ones worth making
+searchable for future sessions. Every other product (re-points, filtered-out, unconfident) is
+skipped -- never index an unconfident guess.
+  1. Build one JSONL file of every qualifying product from this session, one line each --
+     you already have these values from your own STEP 2 writes, no requery needed:
+     {"product_id": "<product_id>", "sku_name": "<sku_name>", "sku_type_complete": "<value written to qa_table>", "brand": "<value written to qa_table>"}
+     at /tmp/${dataset}_${platform}_${country}_v2_new_entries.jsonl. If there are
+     zero qualifying products, skip this step entirely -- do not run the command below with an
+     empty or missing file.
+  2. Run ONE batch call (never one call per product -- same rationale as STEP 1, model load
+     dominates cost, not the embedding itself):
+     ${PYTHON_BIN} ${REPO_ROOT}/script/non_niq/non_niq_helper.py index \\
+       --input-file /tmp/${dataset}_${platform}_${country}_v2_new_entries.jsonl \\
+       --meili-index ${meili_index}
+     Run this synchronously and wait for it to finish, same as every other tool call this session.
+
 Hard rules, never relaxed:
 - NEVER background any tool call (no async/background execution, of any command, at any step) and
   NEVER end your turn to wait for one to finish -- this is a single one-shot session with no way to
