@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: script/non_niq/non_niq_qa_v2.sh <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS]
+# Usage: script/non_niq/non_niq_qa_v2.sh <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS] [KATEGORI]
 # e.g.  script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee
 #       script/non_niq/non_niq_qa_v2.sh lighting shopee TH
 #       script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee ID 500 400
+#       script/non_niq/non_niq_qa_v2.sh lighting shopee ID 300 300 "Connected Light"
+#
+# KATEGORI, if given, adds an exact-match filter on source_table's own `kategori` column (a
+# per-category sub-scope some master_table_prod tables carry, e.g. lighting's "Connected Light")
+# on top of the existing product_tier='Tier 1' scoping -- optional because most datasets don't
+# have this column at all.
 #
 # v2 differs from non_niq_qa.sh (v1) in exactly one respect: how the worklist is SOURCED.
 # v1 reads the Sheet's `table` (AB, "..._dev") column and computes top-90%-cumulative-GMV itself
@@ -21,18 +27,17 @@ set -euo pipefail
 PROJECT="sincere-hearth-273704"
 MEILI_URL="http://34.124.146.29:7700"
 
-# One line per phase transition -- enough to tell (from outside) whether the script is still
-# resolving config, waiting on a bq query, or has handed off to the claude subprocess, without
-# spamming a line per row/product (that's claude's own transcript, not this wrapper's job).
-log() {
-  echo "[$(date '+%H:%M:%S')] $*"
-}
-
 # Resolves regardless of cwd -- non_niq_helper.py needs google-cloud-bigquery and
 # sentence-transformers for real (columns/retrieve), so this must be an interpreter that actually
 # has them: this repo's own uv-managed .venv, not bare `python3` off PATH.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${REPO_ROOT}/.venv/bin/python3"
+
+# One line per phase transition -- enough to tell (from outside) whether the script is still
+# resolving config, waiting on a bq query, or has handed off to the claude subprocess, without
+# spamming a line per row/product (that's claude's own transcript, not this wrapper's job). Now
+# the shared log() (level + full timestamp, always stderr) instead of a local HH:MM:SS-only copy.
+source "${REPO_ROOT}/script/lib/common.sh"
 
 # Confirmed live: BigQuery's ecommerce_platform has a distinct 'Tokopedia | Shop' value
 # (Tokopedia's own first-party channel) alongside plain 'Tokopedia', with NO separate config
@@ -71,6 +76,7 @@ worklist_query() {
   # worklist. 300 is the same safe default.
   local row_limit="${7:-300}"
   local filter_table="${8:-}"
+  local kategori="${9:-}"
   local platform_titlecase="${platform^}"
   # item_description/product_attributes_attrs enrichment is Shopee-only by data availability --
   # ported VERBATIM from non_niq_qa.sh's worklist_query (v1), already debugged there (confirmed
@@ -118,6 +124,11 @@ worklist_query() {
     filter_priority_check="WHEN fs.product_id IS NOT NULL THEN NULL
       "
   fi
+  local kategori_clause=""
+  if [[ -n "$kategori" ]]; then
+    kategori_clause="    AND s.kategori = '${kategori}'
+"
+  fi
   cat <<SQL
 WITH ${enrichment_cte_and_join}scoped AS (
   SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image, s.ecommerce_platform, s.qa_status, s.gmv_monthly, ${enrichment_select}
@@ -126,7 +137,7 @@ WITH ${enrichment_cte_and_join}scoped AS (
   WHERE s.product_tier = 'Tier 1'
     AND FORMAT_DATE('%Y-%m', s.month) = '${month}'
     AND s.ecommerce_platform $(platform_match_clause "$platform_titlecase")
-),
+${kategori_clause}),
 qa_state AS (
   -- product_id_dict_qa is INSERT-ONLY -- a product can have many historical rows, not one. A raw
   -- SELECT (no dedup) fans out the LEFT JOIN below: a product with an OLD unconfident row and a
@@ -189,7 +200,7 @@ primary_filter_table() {
 build_qa_prompt() {
   local dataset="$1" platform="$2" country="$3" source_table="$4" qa_table="$5" dict_table="$6" filter_table="$7"
   local qa_pk_col="$8" dict_identity_col="$9" dict_typo_col="${10}" meili_index="${11}" worklist_file="${12}"
-  local worklist_count="${13}" product_id_dict="${14}"
+  local worklist_count="${13}" product_id_dict="${14}" tmp_tag="${15}"
 
   # The QA table's identity column is `sku_type_complete` -- same resolution as v1.
   local qa_identity_col="sku_type_complete"
@@ -244,19 +255,19 @@ STEP 1 -- Retrieve Meilisearch candidates for the WHOLE worklist in ONE batch ca
 per product. Embedding and searching are both mechanical, repetitive work -- they are done here in
 Python, not by you, so your per-product loop in STEP 2 never spends a tool call constructing a
 search request:
-  1. Derive /tmp/${dataset}_${platform}_${country}_v2_worklist.jsonl from ${worklist_file} (STEP 0's file) --
+  1. Derive /tmp/${tmp_tag}_v2_worklist.jsonl from ${worklist_file} (STEP 0's file) --
      one line per worklist product: {"id": "<product_id>", "text": "<sku_name>"}. This is itself
      mechanical -- don't hand-transcribe rows, run:
-       jq -c '{id: .product_id, text: .sku_name}' ${worklist_file} > /tmp/${dataset}_${platform}_${country}_v2_worklist.jsonl
+       jq -c '{id: .product_id, text: .sku_name}' ${worklist_file} > /tmp/${tmp_tag}_v2_worklist.jsonl
   2. Run:
      ${PYTHON_BIN} ${REPO_ROOT}/script/non_niq/non_niq_helper.py retrieve \\
-       --input-file /tmp/${dataset}_${platform}_${country}_v2_worklist.jsonl \\
-       --output-file /tmp/${dataset}_${platform}_${country}_v2_candidates.jsonl \\
+       --input-file /tmp/${tmp_tag}_v2_worklist.jsonl \\
+       --output-file /tmp/${tmp_tag}_v2_candidates.jsonl \\
        --meili-index ${meili_index}
      Run this synchronously and wait for it to finish before continuing -- never background this
      call or any other tool call in this session. This is a one-shot session with no way to resume;
      ending your turn before completing the full worklist is not a valid outcome.
-  3. Read back /tmp/${dataset}_${platform}_${country}_v2_candidates.jsonl -- one line per product:
+  3. Read back /tmp/${tmp_tag}_v2_candidates.jsonl -- one line per product:
      {"id": "<product_id>", "candidates": [{"product_id","sku_name","brand","sku_type_complete"}, ...]}
      Each product's candidates are already the top hybrid-search results (confirmed exemplars from
      ${meili_index}) -- this is STEP 2c's retrieval, already done. Do not construct your own
@@ -267,8 +278,8 @@ STEP 2 -- For each product in the worklist, in order:
   2a. RELEVANT to this category? This judgment is MULTIMODAL -- you must actually LOOK at the
       product image, not just read its URL. The image URL is the worklist's \`image\` column.
       For each product, download it to a local file and then open that file with the Read tool:
-        curl -sSL --max-time 30 "<image_url>" -o /tmp/${dataset}_${platform}_${country}_v2_<product_id>.jpg
-        (then: Read /tmp/${dataset}_${platform}_${country}_v2_<product_id>.jpg)
+        curl -sSL --max-time 30 "<image_url>" -o /tmp/${tmp_tag}_v2_<product_id>.jpg
+        (then: Read /tmp/${tmp_tag}_v2_<product_id>.jpg)
       Do this BEFORE making any relevance / brand / sku_type judgment for the product. Text-only
       reasoning on sku_name is exactly the failure mode this harness exists to fix -- do not skip
       the download and infer from the URL or the name.
@@ -361,13 +372,13 @@ skipped -- never index an unconfident guess.
   1. Build one JSONL file of every qualifying product from this session, one line each --
      you already have these values from your own STEP 2 writes, no requery needed:
      {"product_id": "<product_id>", "sku_name": "<sku_name>", "sku_type_complete": "<value written to qa_table>", "brand": "<value written to qa_table>"}
-     at /tmp/${dataset}_${platform}_${country}_v2_new_entries.jsonl. If there are
+     at /tmp/${tmp_tag}_v2_new_entries.jsonl. If there are
      zero qualifying products, skip this step entirely -- do not run the command below with an
      empty or missing file.
   2. Run ONE batch call (never one call per product -- same rationale as STEP 1, model load
      dominates cost, not the embedding itself):
      ${PYTHON_BIN} ${REPO_ROOT}/script/non_niq/non_niq_helper.py index \\
-       --input-file /tmp/${dataset}_${platform}_${country}_v2_new_entries.jsonl \\
+       --input-file /tmp/${tmp_tag}_v2_new_entries.jsonl \\
        --meili-index ${meili_index}
      Run this synchronously and wait for it to finish, same as every other tool call this session.
 
@@ -433,6 +444,17 @@ extract_result_json() {
     fi
   fi
   echo "$result_json"
+}
+
+extract_rows_created() {
+  local claude_output="$1"
+  local result_json
+  result_json=$(extract_result_json "$claude_output")
+  if [[ -z "$result_json" ]]; then
+    echo "0"
+    return
+  fi
+  echo "$result_json" | jq -r '.rows_created_in_dict // 0' 2>/dev/null || echo "0"
 }
 
 decide_queue_signal() {
@@ -515,19 +537,20 @@ SUMMARY
 
 main() {
   if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS]" >&2
+    echo "Usage: $0 <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS] [KATEGORI]" >&2
     exit 1
   fi
-  local dataset="$1" platform="$2" country="${3:-ID}" max_turns="${4:-300}" max_rows="${5:-300}"
+  local dataset="$1" platform="$2" country="${3:-ID}" max_turns="${4:-300}" max_rows="${5:-300}" kategori="${6:-}"
   country="${country^^}"
 
-  log "Resolving config Sheet row for ${dataset}/${platform}/${country}..."
+  log INFO "Resolving config Sheet row for ${dataset}/${platform}/${country}..."
   local category_json
   category_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" categories --country "$country" \
     | jq -c --arg ds "$dataset" --arg pl "$platform" '.[] | select(.dataset == $ds and .ecommerce_platform == $pl)')
   if [[ -z "$category_json" ]]; then
     echo "No active config Sheet row for dataset=${dataset} platform=${platform} country=${country}" >&2
     echo "QUEUE_SIGNAL: FAILED"
+    emit_result "${dataset}:${platform}" "FAILED" "No active config Sheet row for country=${country}"
     exit 1
   fi
 
@@ -542,7 +565,7 @@ main() {
   enrichment_table=$(echo "$category_json" | jq -r '."0"')
   local filter_table
   filter_table=$(primary_filter_table "$filter_table_config" "$dataset")
-  log "Config resolved: source_table=${source_table}, qa_table=${qa_table}, dict_table=${dict_table}, filter_table=${filter_table}"
+  log INFO "Config resolved: source_table=${source_table}, qa_table=${qa_table}, dict_table=${dict_table}, filter_table=${filter_table}$( [[ -n "$kategori" ]] && echo ", kategori=${kategori}" )"
 
   # '-' is the Sheet's "not configured" marker -- fatal for every table this v2 harness reads or
   # writes (source_table now included, since v2's worklist depends entirely on it).
@@ -551,47 +574,63 @@ main() {
     if [[ "${t#*=}" == "-" || "${t#*=}" == "null" || -z "${t#*=}" ]]; then
       echo "Config Sheet row for dataset=${dataset} platform=${platform} has unconfigured ${t%%=*} ('${t#*=}') -- cannot run QA v2." >&2
       echo "QUEUE_SIGNAL: FAILED"
+      emit_result "${dataset}:${platform}" "FAILED" "Unconfigured ${t%%=*} in config Sheet row"
       exit 1
     fi
   done
 
   # Plain CLI args, not string-interpolated into a python -c source -- a table name can never
   # break out of anything, it's just an argv element.
-  log "Resolving qa/dict column names via BigQuery INFORMATION_SCHEMA..."
+  log INFO "Resolving qa/dict column names via BigQuery INFORMATION_SCHEMA..."
   local columns_json qa_pk_col dict_identity_col dict_typo_col
   columns_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" columns --project "$PROJECT" \
     --qa-table "$qa_table" --dict-table "$dict_table")
   qa_pk_col=$(echo "$columns_json" | jq -r '.qa_pk_col')
   dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
   dict_typo_col=$(echo "$columns_json" | jq -r '.dict_typo_col')
-  log "Columns resolved: qa_pk_col=${qa_pk_col}, dict_identity_col=${dict_identity_col}, dict_typo_col=${dict_typo_col}"
+  log INFO "Columns resolved: qa_pk_col=${qa_pk_col}, dict_identity_col=${dict_identity_col}, dict_typo_col=${dict_typo_col}"
 
   # Explicit failure checks, not bare `set -e` reliance -- same rationale as v1: a silent bq
   # failure inside a `var=$(...)` reassignment looks like a hang, not an error, under set -e alone.
-  log "Querying BigQuery for the latest month on ${source_table}/${platform}..."
+  log INFO "Querying BigQuery for the latest month on ${source_table}/${platform}..."
   local month
   if ! month=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
     "$(default_month_query "$source_table" "$platform")" | tail -1); then
     echo "bq query failed while resolving the latest month for ${source_table}/${platform} -- see bq's error above." >&2
     echo "QUEUE_SIGNAL: FAILED"
+    emit_result "${dataset}:${platform}" "FAILED" "bq query failed resolving latest month for ${source_table}/${platform}"
     exit 1
   fi
-  log "Latest month resolved: ${month}"
+  log INFO "Latest month resolved: ${month}"
 
   local meili_index="${dataset}_taxonomy_qa"
+
+  # All of this run's /tmp scratch files are keyed off this tag. MUST include kategori when set --
+  # without it, two concurrent kategori-sharded launches of the same dataset/platform/country (e.g.
+  # lighting/shopee/ID kategori="LED Lamps" vs kategori="Luminaires") collide on the exact same
+  # /tmp path and race-overwrite each other's worklist/candidates/new-entries files. Confirmed live:
+  # a real run saw its worklist file's row count change mid-read (300 -> empty -> 215) from a
+  # sibling shard's concurrent `bq query ... > "$worklist_file"` write. Sanitized because kategori
+  # is free-text from the Sheet (e.g. "Connected Light" has a space).
+  local tmp_tag="${dataset}_${platform}_${country}"
+  if [[ -n "$kategori" ]]; then
+    tmp_tag="${tmp_tag}_$(echo "$kategori" | tr -cs 'A-Za-z0-9' '_' | sed 's/^_//;s/_$//')"
+  fi
+
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$kategori")
 
   # Materialize the FULL worklist to a file for Claude to Read -- same rationale as v1: handing
   # Claude raw SQL to re-run risks output truncation on large worklists silently passing as
   # status: partial -> QUEUE_SIGNAL: DONE. --max_rows=1000000 is NOT optional -- bq query silently
   # defaults to --max_rows=100 otherwise (v1 confirmed this live).
-  log "Querying BigQuery to materialize the worklist (product_tier=Tier 1, limit=${max_rows})..."
-  local worklist_file="/tmp/${dataset}_${platform}_${country}_v2_full_worklist.jsonl"
+  log INFO "Querying BigQuery to materialize the worklist (product_tier=Tier 1, limit=${max_rows})..."
+  local worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"
   if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=json --max_rows=1000000 \
     "$query" | jq -c '.[]' > "$worklist_file"; then
     echo "bq query failed while materializing the worklist for ${dataset}/${platform}/${country} (v2) -- see bq's error above." >&2
     echo "QUEUE_SIGNAL: FAILED"
+    emit_result "${dataset}:${platform}" "FAILED" "bq query failed materializing worklist for ${dataset}/${platform}/${country}"
     exit 1
   fi
 
@@ -602,32 +641,55 @@ main() {
     echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, product_tier=Tier 1) -- nothing to do."
     rm -f "$worklist_file"
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
+    emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope worklist for ${dataset}/${platform}/${country}/${month}"
     exit 0
   fi
 
-  log "Worklist materialized: ${worklist_count} rows (${dataset}/${platform}/${country}, month=${month})"
+  log INFO "Worklist materialized: ${worklist_count} rows (${dataset}/${platform}/${country}, month=${month})"
 
   local prompt
   prompt=$(build_qa_prompt "$dataset" "$platform" "$country" "$source_table" "$qa_table" "$dict_table" \
     "$filter_table" "$qa_pk_col" "$dict_identity_col" "$dict_typo_col" "$meili_index" "$worklist_file" \
-    "$worklist_count" "$product_id_dict")
+    "$worklist_count" "$product_id_dict" "$tmp_tag")
 
   # claude -p --output-format json buffers ALL of its output until the subprocess exits -- there is
   # no incremental progress from here until it returns, potentially several minutes for a large
   # worklist (it embeds+retrieves via Meilisearch, then works the per-product QA loop internally).
   # Logged explicitly so that gap reads as "expected, still running" rather than "hung".
-  log "Delegating to claude (max_turns=${max_turns}) -- embeds+retrieves via Meilisearch, then runs the per-product QA loop. No further progress output until it returns."
+  log INFO "Delegating to claude (max_turns=${max_turns}) -- embeds+retrieves via Meilisearch, then runs the per-product QA loop. No further progress output until it returns."
 
   # `|| true` is load-bearing under `set -e` -- same rationale as v1: a non-zero claude exit can
   # still follow real BigQuery writes, and dying here would swallow the transcript that says what
   # was written.
   local claude_output
   claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt") || true
-  log "claude subprocess returned, formatting summary..."
+  log INFO "claude subprocess returned, formatting summary..."
   echo "$claude_output"
   format_result_summary "$claude_output"
 
-  echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"
+  # Sheet write-back: bash-invoked (not a Claude tool call), reading the same STEP 3 JSONL Claude
+  # already wrote for Meilisearch indexing -- never re-derives which rows are new. Non-fatal by
+  # design (`|| true`), same contract the removed Discord notifier had: a Sheets/BigQuery hiccup
+  # here must never fail the QA session or its QUEUE_SIGNAL.
+  local sheet_url rows_created new_entries_file
+  sheet_url=$(echo "$category_json" | jq -r '.taxonomy_url')
+  rows_created=$(extract_rows_created "$claude_output")
+  new_entries_file="/tmp/${tmp_tag}_v2_new_entries.jsonl"
+  if [[ "$rows_created" != "0" && -s "$new_entries_file" ]]; then
+    if [[ -n "$sheet_url" && "$sheet_url" != "-" && "$sheet_url" != "null" ]]; then
+      log INFO "Appending ${rows_created} newly-created dict row(s) to the taxonomy Sheet..."
+      "$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" append-sheet \
+        --input-file "$new_entries_file" --dict-table "$dict_table" --project "$PROJECT" \
+        --dataset "$dataset" --identity-col "$dict_identity_col" --sheet-url "$sheet_url" || true
+    else
+      log INFO "No taxonomy_url configured for ${dataset} -- skipping Sheet write-back."
+    fi
+  fi
+
+  local signal
+  signal=$(decide_queue_signal "$claude_output")
+  echo "QUEUE_SIGNAL: ${signal}"
+  emit_result "${dataset}:${platform}" "$signal" "QA v2 session finished" "rows_created=$(extract_rows_created "$claude_output")"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
