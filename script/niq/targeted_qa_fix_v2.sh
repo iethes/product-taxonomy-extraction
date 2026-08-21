@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
+
 # Usage: ./script/niq/targeted_qa_fix_v2.sh <TABLE> [BLOCK_SIZE] [MAX_TURNS]
 # e.g.  ./script/niq/targeted_qa_fix_v2.sh shopee_th_detergent
 #
@@ -71,7 +73,7 @@ decide_next_step() {
 
 mark_failed_qa() {
   local table="$1"
-  echo "Marking most recent ACTIVE targeted_qa_fix_v2 block for ${table} as FAILED_QA..." >&2
+  log WARN "Marking most recent ACTIVE targeted_qa_fix_v2 block for ${table} as FAILED_QA..."
   bq query --use_legacy_sql=false --project_id="${PROJECT}" \
     "UPDATE \`${PROJECT}.magpie_reference.sku_block_registry\`
      SET status = 'FAILED_QA'
@@ -84,7 +86,7 @@ mark_failed_qa() {
 
 run_universe_refresh() {
   local table="$1"
-  echo "Running universe refresh for ${table}..."
+  log INFO "Running universe refresh for ${table}..."
   bq query --use_legacy_sql=false --project_id="${PROJECT}" \
     "MERGE \`${PROJECT}.magpie_reference.universe_taxonomy_overlay\` t
      USING (
@@ -215,18 +217,18 @@ main() {
   QA_FIX_TABLE="$table"
   trap './script/niq/qa_coverage_report.sh "$QA_FIX_TABLE" || true' EXIT
 
-  echo "Building candidate-enriched worklist for ${table}..."
+  log INFO "Building candidate-enriched worklist for ${table}..."
   local worklist_json
   worklist_json=$(python3 script/niq/qa_v2_worklist.py --table "$table" --block-size "$block_size")
 
   if [[ "$worklist_json" == "[]" ]]; then
-    echo "No unlabelled/unconfident taxonomy entries for ${table} after fast-lane promotion -- nothing to do."
+    log INFO "No unlabelled/unconfident taxonomy entries for ${table} after fast-lane promotion -- nothing to do."
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
+    emit_result "$table" "NOTHING_TO_DO" "No unlabelled/unconfident taxonomy entries after fast-lane promotion"
     exit 0
   fi
 
-  echo "TARGETED QA FIX V2 STARTED (${category_key}, block_size=${block_size}, max_turns=${max_turns})"
-  echo "==========================="
+  log INFO "TARGETED QA FIX V2 STARTED (${category_key}, block_size=${block_size}, max_turns=${max_turns})"
   local prompt
   prompt=$(build_auto_discovery_prompt_v2 "$table" "$category_key" "$worklist_json" "$block_size")
 
@@ -240,9 +242,10 @@ main() {
   result_json=$(echo "$claude_output" | jq -r '.result // empty')
 
   if [[ -z "$result_json" ]]; then
-    echo "ERROR: claude -p produced no parseable .result field. Raw output:" >&2
+    log ERROR "claude -p produced no parseable .result field. Raw output:"
     echo "$claude_output" >&2
     mark_failed_qa "$table"
+    emit_result "$table" "FAILED" "claude -p produced no parseable .result field"
     exit 1
   fi
 
@@ -269,40 +272,45 @@ main() {
 
   case "$decision" in
     BLOCKED)
-      echo "STATUS: blocked. Claimed block left ACTIVE (nothing written) -- see blockers below."
+      log INFO "STATUS: blocked. Claimed block left ACTIVE (nothing written) -- see blockers below."
       echo "$result_json" | jq -r '.blockers[]?' >&2
       echo "QUEUE_SIGNAL: BLOCKED"
+      emit_result "$table" "BLOCKED" "Claimed block left ACTIVE, see blockers"
       exit 0
       ;;
     NOOP)
-      echo "STATUS: complete/partial with rows_created=0 -- nothing to gate or refresh. Block left ACTIVE."
+      log INFO "STATUS: complete/partial with rows_created=0 -- nothing to gate or refresh. Block left ACTIVE."
       echo "QUEUE_SIGNAL: DONE"
+      emit_result "$table" "DONE" "complete/partial with rows_created=0, nothing to gate or refresh"
       exit 0
       ;;
     MARK_FAILED)
-      echo "STATUS: failed or malformed. Marking block FAILED_QA." >&2
+      log ERROR "STATUS: failed or malformed. Marking block FAILED_QA."
       echo "$result_json" >&2
       mark_failed_qa "$table"
       echo "QUEUE_SIGNAL: FAILED"
+      emit_result "$table" "FAILED" "Session status failed or malformed, block marked FAILED_QA"
       exit 1
       ;;
     GATE_AND_REFRESH)
-      echo "STATUS: rows written -- running independent QA gates via script/niq/qa_report.sh..."
+      log INFO "STATUS: rows written -- running independent QA gates via script/niq/qa_report.sh..."
       if ./script/niq/qa_report.sh "$table"; then
         if run_universe_refresh "$table"; then
-          echo "============================"
-          echo "TARGETED QA FIX V2 FINISHED -- universe refreshed"
+          log INFO "TARGETED QA FIX V2 FINISHED -- universe refreshed"
           echo "QUEUE_SIGNAL: DONE"
+          emit_result "$table" "DONE" "Universe refreshed"
         else
-          echo "Universe refresh failed -- marking block FAILED_QA." >&2
+          log ERROR "Universe refresh failed -- marking block FAILED_QA."
           mark_failed_qa "$table"
           echo "QUEUE_SIGNAL: FAILED"
+          emit_result "$table" "FAILED" "Universe refresh failed"
           exit 1
         fi
       else
-        echo "QA gates failed -- marking block FAILED_QA, skipping universe refresh." >&2
+        log ERROR "QA gates failed -- marking block FAILED_QA, skipping universe refresh."
         mark_failed_qa "$table"
         echo "QUEUE_SIGNAL: FAILED"
+        emit_result "$table" "FAILED" "QA gates failed, block marked FAILED_QA"
         exit 1
       fi
       ;;
