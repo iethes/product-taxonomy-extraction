@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
+
 # Usage: ./script/niq/headless_taxonomy_v2.sh <TABLE> [MONTH] [MAX_TURNS]
 # Same scenario auto-detection as headless_taxonomy.sh (V1), but the worklist -- for BOTH scenarios -- is
 # fully pre-built by script/niq/headless_v2_worklist.py before claude -p is ever invoked, with each product
@@ -250,16 +252,17 @@ main() {
       "$(default_month_query "$table")" | tail -1)
   fi
 
-  echo "${table}"
-  echo "Resolved month: ${month}"
+  log INFO "Processing table: ${table}"
+  log INFO "Resolved month: ${month}"
 
   local gap_count
   gap_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
     "$(gap_count_query "$table" "$month")" | tail -1)
 
   if [[ "$gap_count" == "0" ]]; then
-    echo "No in-scope coverage gap for ${table}/${month} — nothing to do."
+    log INFO "No in-scope coverage gap for ${table}/${month} — nothing to do."
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
+    emit_result "$table" "NOTHING_TO_DO" "No in-scope coverage gap for ${table}/${month}"
     exit 0
   fi
 
@@ -273,20 +276,20 @@ main() {
   local block_size
   block_size=$(compute_block_size "$scenario" "$gap_count")
 
-  echo "Scenario: ${scenario} (existing_llm_rows=${existing_llm_rows}, gap_count=${gap_count}, block_size=${block_size}, max_turns=${max_turns})"
-  echo "Building candidate-enriched worklist for ${table}..."
+  log INFO "Scenario: ${scenario} (existing_llm_rows=${existing_llm_rows}, gap_count=${gap_count}, block_size=${block_size}, max_turns=${max_turns})"
+  log INFO "Building candidate-enriched worklist for ${table}..."
 
   local worklist_json
   worklist_json=$(python3 script/niq/headless_v2_worklist.py --table "$table" --scenario "$scenario" --month "$month" --block-size "$block_size")
 
   if [[ "$worklist_json" == "[]" ]]; then
-    echo "No worklist products for ${table} after candidate build — nothing to do."
+    log INFO "No worklist products for ${table} after candidate build — nothing to do."
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
+    emit_result "$table" "NOTHING_TO_DO" "No worklist products for ${table} after candidate build"
     exit 0
   fi
 
-  echo "TAXONOMY EXTRACTION STARTED (V2)"
-  echo "==========================="
+  log INFO "TAXONOMY EXTRACTION STARTED (V2, scenario=${scenario})"
 
   local prompt
   if [[ "$scenario" == "first_run" ]]; then
@@ -302,9 +305,11 @@ main() {
   claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" <<< "$prompt")
   echo "$claude_output"
 
-  echo "============================"
-  echo "TAXONOMY EXTRACTION FINISHED (V2)"
-  echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"
+  log INFO "TAXONOMY EXTRACTION FINISHED (V2)"
+  local signal
+  signal=$(decide_queue_signal "$claude_output")
+  echo "QUEUE_SIGNAL: ${signal}"
+  emit_result "$table" "$signal" "Taxonomy extraction v2 finished" "max_turns=${max_turns}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
