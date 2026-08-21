@@ -378,6 +378,12 @@ speed-first pass.
 `MAX_TURNS` is an optional 3rd CLI argument (`<TABLE> [MONTH] [MAX_TURNS]`, default 300) for scaling the
 session's turn budget on a large gap, e.g. `./script/niq/headless_taxonomy.sh shopee_th_suncare "" 800`.
 
+**V2 available:** `script/niq/headless_taxonomy_v2.sh` is a newer sibling that pre-fetches a
+candidate-enriched worklist (including reference candidates from sibling category tables in other
+countries) before `claude -p` runs, same pattern as `targeted_qa_fix_v2.sh`. See
+`docs/superpowers/specs/2026-08-21-headless-taxonomy-v2-cross-market-candidates-design.md`. V1
+(`headless_taxonomy.sh`, documented above) still works unchanged; V2 is not yet the default.
+
 **Confirmed out-of-scope products (`magpie_reference.category_scope_exceptions`).** A source table's rows
 aren't guaranteed to actually be the category they're filed under — e.g. cocoa/malt-powder listings inside
 `shopee_th_milk_powder`, or anti-hair-loss tonics inside `shopee_sg_hair_conditioner_or_treatment`. The
