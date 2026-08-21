@@ -2,7 +2,10 @@
 """Builds the candidate-enriched worklist for headless_taxonomy_v2.sh -- all pure SQL/Python, no LLM calls.
 Candidates come from the current table AND fuzzy-matched sibling category tables in other countries. See
 docs/superpowers/specs/2026-08-21-headless-taxonomy-v2-cross-market-candidates-design.md."""
+import argparse
+import json
 import re
+import sys
 from pathlib import Path
 
 from google.cloud import bigquery
@@ -173,3 +176,80 @@ def build_brief_markdown_query(category_key):
     """
     params = [bigquery.ScalarQueryParameter("category_key", "STRING", category_key)]
     return sql, params
+
+
+def run_query(client, sql, params):
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+    return [dict(row.items()) for row in client.query(sql, job_config=job_config).result()]
+
+
+def fetch_brief_markdown(client, table):
+    category_key = f"master_clean_niq.{table}"
+    sql, params = build_brief_markdown_query(category_key)
+    rows = run_query(client, sql, params)
+    return rows[0]["brief_markdown"] if rows else ""
+
+
+def assemble_worklist_json(rows, candidates_by_id):
+    worklist = []
+    for row in rows:
+        pid = row["product_id"]
+        worklist.append({
+            "product_id": pid,
+            "sku_name": row["sku_name"],
+            "merchant_name": row.get("merchant_name"),
+            "gmv": row["gmv_monthly"],
+            "candidates": candidates_by_id.get(pid, []),
+        })
+    return worklist
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--table", required=True)
+    parser.add_argument("--scenario", required=True, choices=["first_run", "top_up"])
+    parser.add_argument("--month", required=True)
+    parser.add_argument("--block-size", type=int, default=200)
+    args = parser.parse_args()
+
+    client = bigquery.Client(project=PROJECT)
+
+    all_tables_sql = f"SELECT table_name FROM `{PROJECT}.master_clean_niq.INFORMATION_SCHEMA.TABLES`"
+    all_tables = [r["table_name"] for r in run_query(client, all_tables_sql, [])]
+    siblings = find_sibling_tables(args.table, all_tables)
+    print(f"Sibling tables for {args.table}: {siblings}", file=sys.stderr)
+    scope_tables = [args.table] + [name for name, score in siblings]
+
+    if args.scenario == "top_up":
+        sql, params = build_topup_worklist_query(args.table, args.month, args.block_size)
+    else:
+        brief_markdown = fetch_brief_markdown(client, args.table)
+        exclude_merchants = extract_official_store_merchants(brief_markdown)
+        print(f"Excluding {len(exclude_merchants)} official-store merchants from Pass 2 pool", file=sys.stderr)
+        sql, params = build_first_run_candidate_pool_query(args.table, args.month, exclude_merchants, args.block_size)
+
+    rows = run_query(client, sql, params)
+    if not rows:
+        print("[]")
+        return
+
+    product_ids = [r["product_id"] for r in rows]
+    sku_names = [r["sku_name"] for r in rows]
+    cand_sql, cand_params = build_candidate_products_query(product_ids, sku_names, args.table, scope_tables)
+    cand_rows = run_query(client, cand_sql, cand_params)
+
+    candidates_by_id = {}
+    for r in cand_rows:
+        candidates_by_id.setdefault(r["worklist_product_id"], []).append({
+            "taxonomy_id": r["candidate_taxonomy_id"],
+            "canonical_name": r["candidate_canonical_name"],
+            "source_table": r["source_table"],
+            "match_tier": r["match_tier"],
+            "normalized_distance": r["normalized_distance"],
+        })
+
+    print(json.dumps(assemble_worklist_json(rows, candidates_by_id)))
+
+
+if __name__ == "__main__":
+    main()

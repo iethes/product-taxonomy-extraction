@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "script" / "niq"))
 from headless_v2_worklist import (
     parse_table_name, jaccard_similarity, find_sibling_tables, build_candidate_products_query,
     build_topup_worklist_query, extract_official_store_merchants,
-    build_first_run_candidate_pool_query, build_brief_markdown_query,
+    build_first_run_candidate_pool_query, build_brief_markdown_query, assemble_worklist_json,
 )
 
 
@@ -159,6 +159,22 @@ def test_build_brief_markdown_query_scopes_to_brief_task_type():
     sql, params = build_brief_markdown_query("master_clean_niq.shopee_id_adult_diapers")
     assert "task_type = 'BRIEF'" in sql
     assert {p.name for p in params} == {"category_key"}
+
+
+def test_assemble_worklist_json_defaults_missing_candidates_to_empty():
+    rows = [{"product_id": "P1", "sku_name": "Sku One", "merchant_name": "Store A", "gmv_monthly": 5000}]
+    result = assemble_worklist_json(rows, {})
+    assert result == [{
+        "product_id": "P1", "sku_name": "Sku One", "merchant_name": "Store A", "gmv": 5000, "candidates": [],
+    }]
+
+
+def test_assemble_worklist_json_attaches_candidates_by_product_id():
+    rows = [{"product_id": "P1", "sku_name": "Sku One", "merchant_name": None, "gmv_monthly": 100}]
+    candidates_by_id = {"P1": [{"taxonomy_id": "SKU-1", "canonical_name": "X", "source_table": "t",
+                                 "match_tier": "brand_match", "normalized_distance": 0.1}]}
+    result = assemble_worklist_json(rows, candidates_by_id)
+    assert result[0]["candidates"] == candidates_by_id["P1"]
 
 
 if __name__ == "__main__":
