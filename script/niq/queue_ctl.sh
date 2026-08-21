@@ -7,6 +7,7 @@ set -euo pipefail
 #   script/queue_ctl.sh list [--status queued|running|done|failed|blocked|cancelled]
 #   script/queue_ctl.sh priority <task_id> <new_priority>
 #   script/queue_ctl.sh cancel <task_id>
+#   script/queue_ctl.sh show <task_id>
 #
 # NOTE on loop_count: for targeted_qa_fix tasks in brief mode (a hand-written '## Targeted QA Fix
 # Brief' section in the category doc, not auto-discovery), the underlying script has no way to
@@ -52,6 +53,11 @@ build_priority_sql() {
 build_cancel_sql() {
   local task_id="$1"
   echo "UPDATE ${QUEUE_TABLE} SET status = 'cancelled', updated_at = now() WHERE id = ${task_id} AND status = 'queued' RETURNING id;"
+}
+
+build_show_sql() {
+  local task_id="$1"
+  echo "SELECT last_result FROM ${QUEUE_TABLE} WHERE id = ${task_id};"
 }
 
 cmd_submit() {
@@ -110,6 +116,19 @@ cmd_cancel() {
   echo "Task ${task_id} cancelled."
 }
 
+cmd_show() {
+  local task_id="$1"
+  local raw
+  raw=$(queue_psql "$(build_show_sql "$task_id")" -t -A)
+  if [[ -z "$raw" ]]; then
+    echo "Task ${task_id} not found or has no result yet." >&2
+    exit 1
+  fi
+  local repo_root
+  repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+  "${repo_root}/.venv/bin/python3" "${repo_root}/script/lib/format_result.py" <<< "$raw"
+}
+
 main() {
   source "$(dirname "$0")/../load_env.sh"
   QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"   # recompute now that .env is actually loaded -- the
@@ -125,8 +144,9 @@ main() {
     list) shift; cmd_list "$@" ;;
     priority) shift; cmd_priority "$@" ;;
     cancel) shift; cmd_cancel "$@" ;;
+    show) shift; cmd_show "$@" ;;
     *)
-      echo "Usage: $0 submit|list|priority|cancel ..." >&2
+      echo "Usage: $0 submit|list|priority|cancel|show ..." >&2
       exit 1
       ;;
   esac
