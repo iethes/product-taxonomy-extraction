@@ -67,3 +67,109 @@ def build_candidate_products_query(product_ids, sku_names, this_table, scope_tab
         bigquery.ScalarQueryParameter("n", "INT64", n),
     ]
     return sql, params
+
+
+def build_topup_worklist_query(table, month, block_size):
+    """Same worklist definition as V1's headless_taxonomy.sh worklist_query() -- 95%-cumulative-GMV
+    (GWP-zeroed), unmapped, category_scope_exceptions-excluded gap -- ported to a parameterized query."""
+    _validate_table(table)
+    sql = f"""
+    WITH base AS (
+      SELECT s.product_id, s.merchant_name, s.sku_name, s.gmv_monthly, s.flag_GWP,
+             pt.canonical_name AS canonical_name, exc.product_id AS excepted_product_id
+      FROM `{PROJECT}.master_clean_niq.{table}` s
+      LEFT JOIN `{PROJECT}.magpie_reference.product_taxonomy_map` ptm
+        ON ptm.product_id = s.product_id AND ptm.master_table = '{table}'
+      LEFT JOIN `{PROJECT}.magpie_reference.product_taxonomy` pt ON pt.taxonomy_id = ptm.taxonomy_id
+      LEFT JOIN `{PROJECT}.magpie_reference.category_scope_exceptions` exc
+        ON exc.product_id = s.product_id AND exc.master_table = '{table}'
+      WHERE FORMAT_DATE('%Y-%m', s.month) = @month
+      QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY s.product_id, s.model_id
+        ORDER BY CASE ptm.source WHEN 'LLM' THEN 1 WHEN 'HUMAN' THEN 2 ELSE 3 END, ptm.taxonomy_id ASC
+      ) = 1
+    ),
+    with_cumulative AS (
+      SELECT *,
+        ROUND(100.0 * SUM(CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END)
+                OVER (ORDER BY gmv_monthly DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+              / NULLIF(SUM(CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END) OVER (), 0), 2) AS cumulative_gmv_pct
+      FROM base
+    )
+    SELECT product_id, merchant_name, sku_name, gmv_monthly
+    FROM with_cumulative
+    WHERE cumulative_gmv_pct <= 95 AND canonical_name IS NULL AND excepted_product_id IS NULL
+    ORDER BY gmv_monthly DESC
+    LIMIT @block_size
+    """
+    params = [
+        bigquery.ScalarQueryParameter("month", "STRING", month),
+        bigquery.ScalarQueryParameter("block_size", "INT64", block_size),
+    ]
+    return sql, params
+
+
+_OFFICIAL_STORE_SECTION_RE = re.compile(r"## Official Store Allowlist.*?(?=\n## |\n---\n|\Z)", re.DOTALL)
+_MERCHANT_NAME_RE = re.compile(r"`([^`]+)`")
+
+
+def extract_official_store_merchants(brief_markdown):
+    """Pulls merchant names out of the category brief's '## Official Store Allowlist' markdown table (the
+    3rd pipe-delimited column, per docs/categories/_TEMPLATE.md's fixed format) -- not the brand or
+    brand_id columns, and not the free-text excluded-retailer bullet list below the table."""
+    section_match = _OFFICIAL_STORE_SECTION_RE.search(brief_markdown)
+    if not section_match:
+        return []
+    merchants = []
+    for line in section_match.group(0).splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cols = line.split("|")
+        if len(cols) < 4:
+            continue
+        merchant_col = cols[3]
+        merchants.extend(_MERCHANT_NAME_RE.findall(merchant_col))
+    return merchants
+
+
+def build_first_run_candidate_pool_query(table, month, exclude_merchants, block_size):
+    """The first_run Pass 2 target pool: 95%-cumulative-GMV in-scope products, excluding Official Store
+    Allowlist merchants (Pass 1 covers those directly via multimodal read -- they don't need text-candidate
+    reference)."""
+    _validate_table(table)
+    sql = f"""
+    WITH base AS (
+      SELECT s.product_id, s.merchant_name, s.sku_name, s.gmv_monthly, s.flag_GWP
+      FROM `{PROJECT}.master_clean_niq.{table}` s
+      WHERE FORMAT_DATE('%Y-%m', s.month) = @month
+        AND s.merchant_name NOT IN UNNEST(@exclude_merchants)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY s.product_id ORDER BY s.gmv_monthly DESC) = 1
+    ),
+    with_cumulative AS (
+      SELECT *,
+        ROUND(100.0 * SUM(CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END)
+                OVER (ORDER BY gmv_monthly DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+              / NULLIF(SUM(CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END) OVER (), 0), 2) AS cumulative_gmv_pct
+      FROM base
+    )
+    SELECT product_id, merchant_name, sku_name, gmv_monthly
+    FROM with_cumulative
+    WHERE cumulative_gmv_pct <= 95
+    ORDER BY gmv_monthly DESC
+    LIMIT @block_size
+    """
+    params = [
+        bigquery.ScalarQueryParameter("month", "STRING", month),
+        bigquery.ArrayQueryParameter("exclude_merchants", "STRING", exclude_merchants),
+        bigquery.ScalarQueryParameter("block_size", "INT64", block_size),
+    ]
+    return sql, params
+
+
+def build_brief_markdown_query(category_key):
+    sql = f"""
+    SELECT brief_markdown FROM `{PROJECT}.magpie_reference.category_brief`
+    WHERE category_key = @category_key AND task_type = 'BRIEF'
+    """
+    params = [bigquery.ScalarQueryParameter("category_key", "STRING", category_key)]
+    return sql, params
