@@ -3,10 +3,18 @@
 Candidates come from the current table AND fuzzy-matched sibling category tables in other countries. See
 docs/superpowers/specs/2026-08-21-headless-taxonomy-v2-cross-market-candidates-design.md."""
 import re
+from pathlib import Path
+
+from google.cloud import bigquery
 
 PROJECT = "sincere-hearth-273704"
 _SAFE_TABLE_NAME = re.compile(r"^[a-zA-Z0-9_]+$")
 _STOPWORDS = {"for", "and", "or", "of", "the", "a"}
+_SQL_DIR = Path(__file__).parent.parent.parent / "sql" / "queries"
+
+
+def _load_sql(filename):
+    return (_SQL_DIR / filename).read_text()
 
 
 def _validate_table(table):
@@ -47,3 +55,15 @@ def find_sibling_tables(this_table, all_tables, threshold=0.5):
             siblings.append((other, score))
     siblings.sort(key=lambda pair: -pair[1])
     return siblings
+
+
+def build_candidate_products_query(product_ids, sku_names, this_table, scope_tables, n=5):
+    sql = _load_sql("headless_v2_candidate_products.sql")
+    params = [
+        bigquery.ArrayQueryParameter("product_ids", "STRING", product_ids),
+        bigquery.ArrayQueryParameter("sku_names", "STRING", sku_names),
+        bigquery.ScalarQueryParameter("this_table", "STRING", this_table),
+        bigquery.ArrayQueryParameter("scope_tables", "STRING", scope_tables),
+        bigquery.ScalarQueryParameter("n", "INT64", n),
+    ]
+    return sql, params

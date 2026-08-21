@@ -2,7 +2,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "script" / "niq"))
-from headless_v2_worklist import parse_table_name, jaccard_similarity, find_sibling_tables
+from headless_v2_worklist import (
+    parse_table_name, jaccard_similarity, find_sibling_tables, build_candidate_products_query,
+)
 
 
 def test_parse_table_name_splits_platform_country_category():
@@ -75,6 +77,26 @@ def test_find_sibling_tables_sorts_by_score_descending():
     siblings = find_sibling_tables("shopee_id_adult_diapers", all_tables)
     scores = [score for name, score in siblings]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_build_candidate_products_query_binds_all_params():
+    sql, params = build_candidate_products_query(
+        product_ids=["P1", "P2"], sku_names=["Sku One", "Sku Two"],
+        this_table="shopee_id_adult_diapers", scope_tables=["shopee_id_adult_diapers", "shopee_th_adult_diapers"],
+    )
+    param_names = {p.name for p in params}
+    assert param_names == {"product_ids", "sku_names", "this_table", "scope_tables", "n"}
+    n_param = next(p for p in params if p.name == "n")
+    assert n_param.value == 5
+
+
+def test_build_candidate_products_query_sql_covers_both_tiers():
+    sql, params = build_candidate_products_query(["P1"], ["Sku"], "t", ["t"])
+    assert "brand_match" in sql
+    assert "text_only" in sql
+    assert "review_confidence" in sql
+    assert "source_table" in sql
+    assert "EDIT_DISTANCE" in sql
 
 
 if __name__ == "__main__":
