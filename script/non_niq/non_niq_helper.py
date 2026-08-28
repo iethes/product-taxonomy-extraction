@@ -38,16 +38,30 @@ script needs) -- subcommands, called directly from non_niq_qa.sh/non_niq_qa_v2.s
       doesn't exist yet. Input: one {"product_id","sku_name","sku_type_complete","brand"} per
       line. Batched at BATCH_SIZE per POST (a 1024-dim vector serialises to ~20KB of JSON, so a
       single POST would blow past Meilisearch's 100MB payload limit above a few thousand rows).
+
+  append-sheet --input-file DOCS.jsonl --dict-table dataset.dict --project P --dataset D
+      --identity-col COL --sheet-url URL
+      Called from non_niq_qa_v2.sh itself (not from inside the Claude subprocess) once Claude's
+      turn ends, using the same STEP 3 JSONL file the index command reads. Re-reads each entry's
+      row from BigQuery by (brand, identity_col=identity_value) -- trusts Claude only for WHICH
+      row to look up, never for the row's field values -- then appends it to the category's
+      taxonomy_url Google Sheet (from the config Sheet's taxonomy_url column), matching cells to
+      the target Sheet's own header row by column NAME rather than assuming the same column order
+      as the BigQuery table (confirmed live these differ, e.g. susububuk_dict vs its Sheet). A
+      missing/empty taxonomy_url for a category is a no-op, not an error.
 """
 import argparse
 import csv
 import io
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
 from google.cloud import bigquery
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 from sentence_transformers import SentenceTransformer
 
 MEILI_URL = "http://34.124.146.29:7700"
@@ -55,8 +69,16 @@ MODEL_NAME = "intfloat/multilingual-e5-large"
 BATCH_SIZE = 256
 EMBED_DIM = 1024
 
-DISCORD_CONTENT_LIMIT = 2000
-DISCORD_CELL_TRUNCATE = 200
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+# client-util@sincere-hearth-273704.iam.gserviceaccount.com -- ADC (gcloud user credentials)
+# can't be used here: gcloud's own OAuth client isn't Google-verified for the spreadsheets scope
+# and the consent screen hard-blocks the request (confirmed live 2026-08-20). Service accounts
+# don't hit that wall -- scopes are requested at token-mint time, not baked into a one-time
+# interactive consent grant.
+SHEET_KEY_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "keys", "client-util.json",
+)
 
 CONFIG_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vQfqTVdo1ubO40dBBGzECaXVruIefLZpfX6KSFVHzY2gXv2dE-VHDofMC2Q_1tY5LwOmYJPG0kwwxN4"
@@ -64,7 +86,7 @@ CONFIG_CSV_URL = (
 )
 
 ROW_FIELDS = ["category", "dataset", "ecommerce_platform", "table", "master_table_prod",
-              "product_id_dict_qa", "product_id_dict", "dict", "filter_table", "0"]
+              "product_id_dict_qa", "product_id_dict", "dict", "filter_table", "0", "taxonomy_url"]
 
 QA_PK_CANDIDATES = ["product_id", "prod_id"]
 DICT_IDENTITY_CANDIDATES = ["sku_type_complete", "sku_type"]
@@ -235,75 +257,110 @@ def index_documents(lines, meili_url, meili_index, model=None):
 
 
 # ---------------------------------------------------------------------------
-# Discord notification on new taxonomy entry creation
+# Google Sheets write-back for newly-minted taxonomy entries
 # ---------------------------------------------------------------------------
 
-def _format_discord_table(row, dataset):
-    """row: dict of column_name -> value, already read back from BigQuery. Formats every non-null
-    column into an aligned monospace table inside a code fence (Discord doesn't render pipe-table
-    markdown as an actual table -- a code block is what's actually legible), preceded by an AI QA
-    header. Individual long cell values are truncated (not whole rows/columns) to respect
-    Discord's 2000-char content limit while keeping every column's presence visible."""
-    pairs = [(k, str(v)) for k, v in row.items() if v is not None]
-    if not pairs:
-        pairs = [("(no columns)", "")]
-    key_width = max(len(k) for k, _ in pairs)
-    lines = []
-    for k, v in pairs:
-        v_trunc = v if len(v) <= DISCORD_CELL_TRUNCATE else v[:DISCORD_CELL_TRUNCATE - 3] + "..."
-        lines.append(f"{k.ljust(key_width)} : {v_trunc}")
-    header = f"**AI QA** — new taxonomy entry created (`{dataset}`)"
-    message = f"{header}\n```\n" + "\n".join(lines) + "\n```"
-    if len(message) > DISCORD_CONTENT_LIMIT:
-        # Still over budget even after per-cell truncation (very many columns) -- hard-truncate the
-        # whole table as a last resort, never silently drop the header.
-        fence_overhead = len(header) + len("\n```\n") + len("\n...(truncated)\n```")
-        budget = max(DISCORD_CONTENT_LIMIT - fence_overhead, 0)
-        table_body = "\n".join(lines)[:budget]
-        message = f"{header}\n```\n{table_body}\n...(truncated)\n```"
-    return message
+def _parse_sheet_url(url):
+    """Extract (spreadsheet_id, gid) from an edit-URL like .../d/<ID>/edit?gid=<GID>#gid=<GID>.
+    Confirmed live not every taxonomy_url has a gid (e.g. .../edit?usp=sharing) -- those default
+    to gid=0, the first tab, same as Sheets itself does when gid is omitted."""
+    id_match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
+    if not id_match:
+        raise ValueError(f"Could not parse spreadsheet ID from taxonomy_url: {url!r}")
+    gid_match = re.search(r"[?&#]gid=(\d+)", url)
+    return id_match.group(1), int(gid_match.group(1)) if gid_match else 0
 
 
-def _http_post_json(url, body):
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        resp.read()
+def _sheets_service():
+    """Loads the client-util service account key directly (see SHEET_KEY_FILE) rather than ADC --
+    client-util@sincere-hearth-273704.iam.gserviceaccount.com must be shared as Editor on every
+    target taxonomy_url Sheet."""
+    creds = service_account.Credentials.from_service_account_file(SHEET_KEY_FILE, scopes=SHEETS_SCOPES)
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
-def notify_discord_new_entry(project, dict_table, brand, identity_col, identity_value, dataset,
-                              client=None, webhook_url=None, post=None):
-    """Reads the just-created row back from BigQuery (never trusts Claude's self-report of what it
-    wrote), formats it, and posts to Discord. Never raises past this function and never exits
-    non-zero via its CLI wrapper -- a Discord/BigQuery hiccup must never fail or block the QA
-    session that called it."""
-    post = post or _http_post_json
+def _tab_title_for_gid(service, spreadsheet_id, gid):
+    meta = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    for sheet in meta.get("sheets", []):
+        if sheet["properties"]["sheetId"] == gid:
+            return sheet["properties"]["title"]
+    raise ValueError(f"No tab with gid={gid} in spreadsheet {spreadsheet_id}")
+
+
+def _map_row_to_header(row, header):
+    """row: dict of BigQuery column_name -> value, already read back from BigQuery. header: the
+    Sheet's row-1 cell values, in the Sheet's own order. Matches case-insensitively by name --
+    confirmed live a dict table's column ORDER and capitalization don't match its Sheet's (e.g.
+    susububuk_dict is keywords/keyword_typo/sku_type_complete by ordinal position, its Sheet is
+    Keyword_Typo/SKU_type_complete/Keywords). A header cell with no matching BigQuery column
+    (e.g. the Sheet's own _meta column) is left blank; a BigQuery column absent from the header
+    is simply not written."""
+    lower_row = {k.lower(): v for k, v in row.items()}
+    out = []
+    for cell in header:
+        value = lower_row.get(cell.strip().lower())
+        out.append("" if value is None else str(value))
+    return out
+
+
+def append_sheet_new_entries(project, dict_table, dataset, sheet_url, entries, client=None, service=None):
+    """entries: list of {"brand", "identity_col", "identity_value"} -- WHICH rows to write back,
+    taken from Claude's own STEP 3 JSONL. Trusted only for identity, never for content: each
+    entry's full row is re-read from BigQuery before anything is written to the Sheet. Never
+    raises past this function -- a Sheets/BigQuery hiccup must never fail or block the QA session
+    that called it."""
+    if not entries:
+        return 0
     try:
-        if identity_col not in DICT_IDENTITY_CANDIDATES:
-            raise ValueError(f"Refusing to interpolate unexpected identity_col into SQL: {identity_col!r}")
-        webhook_url = webhook_url or os.environ.get("DISCORD_WEBHOOK_URL")
-        if not webhook_url:
-            raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
+        sheet_url = (sheet_url or "").strip()
+        if not sheet_url or sheet_url == "-":
+            print(f"  append-sheet: no taxonomy_url configured for {dataset} -- skipping")
+            return 0
+        spreadsheet_id, gid = _parse_sheet_url(sheet_url)
+        service = service or _sheets_service()
+        tab_title = _tab_title_for_gid(service, spreadsheet_id, gid)
+        header = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id, range=f"'{tab_title}'!1:1"
+        ).execute().get("values", [[]])[0]
+
         client = client or bigquery.Client(project=project)
-        query = f"""
-            SELECT * FROM `{project}.{dict_table}`
-            WHERE brand = @brand AND {identity_col} = @identity_value
-            LIMIT 1
-        """
-        job_config = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("brand", "STRING", brand),
-            bigquery.ScalarQueryParameter("identity_value", "STRING", identity_value),
-        ])
-        rows = list(client.query(query, job_config=job_config).result())
-        if not rows:
-            print(f"  WARNING: notify-discord found no row for brand={brand!r} {identity_col}={identity_value!r} in {dict_table} -- skipping notification")
-            return
-        row = dict(rows[0].items())
-        message = _format_discord_table(row, dataset)
-        post(webhook_url, {"content": message})
-        print(f"  Discord notified: {dict_table} brand={brand!r} {identity_col}={identity_value!r}")
+        rows_to_append = []
+        for entry in entries:
+            identity_col = entry["identity_col"]
+            if identity_col not in DICT_IDENTITY_CANDIDATES:
+                print(f"  WARNING: append-sheet refusing unexpected identity_col {identity_col!r} -- skipping entry")
+                continue
+            query = f"""
+                SELECT * FROM `{project}.{dict_table}`
+                WHERE brand = @brand AND {identity_col} = @identity_value
+                LIMIT 1
+            """
+            job_config = bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("brand", "STRING", entry["brand"]),
+                bigquery.ScalarQueryParameter("identity_value", "STRING", entry["identity_value"]),
+            ])
+            rows = list(client.query(query, job_config=job_config).result())
+            if not rows:
+                print(f"  WARNING: append-sheet found no row for brand={entry['brand']!r} {identity_col}={entry['identity_value']!r} in {dict_table} -- skipping")
+                continue
+            rows_to_append.append(_map_row_to_header(dict(rows[0].items()), header))
+
+        if not rows_to_append:
+            return 0
+        service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{tab_title}'!A1",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": rows_to_append},
+        ).execute()
+        print(f"  Sheet appended: {len(rows_to_append)} row(s) -> {sheet_url}")
+        return len(rows_to_append)
     except Exception as e:
-        print(f"  WARNING: notify-discord failed (non-fatal): {type(e).__name__}: {e}")
+        print(f"  WARNING: append-sheet failed (non-fatal): {type(e).__name__}: {e}")
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -338,9 +395,14 @@ def _cmd_index(args):
     print(f"Indexed {count} products -> {args.meili_index}")
 
 
-def _cmd_notify_discord(args):
-    notify_discord_new_entry(args.project, args.dict_table, args.brand, args.identity_col,
-                              args.identity_value, args.dataset)
+def _cmd_append_sheet(args):
+    lines = [json.loads(l) for l in open(args.input_file) if l.strip()]
+    entries = [
+        {"brand": l["brand"], "identity_col": args.identity_col, "identity_value": l["sku_type_complete"]}
+        for l in lines
+    ]
+    count = append_sheet_new_entries(args.project, args.dict_table, args.dataset, args.sheet_url, entries)
+    print(f"Appended {count} row(s) to Sheet for {args.dataset}")
 
 
 def main():
@@ -369,13 +431,13 @@ def main():
     index_p.add_argument("--meili-index", required=True)
     index_p.add_argument("--meili-url", default=MEILI_URL)
 
-    notify_p = sub.add_parser("notify-discord")
-    notify_p.add_argument("--project", required=True)
-    notify_p.add_argument("--dict-table", required=True)
-    notify_p.add_argument("--brand", required=True)
-    notify_p.add_argument("--identity-col", required=True)
-    notify_p.add_argument("--identity-value", required=True)
-    notify_p.add_argument("--dataset", required=True)
+    append_p = sub.add_parser("append-sheet")
+    append_p.add_argument("--input-file", required=True)
+    append_p.add_argument("--dict-table", required=True)
+    append_p.add_argument("--project", required=True)
+    append_p.add_argument("--dataset", required=True)
+    append_p.add_argument("--identity-col", required=True)
+    append_p.add_argument("--sheet-url", required=True)
 
     args = parser.parse_args()
     if args.command == "categories":
@@ -386,8 +448,8 @@ def main():
         _cmd_retrieve(args)
     elif args.command == "index":
         _cmd_index(args)
-    elif args.command == "notify-discord":
-        _cmd_notify_discord(args)
+    elif args.command == "append-sheet":
+        _cmd_append_sheet(args)
 
 
 if __name__ == "__main__":

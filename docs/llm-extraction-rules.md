@@ -95,6 +95,12 @@ after all four signals are exhausted.
 - **Bulk pack multiplier in canonical name**: write only the total as `x{TOTAL}`. Never add a
   breakdown suffix like `(N packs of M)`. Use `x90` not `x90 (15 packs of 6)`. The total
   is what analysts need for market sizing; the pack breakdown belongs in sku_name, not canonical.
+  **Category-scoped exception:** `shopee_id_adult_diapers` — see its category brief's "Karton /
+  bulk-pack rule". That category's listings often carry two multiplier layers (pcs/bag × bags/karton)
+  where the base "unit" is the bag, not a single physical item (unlike the softdrink/water `x{TOTAL}`
+  cases this rule was written for) — `pack_count` there is the outer bag/box/pack multiplier only,
+  never the grand total pieces. Don't generalize this exception to other categories without the same
+  two-layer listing pattern; check the category's own brief first.
 
 **Regex pre-pass (added Jul 14 2026):** before any LLM extraction reaches a product, a deterministic
 text-only pass may have already filled `size` — see `sql/functions/parse_size.sql` and

@@ -143,6 +143,19 @@ difference in *any* component is a different product and needs its own entry:
    entries with the SAME brand_id. Never match across brands by similarity
    of line/size alone. (Decision 19 — formula milk taught us this.)
 
+   If the brand is confidently readable (image, sku_name, or a single-brand
+   official-store merchant_name) but has no matching brand_dict row — a new
+   vertical/country first-run, not a genuine unknown — MINT a new brand_dict
+   entry (next available BRD-{COUNTRY}-NNNNN, check for name collisions with
+   unrelated existing brands first) rather than writing brand_id = BRD-UNDEFINED.
+   BRD-UNDEFINED is for "couldn't determine the brand" (docs/brand-extraction.md
+   Key Rules), not "brand_dict hasn't been populated for this category yet" —
+   the latter defeats this brand gate itself, since unrelated brands sharing the
+   literal string BRD-UNDEFINED become indistinguishable to it. Found and fixed
+   on shopee_id_adult_diapers 2026-08-21 (159 taxonomy rows, 16 new brand_dict
+   entries) — see that category's brief for the full writeup; same root cause
+   already on record for alatmusik_id.
+
 2. CATEGORY GATE (hard).
    Only consider entries that belong to THIS category. Never route a face
    moisturizer to a shampoo entry even if brand matches. (Origin: 1,802
