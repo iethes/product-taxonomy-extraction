@@ -63,6 +63,11 @@ claim_next_task_query() {
   local worker_id="$1" script_type="${2:-}"
   local type_filter=""
   [[ -n "$script_type" ]] && type_filter=" AND script_type=$(_sql_quote "$script_type")"
+  # extra_args (JSON, arbitrary per-script_type params -- e.g. non_niq_qa's kategori) is LAST in
+  # the RETURNING list on purpose: queue_main_loop's `IFS='|' read` splits every field before it,
+  # but the LAST named variable in a bash `read` absorbs the rest of the line verbatim, delimiters
+  # included -- so a JSON value that happens to contain a literal "|" can't corrupt the parse only
+  # as long as nothing is read after it.
   echo "UPDATE ${QUEUE_TABLE} SET status='running', claimed_by='${worker_id}', claimed_at=now()
     WHERE id = (
       SELECT id FROM ${QUEUE_TABLE}
@@ -71,7 +76,7 @@ claim_next_task_query() {
       ORDER BY priority DESC, submitted_at ASC
       FOR UPDATE SKIP LOCKED LIMIT 1
     )
-    RETURNING id, table_name, script_type, month, max_turns, block_size, loop_count;"
+    RETURNING id, table_name, script_type, month, max_turns, block_size, loop_count, extra_args;"
 }
 
 claim_next_task() {
@@ -130,7 +135,9 @@ persist_final_status() {
 
 # queue_main_loop <script_type_filter> <worker_id> <run_task_fn>
 # run_task_fn must already be defined by the caller; it's invoked as:
-#   "$run_task_fn" <id> <table_name> <script_type> <month> <max_turns> <block_size> <loop_count>
+#   "$run_task_fn" <id> <table_name> <script_type> <month> <max_turns> <block_size> <loop_count> <extra_args>
+# extra_args is a JSON blob (or empty) of arbitrary per-script_type params -- a run_task_fn that
+# doesn't need it (e.g. niq's) can simply not reference the 8th positional arg.
 queue_main_loop() {
   local script_type_filter="$1" worker_id="$2" run_task_fn="$3"
   echo "Worker ${worker_id} starting, polling every ${POLL_INTERVAL_SECONDS:-15}s"
@@ -142,10 +149,10 @@ queue_main_loop() {
       sleep "${POLL_INTERVAL_SECONDS:-15}"
       continue
     fi
-    local id table_name script_type month max_turns block_size loop_count
-    IFS='|' read -r id table_name script_type month max_turns block_size loop_count <<< "$row"
+    local id table_name script_type month max_turns block_size loop_count extra_args
+    IFS='|' read -r id table_name script_type month max_turns block_size loop_count extra_args <<< "$row"
     echo "Claimed task ${id}: ${table_name} (${script_type})"
-    "$run_task_fn" "$id" "$table_name" "$script_type" "$month" "$max_turns" "$block_size" "$loop_count"
+    "$run_task_fn" "$id" "$table_name" "$script_type" "$month" "$max_turns" "$block_size" "$loop_count" "$extra_args"
   done
 }
 

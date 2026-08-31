@@ -10,9 +10,13 @@ source script/non_niq/queue_worker.sh
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 # --- split_table_name ---
-read -r ds pl <<< "$(split_table_name "babybath:shopee")"
-[[ "$ds" == "babybath" && "$pl" == "shopee" ]] || fail "split_table_name should split dataset:platform on the colon"
-echo "PASS: split_table_name"
+read -r ds pl co <<< "$(split_table_name "babybath:shopee")"
+[[ "$ds" == "babybath" && "$pl" == "shopee" && "$co" == "ID" ]] || fail "split_table_name should split dataset:platform on the colon and default country to ID"
+echo "PASS: split_table_name (2-segment, default country)"
+
+read -r ds pl co <<< "$(split_table_name "babybath:shopee:TH")"
+[[ "$ds" == "babybath" && "$pl" == "shopee" && "$co" == "TH" ]] || fail "split_table_name should split dataset:platform:country on the colons"
+echo "PASS: split_table_name (3-segment, explicit country)"
 
 # --- reclaim query is script_type-scoped ---
 q="$(reclaim_stale_leases_query)"

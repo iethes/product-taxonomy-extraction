@@ -1,0 +1,15 @@
+-- sql/postgres/002_task_queue_extra_args.sql
+-- Reference DDL -- applied once by hand against the REAL, schema-qualified table (never a bare
+-- unqualified name -- see docs/windmill-app-prompt.md's "never use SET search_path" rule, which
+-- applies just as much to a one-off ALTER run through the same PgBouncer pool):
+--   source script/load_env.sh
+--   QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
+--   queue_psql "ALTER TABLE ${QUEUE_TABLE} ADD COLUMN IF NOT EXISTS extra_args JSON;"
+--
+-- Additive and idempotent, same as 001_task_queue.sql's index migration -- NULL on every existing
+-- row, no backfill needed. Generic per-script_type JSON bag for params that don't fit any of the
+-- table's existing generic slots (table_name, month, max_turns, block_size, loop_count), so a
+-- future new arg doesn't need its own migration. First consumer: script/non_niq/queue_worker.sh
+-- reads extra_args.kategori for non_niq_qa's optional category sub-scope filter. See
+-- docs/non-niq-queue-submitter-handoff.md for the full non_niq_qa task_queue contract.
+ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS extra_args JSON;
