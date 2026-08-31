@@ -1,0 +1,12 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "variant", "total_size"],
+    "separator": " ",
+    "notes": "skip variant when null/empty or equal to 'Original' (case-insensitive); skip any null/empty source; total_size is 'SIZE UNITS' e.g. '250 gr' or '1 kg'"
+  },
+  "keywords": {
+    "sources": ["sub_brand", "variant", "total_size"],
+    "separator": " ",
+    "notes": "same composition as sku_type_complete; skip variant when null/empty or equal to 'Original'; skip any null/empty source"
+  }
+}

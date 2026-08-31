@@ -1,0 +1,12 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "flavor", "kemasan"],
+    "separator": " ",
+    "notes": "skip any null/empty source; do NOT skip flavor when it equals 'Original'/'Plain' (unlike other categories, susu dict rows keep it, e.g. 'Healthy Way Kids 1+ Original 700 gr'); kemasan is 'SIZE UNITS' or 'SIZE UNITS x N pcs' when bundled, e.g. '700 gr' or '15 gr x 30 pcs'"
+  },
+  "keywords": {
+    "sources": ["sub_brand", "flavor", "kemasan"],
+    "separator": " ",
+    "notes": "same composition as sku_type_complete for new rows; ignore stray leading-space/CRLF artifacts seen on some pre-existing rows, that's legacy data noise, not a pattern to replicate"
+  }
+}

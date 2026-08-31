@@ -1,0 +1,30 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "power"],
+    "separator": " ",
+    "notes": "sub_brand + power, e.g. 'Ecolink Batten' + '13 W' -> 'Ecolink Batten 13 W'. If power is empty/unknown, sku_type_complete is just sub_brand. sub_brand itself is NOT generated -- it is brand + a specific model/product-line designator (judgment call, not composed from other columns)."
+  },
+  "keywords": {
+    "sources": ["sub_brand", "power"],
+    "separator": " ",
+    "notes": "identical value to sku_type_complete in every sampled row."
+  },
+  "power_breakdown": {
+    "sources": ["power"],
+    "separator": null,
+    "notes": "power with the trailing ' W' stripped, e.g. '13 W' -> '13'. Empty if power is empty/unknown."
+  },
+  "power_tier": {
+    "sources": ["power_breakdown"],
+    "separator": null,
+    "notes": "bucketed from power_breakdown (as float): <10 -> 'Low', 10-19.99 -> 'Medium', >=20 -> 'High'. If power is unknown/blank use 'Not Specified'. If the listing genuinely spans multiple wattage variants use 'Multiple Wattage'."
+  },
+  "non_generated_columns": {
+    "brand": "authored directly from the product's brand.",
+    "sub_brand": "authored directly: brand + specific model/product-line designator, e.g. 'Philips Downlight DN027B', 'KINGLED Plafon LED Flap'. Judgment call, ground against existing dict rows for the same brand before inventing a new sub_brand string.",
+    "model": "the general FIXTURE TYPE (judgment call, not a specific product model number), one of the observed values: Batten, Bulb, Cabinet Light, Ceiling Light, Chandelier, Downlight, Emergency Bulb, Emergency Lamp, Entertainment, Fan Lamp, Flood Light, Garden Lamp, Garden Light, Headlamp, Indoor Solar, LED, LED Tube, Lampu Hias, Lampu Kolam Renang, Modul LED & COB, Neon Box, Night Lamp, Others, Pendant Lamp, Portable Lamp, Portables, Post Stops/Gate Tops, Ring Light, Solar Light, Speaker Lamp, Spotlight, Standing Lamp, Street Light, String Light, Strip, Studio Light, Switches & Sockets, Table Lamp, Torch, Track Light, UVC, Vehicle Light, Wall Lamp.",
+    "kategori": "top-level category, judgment call from observed values: Luminaires, LED Lamps, Connected Light, Conventional, Decorative Lamps, Fan Lamp, Solar Light, Non Lighting, Others.",
+    "location": "Indoor or Outdoor, judgment call from the product image/description; leave empty only if genuinely ambiguous (rare in sample).",
+    "power": "e.g. '13 W', authored directly from the product's stated wattage; empty if not specified."
+  }
+}

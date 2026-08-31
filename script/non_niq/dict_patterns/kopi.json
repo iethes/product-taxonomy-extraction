@@ -1,0 +1,10 @@
+{
+  "sku_type_complete": {
+    "sources": ["sku", "flavour", "packsize"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["sku_type_complete", "keyword_typo"],
+    "separator": " "
+  }
+}
