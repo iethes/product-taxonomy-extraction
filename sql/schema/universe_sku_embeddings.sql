@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS `sincere-hearth-273704.magpie_reference.universe_sku_
   product_id     STRING         NOT NULL,
   platform       STRING         NOT NULL,  -- matches marketshare_universe_niq.ecommerce_platform
   country        STRING         NOT NULL,
-  embedding      ARRAY<FLOAT64>,            -- multilingual-e5-large output, 1024 dims
+  embedding      ARRAY<FLOAT64>,            -- multilingual-e5-small output, 384 dims
   model_version  STRING         NOT NULL,
   computed_at    TIMESTAMP      NOT NULL
 )

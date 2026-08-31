@@ -36,8 +36,8 @@ script needs) -- subcommands, called directly from non_niq_qa.sh/non_niq_qa_v2.s
       Embeds each product's sku_name as an E5 passage (asymmetric retrieval -- corpus side, not
       query side) and upserts into Meilisearch, creating/configuring the index first if it
       doesn't exist yet. Input: one {"product_id","sku_name","sku_type_complete","brand"} per
-      line. Batched at BATCH_SIZE per POST (a 1024-dim vector serialises to ~20KB of JSON, so a
-      single POST would blow past Meilisearch's 100MB payload limit above a few thousand rows).
+      line. Batched at BATCH_SIZE per POST (a 384-dim vector serialises to ~7.5KB of JSON, so a
+      single POST would blow past Meilisearch's 100MB payload limit above ~10k rows).
 
   append-sheet --input-file DOCS.jsonl --dict-table dataset.dict --project P --dataset D
       --identity-col COL --sheet-url URL
@@ -65,9 +65,9 @@ from googleapiclient.discovery import build
 from sentence_transformers import SentenceTransformer
 
 MEILI_URL = "http://34.124.146.29:7700"
-MODEL_NAME = "intfloat/multilingual-e5-large"
+MODEL_NAME = "intfloat/multilingual-e5-small"
 BATCH_SIZE = 256
-EMBED_DIM = 1024
+EMBED_DIM = 384
 
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 # client-util@sincere-hearth-273704.iam.gserviceaccount.com -- ADC (gcloud user credentials)
@@ -231,7 +231,7 @@ def index_documents(lines, meili_url, meili_index, model=None):
     """lines: list of {"product_id","sku_name","sku_type_complete","brand"} -- the shape v2's
     STEP 3 batches up from its own session writes. Embeds sku_name as an E5 passage (corpus side),
     upserts into meili_index (creating/configuring it first if needed), batched at BATCH_SIZE -- a
-    1024-dim vector serialises to ~20KB of JSON, so a single POST for a large batch would blow
+    384-dim vector serialises to ~7.5KB of JSON, so a single POST for a large batch would blow
     past Meilisearch's 100MB payload limit. Returns the number of documents submitted; a caller
     with zero qualifying products should simply not call this (STEP 3's prompt instructs that),
     but an empty list is handled as a no-op regardless."""

@@ -5,8 +5,8 @@
 
 CREATE TABLE IF NOT EXISTS `sincere-hearth-273704.magpie_reference.product_taxonomy_embeddings` (
   taxonomy_id    STRING         NOT NULL,  -- FK -> product_taxonomy.taxonomy_id
-  embedding      ARRAY<FLOAT64>,            -- multilingual-e5-large output, 1024 dims
-  model_version  STRING         NOT NULL,  -- e.g. 'intfloat/multilingual-e5-large'
+  embedding      ARRAY<FLOAT64>,            -- multilingual-e5-small output, 384 dims
+  model_version  STRING         NOT NULL,  -- e.g. 'intfloat/multilingual-e5-small'
   computed_at    TIMESTAMP      NOT NULL
 )
 OPTIONS (

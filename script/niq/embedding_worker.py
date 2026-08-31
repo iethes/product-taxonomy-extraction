@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Embeds product_taxonomy.canonical_name and marketshare_universe_niq.sku_name text that
-isn't in the embeddings tables yet, using a local multilingual-e5-large model. Runs on the
+isn't in the embeddings tables yet, using a local multilingual-e5-small model. Runs on the
 Hetzner VM via cron. Only ever INSERTs into product_taxonomy_embeddings/universe_sku_embeddings
 - never touches product_taxonomy, product_taxonomy_map, or marketshare_universe_niq itself.
 
@@ -23,7 +23,7 @@ from google.cloud import bigquery
 from sentence_transformers import SentenceTransformer
 
 PROJECT = "sincere-hearth-273704"
-MODEL_NAME = "intfloat/multilingual-e5-large"
+MODEL_NAME = "intfloat/multilingual-e5-small"
 BATCH_SIZE = 256
 _SAFE_TABLE_NAME = re.compile(r"^[a-zA-Z0-9_]+$")
 
