@@ -222,14 +222,18 @@ def ensure_index(meili_url, index_uid):
     if index_uid not in uids:
         _meili_request(meili_url, "POST", "/indexes", {"uid": index_uid, "primaryKey": "product_id"})
     _meili_request(meili_url, "PATCH", f"/indexes/{index_uid}/settings", {
-        "searchableAttributes": ["sku_name", "sku_type_complete", "brand"],
+        "searchableAttributes": ["sku_name", "sku_type_complete", "brand", "product_type"],
         "embedders": {"default": {"source": "userProvided", "dimensions": EMBED_DIM}},
     })
 
 
 def index_documents(lines, meili_url, meili_index, model=None):
-    """lines: list of {"product_id","sku_name","sku_type_complete","brand"} -- the shape v2's
-    STEP 3 batches up from its own session writes. Embeds sku_name as an E5 passage (corpus side),
+    """lines: list of {"product_id","sku_name","sku_type_complete","brand"} plus any optional
+    extra fields (e.g. eiger_qa.sh's mgh_2/mgh_3/mgh_4/product_type) -- the shape v2's STEP 3
+    batches up from its own session writes. Extra fields are passed through to the indexed
+    Meilisearch document unchanged, so a later retrieve() call's candidates[] carries them
+    automatically (Meilisearch returns full stored documents on search, not just
+    searchableAttributes). Embeds sku_name as an E5 passage (corpus side),
     upserts into meili_index (creating/configuring it first if needed), batched at BATCH_SIZE -- a
     384-dim vector serialises to ~7.5KB of JSON, so a single POST for a large batch would blow
     past Meilisearch's 100MB payload limit. Returns the number of documents submitted; a caller
@@ -243,10 +247,8 @@ def index_documents(lines, meili_url, meili_index, model=None):
     vectors = model.encode(texts, batch_size=BATCH_SIZE, show_progress_bar=False, normalize_embeddings=True)
     docs = [
         {
+            **l,
             "product_id": str(l["product_id"]),
-            "sku_name": l["sku_name"],
-            "sku_type_complete": l["sku_type_complete"],
-            "brand": l["brand"],
             "_vectors": {"default": vec.tolist()},
         }
         for l, vec in zip(lines, vectors)

@@ -175,6 +175,56 @@ def test_index_documents_doc_shape(monkeypatch):
     assert doc["brand"] == "Acme"
     assert doc["_vectors"]["default"] == [float(len("passage: Baby Shampoo 200ml"))]
 
+def test_index_documents_passes_through_extra_fields(monkeypatch):
+    posted = []
+    def fake_meili_request(meili_url, method, path, body=None):
+        if method == "GET":
+            return {"results": [{"uid": "eiger_taxonomy_qa"}]}
+        if method == "POST" and path.endswith("/documents"):
+            posted.append(body)
+        return {}
+    monkeypatch.setattr(non_niq_helper, "_meili_request", fake_meili_request)
+    lines = [{
+        "product_id": 999, "sku_name": "Eiger Trail Shoes", "sku_type_complete": "Hiking",
+        "brand": "Eiger", "mgh_2": "Mountaineering", "mgh_3": "FOOTWEAR", "mgh_4": "Shoes",
+        "product_type": "Low-cut shoes",
+    }]
+    count = non_niq_helper.index_documents(lines, "http://fake", "eiger_taxonomy_qa", model=_FakeModel())
+    assert count == 1
+    doc = posted[0][0]
+    assert doc["mgh_2"] == "Mountaineering"
+    assert doc["mgh_3"] == "FOOTWEAR"
+    assert doc["mgh_4"] == "Shoes"
+    assert doc["product_type"] == "Low-cut shoes"
+    assert doc["product_id"] == "999"
+
+def test_index_documents_default_shape_unchanged_without_extra_fields(monkeypatch):
+    posted = []
+    def fake_meili_request(meili_url, method, path, body=None):
+        if method == "GET":
+            return {"results": [{"uid": "babybath_taxonomy_qa"}]}
+        if method == "POST" and path.endswith("/documents"):
+            posted.append(body)
+        return {}
+    monkeypatch.setattr(non_niq_helper, "_meili_request", fake_meili_request)
+    lines = [{"product_id": 1, "sku_name": "p", "sku_type_complete": "T", "brand": "B"}]
+    non_niq_helper.index_documents(lines, "http://fake", "babybath_taxonomy_qa", model=_FakeModel())
+    doc = posted[0][0]
+    assert set(doc.keys()) == {"product_id", "sku_name", "sku_type_complete", "brand", "_vectors"}
+
+def test_ensure_index_searchable_attributes_includes_product_type(monkeypatch):
+    patches = []
+    def fake_meili_request(meili_url, method, path, body=None):
+        if method == "GET":
+            return {"results": [{"uid": "eiger_taxonomy_qa"}]}
+        if method == "PATCH":
+            patches.append(body)
+        return {}
+    monkeypatch.setattr(non_niq_helper, "_meili_request", fake_meili_request)
+    non_niq_helper.ensure_index("http://fake", "eiger_taxonomy_qa")
+    assert "product_type" in patches[0]["searchableAttributes"]
+    assert "sku_name" in patches[0]["searchableAttributes"]
+
 def test_index_documents_batches_at_batch_size(monkeypatch):
     posted_batches = []
     def fake_meili_request(meili_url, method, path, body=None):
