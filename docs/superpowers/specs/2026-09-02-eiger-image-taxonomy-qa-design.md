@@ -86,11 +86,12 @@ docs/eiger-qa-handoff.md            <- new, self-contained handoff doc (Componen
 `eiger_qa.sh` does NOT read `product_id_dict_qa`/`dict`/`product_id_dict` from the Sheet at all
 (they're stale `-` placeholders for this dataset). It reads `master_table_prod`, `filter_table`,
 and the `"0"` enrichment-table column from the Sheet via `non_niq_helper.py categories` (those
-three ARE correctly configured), and hardcodes the two real table names
-(`eiger.product_id_dict_image_qa`, `eiger.product_id_dict_image`) as script constants, with a
-comment explaining why (Sheet values for these are wrong/unread — do not "fix" by wiring the
-Sheet's `product_id_dict_image_qa` column through generically; that would still leave
-`product_id_image_taxonomy` unresolved and doesn't reflect the real dict-equivalent table name).
+three ARE correctly configured), and hardcodes the one real QA table name
+(`eiger.product_id_dict_image_qa`) as a script constant, with a comment explaining why (the
+Sheet's own `product_id_dict_image_qa` column is correct but currently unread by
+`non_niq_helper.py`'s `ROW_FIELDS` — see Risks). `eiger.product_id_dict_image` (the sparser
+per-product corpus table named in "Live data confirmed") is background context only — no
+component in this design reads or writes it, so it is not referenced anywhere in the script.
 
 `qa_pk_col` is hardcoded to `product_id` (confirmed present on
 `product_id_dict_image_qa`) — the `non_niq_helper.py columns` INFORMATION_SCHEMA round-trip v2
