@@ -49,6 +49,14 @@ script needs) -- subcommands, called directly from non_niq_qa.sh/non_niq_qa_v2.s
       the target Sheet's own header row by column NAME rather than assuming the same column order
       as the BigQuery table (confirmed live these differ, e.g. susububuk_dict vs its Sheet). A
       missing/empty taxonomy_url for a category is a no-op, not an error.
+
+  forced-merchants --country ID --category "Cookies Biscuit" --platform Shopee
+      Called from non_niq_qa_v2.sh's main() to force-include specific merchant_ids in the worklist
+      even when they're not product_tier='Tier 1' -- known client-owned/competitor stores worth
+      tracking regardless of GMV rank. Reads the "Client OS Only" + "Competitor OS" tabs of a
+      fixed reference Sheet (MERCHANT_REFERENCE_SPREADSHEET_ID) via the same _sheets_service() as
+      append-sheet, matches rows on (Country, Category Pipeline, Platform), unions merchant_id
+      across both tabs. Never raises -- a Sheets hiccup yields an empty list, never blocks a QA run.
 """
 import argparse
 import csv
@@ -56,6 +64,7 @@ import io
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 
@@ -84,6 +93,19 @@ CONFIG_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vQfqTVdo1ubO40dBBGzECaXVruIefLZpfX6KSFVHzY2gXv2dE-VHDofMC2Q_1tY5LwOmYJPG0kwwxN4"
     "/pub?gid=149787162&single=true&output=csv"
 )
+
+# Merchant force-include reference Sheet -- not published to web (unlike CONFIG_CSV_URL), and CSV
+# export only covers one tab per URL anyway, so this reads live via the Sheets API instead
+# (confirmed live: client-util already has read access, no new sharing needed).
+MERCHANT_REFERENCE_SPREADSHEET_ID = "1Nf7TbmRhViS_vN-PNTXXSFEoGMoW4eKzYXHQEQjk--U"
+MERCHANT_REFERENCE_TABS = ["Client OS Only", "Competitor OS"]
+
+# Country column on that Sheet is a full name (confirmed live: Indonesia/Thailand/Singapore/
+# Malaysia/Vietnam/Philippines) -- non_niq_qa_v2.sh's own --country arg is the 2-letter code.
+COUNTRY_NAME_TO_CODE = {
+    "Indonesia": "ID", "Thailand": "TH", "Singapore": "SG",
+    "Malaysia": "MY", "Vietnam": "VN", "Philippines": "PH",
+}
 
 ROW_FIELDS = ["category", "dataset", "ecommerce_platform", "table", "master_table_prod",
               "product_id_dict_qa", "product_id_dict", "dict", "filter_table", "0", "taxonomy_url"]
@@ -366,6 +388,66 @@ def append_sheet_new_entries(project, dict_table, dataset, sheet_url, entries, c
 
 
 # ---------------------------------------------------------------------------
+# Merchant force-include allowlist (non_niq_qa_v2.sh only)
+# ---------------------------------------------------------------------------
+
+def _read_tab_rows(service, spreadsheet_id, tab_title):
+    """(header, data_rows) for a tab via the values API. Sheets omits trailing empty cells, so a
+    row's length can be shorter than the header -- callers must index defensively, never assume
+    len(row) covers every column."""
+    values = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id, range=f"'{tab_title}'!A:Z"
+    ).execute().get("values", [])
+    if not values:
+        return [], []
+    return values[0], values[1:]
+
+
+def _row_cell(row, idx):
+    return row[idx].strip() if idx < len(row) and row[idx] else ""
+
+
+def fetch_forced_merchant_ids(country, category, platform_titlecase, service=None):
+    """Merchant IDs from the Client OS Only / Competitor OS reference Sheet that must be QA'd
+    regardless of product_tier -- known client-owned or competitor stores worth tracking even at
+    low GMV. Matches each row on (Country, Category Pipeline, Platform):
+    - Country cell is a full name -- normalized via COUNTRY_NAME_TO_CODE; an already-bare code
+      falls back to itself uppercased.
+    - Category Pipeline cell is sometimes multi-valued ("Men Perfume / Women Perfume / Unisex
+      Perfume", confirmed live for ambiguous merchant-sheet categories) -- split on "/" and match
+      membership, never exact-equality.
+    - Platform: Tokopedia gets the same two-value alias non_niq_qa_v2.sh's own
+      platform_match_clause() uses (confirmed live one row is "Tokopedia | Shop"); every value is
+      also stripped (confirmed live one row is "Tiktok " with a trailing space).
+    Never raises past this function -- a Sheets hiccup must not block a QA run that doesn't
+    otherwise depend on this Sheet; caller gets an empty list and logs its own warning."""
+    platform_aliases = {"Tokopedia", "Tokopedia | Shop"} if platform_titlecase == "Tokopedia" else {platform_titlecase}
+    service = service or _sheets_service()
+    required = ["Country", "Category Pipeline", "Platform", "Merchant ID"]
+    merchant_ids = set()
+    for tab_title in MERCHANT_REFERENCE_TABS:
+        header, rows = _read_tab_rows(service, MERCHANT_REFERENCE_SPREADSHEET_ID, tab_title)
+        idx = {name.strip(): i for i, name in enumerate(header)}
+        if not all(r in idx for r in required):
+            print(f"  WARNING: forced-merchants tab {tab_title!r} missing expected column(s) {required} -- skipping", file=sys.stderr)
+            continue
+        for row in rows:
+            country_cell = _row_cell(row, idx["Country"])
+            mapped_country = COUNTRY_NAME_TO_CODE.get(country_cell, country_cell.upper())
+            if mapped_country != country:
+                continue
+            categories = {c.strip() for c in _row_cell(row, idx["Category Pipeline"]).split("/") if c.strip()}
+            if category not in categories:
+                continue
+            if _row_cell(row, idx["Platform"]) not in platform_aliases:
+                continue
+            merchant_id = _row_cell(row, idx["Merchant ID"])
+            if merchant_id:
+                merchant_ids.add(merchant_id)
+    return sorted(merchant_ids)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -407,6 +489,15 @@ def _cmd_append_sheet(args):
     print(f"Appended {count} row(s) to Sheet for {args.dataset}")
 
 
+def _cmd_forced_merchants(args):
+    try:
+        ids = fetch_forced_merchant_ids(args.country, args.category, args.platform)
+    except Exception as e:
+        print(f"  WARNING: forced-merchants failed (non-fatal): {type(e).__name__}: {e}", file=sys.stderr)
+        ids = []
+    print(json.dumps(ids))
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -441,6 +532,11 @@ def main():
     append_p.add_argument("--identity-col", required=True)
     append_p.add_argument("--sheet-url", required=True)
 
+    forced_p = sub.add_parser("forced-merchants")
+    forced_p.add_argument("--country", required=True)
+    forced_p.add_argument("--category", required=True)
+    forced_p.add_argument("--platform", required=True)
+
     args = parser.parse_args()
     if args.command == "categories":
         _cmd_categories(args)
@@ -452,6 +548,8 @@ def main():
         _cmd_index(args)
     elif args.command == "append-sheet":
         _cmd_append_sheet(args)
+    elif args.command == "forced-merchants":
+        _cmd_forced_merchants(args)
 
 
 if __name__ == "__main__":

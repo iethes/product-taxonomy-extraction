@@ -6,11 +6,19 @@ set -euo pipefail
 #       script/non_niq/non_niq_qa_v2.sh lighting shopee TH
 #       script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee ID 500 400
 #       script/non_niq/non_niq_qa_v2.sh lighting shopee ID 300 300 "Connected Light"
+#       MONTHLY_REVERIFY=1 script/non_niq/non_niq_qa_v2.sh lighting shopee ID 300 100
 #
 # KATEGORI, if given, adds an exact-match filter on source_table's own `kategori` column (a
 # per-category sub-scope some master_table_prod tables carry, e.g. lighting's "Connected Light")
 # on top of the existing product_tier='Tier 1' scoping -- optional because most datasets don't
 # have this column at all.
+#
+# MONTHLY_REVERIFY=1 env var (optional, off by default): forces re-review of a product_id even if
+# it already has a lifetime-confident QA row, whenever that product_id's sku_name/kategori differs
+# from its most recent prior month's row on source_table -- i.e. the merchant swapped the listing
+# under the same product_id (the reason this whole QA process has to run monthly, not once). Off by
+# default so every other dataset's query is byte-identical to before. See worklist_query()'s
+# listing_changed logic.
 #
 # v2 differs from non_niq_qa.sh (v1) in exactly one respect: how the worklist is SOURCED.
 # v1 reads the Sheet's `table` (AB, "..._dev") column and computes top-90%-cumulative-GMV itself
@@ -70,6 +78,11 @@ default_month_query() {
 # table's own tiering rather than recomputing it. Priority tiers (0 = never QA'd, 1 = unconfident
 # retry-eligible) and the filter_table exclusion are otherwise identical to v1's worklist_query --
 # same qa_state/filter_state join shape, same confidence-loop semantics.
+#
+# forced_merchant_ids_sql (main()'s merchant-allowlist Sheet lookup, non_niq_helper.py's
+# forced-merchants subcommand): known client-owned/competitor merchant_ids that must be QA'd
+# regardless of product_tier -- OR'd into the tier scope below rather than replacing it, so a
+# force-included merchant never REMOVES rows that were already Tier 1.
 worklist_query() {
   local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5" enrichment_table="${6:-}"
   # Same LIMIT rationale as v1: a single agent session's turn budget can't process an unbounded
@@ -77,6 +90,8 @@ worklist_query() {
   local row_limit="${7:-300}"
   local filter_table="${8:-}"
   local kategori="${9:-}"
+  local monthly_reverify="${10:-}"
+  local forced_merchant_ids_sql="${11:-}"
   local platform_titlecase="${platform^}"
   # item_description/product_attributes_attrs enrichment is Shopee-only by data availability --
   # ported VERBATIM from non_niq_qa.sh's worklist_query (v1), already debugged there (confirmed
@@ -129,12 +144,38 @@ worklist_query() {
     kategori_clause="    AND s.kategori = '${kategori}'
 "
   fi
+  local tier_clause="s.product_tier = 'Tier 1'"
+  if [[ -n "$forced_merchant_ids_sql" ]]; then
+    tier_clause="(s.product_tier = 'Tier 1' OR s.merchant_id IN (${forced_merchant_ids_sql}))"
+  fi
+  # listing_changed: only wired up under MONTHLY_REVERIFY=1 -- assumes source_table has a
+  # `kategori` column, true for lighting (the only caller of this flag so far), NOT true for most
+  # other datasets on this shared script, so this must stay conditional rather than a bare
+  # unconditional SELECT (would break every other dataset's query with "column not found").
+  local scoped_kategori_select="" reverify_cte="" reverify_join=""
+  local reverify_expr="FALSE" reverify_prior_select="NULL AS prior_sku_name, NULL AS prior_kategori"
+  if [[ -n "$monthly_reverify" ]]; then
+    scoped_kategori_select=", s.kategori AS current_kategori"
+    reverify_cte="prior_snapshot AS (
+  SELECT product_id, sku_name AS prior_sku_name, kategori AS prior_kategori
+  FROM \`${PROJECT}.${source_table}\`
+  WHERE ecommerce_platform $(platform_match_clause "$platform_titlecase")
+    AND FORMAT_DATE('%Y-%m', month) < '${month}'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY month DESC) = 1
+),
+"
+    reverify_join="LEFT JOIN prior_snapshot ps ON ps.product_id = sc.product_id"
+    # IS DISTINCT FROM, not != -- NULL-safe, so a prior/current value newly appearing or
+    # disappearing (not just changing) still counts as a listing change.
+    reverify_expr="(ps.product_id IS NOT NULL AND (ps.prior_sku_name IS DISTINCT FROM sc.sku_name OR ps.prior_kategori IS DISTINCT FROM sc.current_kategori))"
+    reverify_prior_select="ps.prior_sku_name, ps.prior_kategori"
+  fi
   cat <<SQL
 WITH ${enrichment_cte_and_join}scoped AS (
-  SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image, s.ecommerce_platform, s.qa_status, s.gmv_monthly, ${enrichment_select}
+  SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image, s.ecommerce_platform, s.qa_status, s.gmv_monthly, ${enrichment_select}${scoped_kategori_select}
   FROM \`${PROJECT}.${source_table}\` s
   ${enrichment_join}
-  WHERE s.product_tier = 'Tier 1'
+  WHERE ${tier_clause}
     AND FORMAT_DATE('%Y-%m', s.month) = '${month}'
     AND s.ecommerce_platform $(platform_match_clause "$platform_titlecase")
 ${kategori_clause}),
@@ -161,17 +202,20 @@ qa_state AS (
   FROM \`${PROJECT}.${qa_table}\`
   GROUP BY ${qa_pk_col}
 ),
-${filter_cte}prioritized AS (
+${filter_cte}${reverify_cte}prioritized AS (
   SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly, sc.ecommerce_platform,
          sc.item_description, sc.product_attributes_attrs,
+    ${reverify_expr} AS listing_changed, ${reverify_prior_select},
     CASE
       ${filter_priority_check}WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
       WHEN qs.has_unconfident_pending AND NOT qs.has_confident AND NOT qs.has_terminal THEN 1
+      WHEN ${reverify_expr} THEN 0
       ELSE NULL
     END AS priority
   FROM scoped sc
   LEFT JOIN qa_state qs ON qs.product_id = sc.product_id
   ${filter_join}
+  ${reverify_join}
 )
 SELECT * FROM prioritized
 WHERE priority IS NOT NULL
@@ -244,12 +288,22 @@ ${worklist_file}, exactly ${worklist_count} rows, one JSON object per line (JSON
 BigQuery to re-fetch it, and do NOT trust any other row count than ${worklist_count}. Read the file
 (in slices if it's too large for one Read) rather than querying BigQuery for it. Each line has:
 product_id, sku_name, image, gmv_monthly, ecommerce_platform,
-item_description, product_attributes_attrs, priority. It is already scoped to
+item_description, product_attributes_attrs, listing_changed, prior_sku_name, prior_kategori,
+priority. It is already scoped to
 product_tier = 'Tier 1' and prioritized (unreviewed rows before agent-flagged-unconfident retry
 rows, both by gmv_monthly descending) -- process it in that order. If you cannot account for all
 ${worklist_count} rows by the end of your turn budget, explicitly report status: partial (or
 status: blocked if you cannot proceed at all) -- never silently process a subset and report
 status: complete.
+
+listing_changed is only ever true when this run has monthly re-verify enabled: it means this
+product_id's sku_name or kategori differs from its own most recent PRIOR month's row on
+source_table -- i.e. the merchant likely reused this product_id for a different listing since last
+time (prior_sku_name/prior_kategori show what it WAS). Treat such a row as needing a completely
+fresh judgment in 2a-2c -- do NOT assume any earlier confident QA verdict for this product_id still
+applies, this may be a different product now. In 2d, write it using the FIRST-TIME _meta shape
+(plain confident/unconfident) even if this product_id already has an older confident row -- a
+listing swap is a new judgment, not a retry of a prior failure.
 
 STEP 1 -- Retrieve Meilisearch candidates for the WHOLE worklist in ONE batch call, never one call
 per product. Embedding and searching are both mechanical, repetitive work -- they are done here in
@@ -352,7 +406,9 @@ ${step2_block}
   2d. Self-QA: as an explicit, separate judgment (not folded into 2a-2c's reasoning), state how
       confident you are in the decision you just made for this product. Then:
       - If this is the product's FIRST time being processed this session (no qa_confidence value
-        existed for it before this run): write _meta =
+        existed for it before this run, OR this row's listing_changed is true -- see the
+        listing_changed note in STEP 0, a listing swap under an old product_id is a fresh judgment,
+        not a retry): write _meta =
         '{"source":"claude_code","qa_confidence":"confident","timestamp":"<now, ISO 8601 UTC>"}' if
         confident, or
         '{"source":"claude_code","qa_confidence":"unconfident","human_review":false,"timestamp":"<now>"}'
@@ -542,6 +598,8 @@ main() {
   fi
   local dataset="$1" platform="$2" country="${3:-ID}" max_turns="${4:-300}" max_rows="${5:-300}" kategori="${6:-}"
   country="${country^^}"
+  local monthly_reverify="${MONTHLY_REVERIFY:-}"
+  [[ -n "$monthly_reverify" ]] && log INFO "MONTHLY_REVERIFY enabled -- worklist will force re-review of product_ids whose sku_name/kategori changed since their prior month's row."
 
   log INFO "Resolving config Sheet row for ${dataset}/${platform}/${country}..."
   local category_json
@@ -603,6 +661,22 @@ main() {
   fi
   log INFO "Latest month resolved: ${month}"
 
+  # Merchant-allowlist Sheet lookup (Client OS Only / Competitor OS, matched on country/category/
+  # platform) -- known client-owned/competitor merchant_ids force-included in the worklist below
+  # regardless of product_tier. Non-fatal: any failure here (Sheets API hiccup, bad JSON) just
+  # means zero force-included merchants this run, never blocks the QA session -- same `|| true`
+  # philosophy as the Sheet write-back further down.
+  local platform_titlecase="${platform^}"
+  local category
+  category=$(echo "$category_json" | jq -r '.category')
+  log INFO "Checking merchant-allowlist Sheet for force-include merchant IDs (country=${country}, category=${category}, platform=${platform_titlecase})..."
+  local forced_merchant_ids_json forced_merchant_ids_sql forced_merchant_count
+  forced_merchant_ids_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" forced-merchants \
+    --country "$country" --category "$category" --platform "$platform_titlecase") || forced_merchant_ids_json="[]"
+  forced_merchant_ids_sql=$(echo "$forced_merchant_ids_json" | jq -r '[.[] | @json] | join(",")' 2>/dev/null) || forced_merchant_ids_sql=""
+  forced_merchant_count=$(echo "$forced_merchant_ids_json" | jq 'length' 2>/dev/null) || forced_merchant_count=0
+  log INFO "Force-include merchants resolved: ${forced_merchant_count}"
+
   local meili_index="${dataset}_taxonomy_qa"
 
   # All of this run's /tmp scratch files are keyed off this tag. MUST include kategori when set --
@@ -618,7 +692,7 @@ main() {
   fi
 
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$kategori")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify" "$forced_merchant_ids_sql")
 
   # Materialize the FULL worklist to a file for Claude to Read -- same rationale as v1: handing
   # Claude raw SQL to re-run risks output truncation on large worklists silently passing as
