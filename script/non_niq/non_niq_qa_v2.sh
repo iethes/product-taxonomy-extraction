@@ -238,7 +238,7 @@ primary_filter_table() {
       return 0
     fi
   done
-  echo "${entries[0]}"
+  echo "${entries[0]:-}"
 }
 
 build_qa_prompt() {
@@ -596,7 +596,7 @@ main() {
     echo "Usage: $0 <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS] [KATEGORI]" >&2
     exit 1
   fi
-  local dataset="$1" platform="$2" country="${3:-ID}" max_turns="${4:-300}" max_rows="${5:-300}" kategori="${6:-}"
+  local dataset="$1" platform="$2" country="${3:-ID}" max_turns="${4:-500}" max_rows="${5:-300}" kategori="${6:-}"
   country="${country^^}"
   local monthly_reverify="${MONTHLY_REVERIFY:-}"
   [[ -n "$monthly_reverify" ]] && log INFO "MONTHLY_REVERIFY enabled -- worklist will force re-review of product_ids whose sku_name/kategori changed since their prior month's row."
