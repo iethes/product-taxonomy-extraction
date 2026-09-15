@@ -28,11 +28,13 @@ q_tokopedia=$(default_month_query "cookiesbiscuit.master_cookiesbiscuit_id" "tok
 echo "$q_tokopedia" | grep -qF "ecommerce_platform IN ('Tokopedia', 'Tokopedia | Shop')" || fail "default_month_query must resolve MAX(month) across BOTH Tokopedia platform values, not just plain 'Tokopedia'"
 echo "PASS: default_month_query"
 
-# --- worklist_query (product_tier-based, NOT cumulative-GMV) ---
+# --- worklist_query (stakeholder-aligned current-title coverage) ---
 q=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee")
-echo "$q" | grep -qF "product_tier = 'Tier 1'" || fail "worklist_query (v2) must filter on the precomputed product_tier column, not recompute GMV percentiles"
-if echo "$q" | grep -qi "cumulative_gmv_pct\|OVER (ORDER BY gmv_monthly"; then
-  fail "worklist_query (v2) must NOT recompute a cumulative GMV window -- explicit user decision to trust product_tier instead"
+echo "$q" | grep -qF "cumulative_gmv_share" || fail "worklist_query (v2) must calculate stakeholder cumulative GMV share"
+echo "$q" | grep -qF "r.cumulative_gmv_share <= 0.8" || fail "worklist_query (v2) must scope normal coverage to the stakeholder's top 80% GMV"
+echo "$q" | grep -qF "PARTITION BY sc.country, sc.category, sc.ecommerce_platform, sc.month" || fail "worklist_query (v2) must calculate Tier 1 at the stakeholder query's partition grain"
+if echo "$q" | grep -qF "s.product_tier = 'Tier 1'"; then
+  fail "worklist_query (v2) must not trust stored product_tier for the normal stakeholder scope"
 fi
 echo "$q" | grep -q "cookiesbiscuit.master_cookiesbiscuit_id" || fail "worklist_query (v2) should reference the source table"
 echo "$q" | grep -q "prod_id" || fail "worklist_query (v2) should use the resolved QA primary-key column"
@@ -41,32 +43,34 @@ if echo "$q" | grep -q "ecommerce_platform = 'shopee'"; then
   fail "worklist_query (v2) must never filter on the raw lowercase platform"
 fi
 echo "$q" | grep -qF "REPLACE(s.image, '\"', '')" || fail "worklist_query (v2) must strip embedded double-quotes from image, same fix as v1"
+echo "$q" | grep -q "qa_title_state AS" || fail "worklist_query (v2) must build an exact-title QA state"
+echo "$q" | grep -qF "REGEXP_REPLACE(TRIM(sku_name), r'\\s+', ' ') AS normalized_sku_name" || fail "worklist_query (v2) must normalize QA titles exactly like the stakeholder query"
+echo "$q" | grep -qF "qts.normalized_sku_name = REGEXP_REPLACE(TRIM(sc.sku_name), r'\\s+', ' ')" || fail "worklist_query (v2) must match QA by product_id plus whitespace-normalized current title"
+echo "$q" | grep -qF "WHEN qts.product_id IS NULL THEN 0" || fail "priority 0 must select current titles with no matching QA row"
+if echo "$q" | grep -q "sc.qa_status"; then
+  fail "worklist_query (v2) must not use the source qa_status as its normal coverage gate"
+fi
 echo "$q" | grep -q "JSON_VALUE(SAFE.PARSE_JSON(_meta)" || fail "worklist_query (v2) must read _meta via JSON_VALUE(SAFE.PARSE_JSON(_meta), ...)"
 if echo "$q" | grep -q "SAFE.JSON_VALUE"; then
   fail "worklist_query (v2) must never call SAFE.JSON_VALUE -- not valid BigQuery syntax"
 fi
-echo "$q" | grep -q "ORDER BY priority ASC, gmv_monthly DESC" || fail "worklist_query (v2) must order unreviewed before unconfident, then by GMV"
-echo "$q" | grep -q "qa_status = 'Not Reviewed'" || fail "worklist_query (v2) must gate priority-0 rows to qa_status = 'Not Reviewed'"
+echo "$q" | grep -q "ORDER BY priority ASC, gmv_monthly DESC" || fail "worklist_query (v2) must order title mismatches before unconfident retries, then by GMV"
 echo "$q" | grep -q "LIMIT 300" || fail "worklist_query (v2) must default row_limit to 300"
 grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed exactly once"
 # product_id_dict_qa is INSERT-ONLY -- qa_state must aggregate to order-independent flags per
-# product (LOGICAL_OR over the WHOLE history), never a raw un-deduped SELECT (fans out the LEFT
-# JOIN, leaks already-resolved products back into the worklist forever -- confirmed live,
-# project_non_niq_qa_state_fanout_bug.md, a 380-row v2 worklist was 100% already-resolved this
-# way) and never a "latest row by timestamp" dedup either (also confirmed live to silently
-# un-terminate products when a later write lands, since product_id_dict_qa has no reliable
-# timestamp column).
+# product for the retained pending-unconfident retry. A raw SELECT would fan out the LEFT JOIN;
+# a latest-row sort can silently un-terminate products because _meta timestamps are unreliable.
 echo "$q" | grep -qF "GROUP BY prod_id" || fail "qa_state must GROUP BY the resolved qa_pk_col, not select raw un-deduped rows"
-echo "$q" | grep -qF "LOGICAL_OR(" || fail "qa_state must use LOGICAL_OR to aggregate qa_confidence/human_review across a product's WHOLE history, not just one (possibly stale) row"
+echo "$q" | grep -qF "LOGICAL_OR(" || fail "qa_state must aggregate qa_confidence/human_review across a product's WHOLE history"
 echo "$q" | grep -qF "has_unconfident_pending" || fail "qa_state must track has_unconfident_pending as an aggregate flag"
 echo "$q" | grep -qF "has_confident" || fail "qa_state must track has_confident as an aggregate flag"
 echo "$q" | grep -qF "has_terminal" || fail "qa_state must track has_terminal as an aggregate flag"
-echo "$q" | grep -qF "WHEN qs.has_unconfident_pending AND NOT qs.has_confident AND NOT qs.has_terminal THEN 1" || fail "priority 1 must require pending-and-never-resolved (order-independent), not a single fanned-out row's confidence"
+echo "$q" | grep -qF "WHEN qs.has_unconfident_pending AND NOT qs.has_confident AND NOT qs.has_terminal THEN 1" || fail "priority 1 must require pending-and-never-resolved, not a single fanned-out row"
 if echo "$q" | grep -qF "qs.qa_confidence = 'unconfident'"; then
-  fail "worklist_query (v2) must not gate priority 1 on a single un-aggregated qa_state row's qa_confidence -- that's the fan-out bug"
+  fail "worklist_query (v2) must not gate priority 1 on a single un-aggregated qa_state row's qa_confidence"
 fi
 if echo "$q" | grep -qiE "ROW_NUMBER\(\).*PARTITION BY.*qa_table|ORDER BY.*timestamp.*DESC.*=\s*1"; then
-  fail "worklist_query (v2) must not dedupe qa_state via latest-row-by-timestamp -- confirmed live this silently un-terminates products, use aggregate flags instead"
+  fail "worklist_query (v2) must not dedupe qa_state via latest-row-by-timestamp"
 fi
 echo "PASS: worklist_query"
 
@@ -78,12 +82,12 @@ if echo "$q_tokopedia" | grep -qF "ecommerce_platform = 'Tokopedia'"; then
 fi
 echo "PASS: worklist_query tokopedia platform expansion"
 
-# --- worklist_query filter_table exclusion ---
+# --- worklist_query filter_table exclusion before stakeholder ranking ---
 q_filtered=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee" "" "300" "cookiesbiscuitlemonilo.filter_cookiesbiscuit")
 echo "$q_filtered" | grep -q "filter_state AS" || fail "worklist_query (v2) must create a filter_state CTE when filter_table is given"
 echo "$q_filtered" | grep -qF "SELECT DISTINCT product_id FROM \`sincere-hearth-273704.cookiesbiscuitlemonilo.filter_cookiesbiscuit\`" || fail "worklist_query (v2) must select DISTINCT product_id from the filter table"
-echo "$q_filtered" | grep -qF "WHEN fs.product_id IS NOT NULL THEN NULL" || fail "worklist_query (v2) must exclude already-filtered products"
-[[ "$q_filtered" == *$'CASE\n      WHEN fs.product_id IS NOT NULL THEN NULL\n      WHEN qs.product_id IS NULL'* ]] || fail "the filter_table exclusion must be checked FIRST in the CASE, before the qa_state checks"
+echo "$q_filtered" | grep -qF "LEFT JOIN filter_state fs ON fs.product_id = sc.product_id" || fail "worklist_query (v2) must join the filter table before ranking"
+echo "$q_filtered" | grep -qF "WHERE fs.product_id IS NULL" || fail "worklist_query (v2) must remove filtered products before calculating cumulative GMV"
 if echo "$q" | grep -q "filter_state\|fs.product_id"; then
   fail "worklist_query (v2) must not reference filter_state when no filter_table is given"
 fi
@@ -146,15 +150,17 @@ prompt=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.master_c
   "cookiesbiscuitlemonilo.product_id_dict_qa" "cookiesbiscuitlemonilo.cookiesbiscuitlemonilo_dict" \
   "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \
   "prod_id" "sku_type_complete" "keywords_typo" "cookiesbiscuit_taxonomy_qa" "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" \
-  "42" "cookiesbiscuitlemonilo.product_id_dict")
+  "42" "cookiesbiscuitlemonilo.product_id_dict" "cookiesbiscuit_shopee_ID")
 
 echo "$prompt" | grep -qF "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" || fail "STEP 0 must reference the materialized worklist file path"
 echo "$prompt" | grep -qF "exactly 42 rows" || fail "STEP 0 must state the exact worklist row count"
-echo "$prompt" | grep -qF "product_tier = 'Tier 1'" || fail "STEP 0 must describe the product_tier scoping, not GMV percentile scoping"
-if echo "$prompt" | grep -qi "cumulative GMV\|top 90%"; then
-  fail "prompt (v2) must not reference the v1 GMV-percentile scoping concept"
+echo "$prompt" | grep -qi "top 80% cumulative GMV" || fail "STEP 0 must describe the post-filter stakeholder Tier 1 scope"
+echo "$prompt" | grep -qi "whitespace-normalized sku_name" || fail "STEP 0 must explain the current-title QA matching rule"
+if echo "$prompt" | grep -qi "precomputed product_tier\|top 90%"; then
+  fail "prompt (v2) must not describe the retired stored-tier scope"
 fi
-echo "$prompt" | grep -q "item_description, product_attributes_attrs, priority" || fail "STEP 0 must list item_description/product_attributes_attrs in the worklist row shape"
+echo "$prompt" | grep -q "item_description, product_attributes_attrs, listing_changed" || fail "STEP 0 must list enrichment and reverify fields in the worklist row shape"
+echo "$prompt" | grep -q "priority\. It is already scoped" || fail "STEP 0 must list priority in the worklist row shape"
 echo "$prompt" | grep -q "product_attributes_attrs" || fail "STEP 2a must mention product_attributes_attrs as additional signal alongside item_description"
 echo "$prompt" | grep -qi "Shopee-only signal and NULL on other platforms" || fail "STEP 2a must note item_description/product_attributes_attrs are Shopee-only and NULL elsewhere"
 echo "$prompt" | grep -q "non_niq_helper.py retrieve" || fail "prompt must instruct batch retrieval via non_niq_helper.py's retrieve subcommand"
@@ -209,7 +215,7 @@ prompt_nodict=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.m
   "cookiesbiscuitlemonilo.product_id_dict_qa" "cookiesbiscuitlemonilo.cookiesbiscuitlemonilo_dict" \
   "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \
   "prod_id" "sku_type_complete" "keywords_typo" "cookiesbiscuit_taxonomy_qa" "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" \
-  "42" "-")
+  "42" "-" "cookiesbiscuit_shopee_ID")
 echo "$prompt_nodict" | grep -q "2b. SKIPPED for this category" || fail "an unconfigured ('-') product_id_dict must skip step 2b"
 if grep -qi "run the qa_status UPDATE\|SET qa_status" <<< "$prompt_nodict"; then
   fail "prompt_nodict must never instruct writing to qa_status either"
@@ -256,9 +262,11 @@ grep -qF -- '--max_rows=1000000' <<< "$script_src" || fail "main() (v2) must pas
 grep -qF 'local dataset="$1" platform="$2" country="${3:-ID}"' <<< "$script_src" || fail "main() (v2) must accept an optional COUNTRY positional arg, defaulting to ID"
 grep -qF 'categories --country "$country"' <<< "$script_src" || fail "main() (v2) must pass the resolved country through to non_niq_helper.py categories"
 grep -qF 'country="${country^^}"' <<< "$script_src" || fail "main() (v2) must uppercase a lowercase COUNTRY arg (e.g. th -> TH) before matching the Sheet"
-grep -qF "worklist_file=\"/tmp/\${dataset}_\${platform}_\${country}_v2_full_worklist.jsonl\"" <<< "$script_src" || fail "main() (v2) must materialize the worklist to a v2-distinctly-named, country-scoped file"
+grep -qF 'local tmp_tag="${dataset}_${platform}_${country}"' <<< "$script_src" || fail "main() (v2) must derive a country-scoped scratch tag"
+grep -qF 'worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"' <<< "$script_src" || fail "main() (v2) must materialize the worklist to a v2-distinctly-named, country-scoped file"
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() (v2) must emit NOTHING_TO_DO when the worklist is empty"
-grep -qF 'echo "QUEUE_SIGNAL: $(decide_queue_signal "$claude_output")"' <<< "$script_src" || fail "main() (v2) must emit the post-run signal derived from decide_queue_signal"
+grep -qF 'signal=$(decide_queue_signal "$claude_output")' <<< "$script_src" || fail "main() (v2) must derive the post-run signal from decide_queue_signal"
+grep -qF 'echo "QUEUE_SIGNAL: ${signal}"' <<< "$script_src" || fail "main() (v2) must emit the derived post-run signal"
 grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() (v2) must tolerate a non-zero claude exit"
 grep -qF 'format_result_summary "$claude_output"' <<< "$script_src" || fail "main() (v2) must print the human-readable summary"
 grep -qF 'echo "$claude_output"' <<< "$script_src" || fail "main() (v2) must still echo the raw envelope"
@@ -266,7 +274,7 @@ if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discor
   fail "non_niq_qa_v2.sh must not reference Discord notification or load_env.sh"
 fi
 grep -qF "enrichment_table=\$(echo \"\$category_json\" | jq -r '.\"0\"')" <<< "$script_src" || fail "main() (v2) must resolve enrichment_table from the Sheet's \"0\" column, same as v1"
-grep -qF '"$enrichment_table" "$max_rows" "$filter_table")' <<< "$script_src" || fail "main() (v2) must thread enrichment_table through to worklist_query"
+grep -qF '"$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify")' <<< "$script_src" || fail "main() (v2) must thread enrichment and scope options through to worklist_query"
 echo "PASS: main() wiring"
 
 echo "ALL TESTS PASSED (part 2: prompt + main)"

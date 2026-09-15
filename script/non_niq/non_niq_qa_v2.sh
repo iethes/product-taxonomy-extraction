@@ -10,8 +10,8 @@ set -euo pipefail
 #
 # KATEGORI, if given, adds an exact-match filter on source_table's own `kategori` column (a
 # per-category sub-scope some master_table_prod tables carry, e.g. lighting's "Connected Light")
-# on top of the existing product_tier='Tier 1' scoping -- optional because most datasets don't
-# have this column at all.
+# before the stakeholder-aligned Tier 1 calculation -- optional because most datasets don't have
+# this column at all.
 #
 # MONTHLY_REVERIFY=1 env var (optional, off by default): forces re-review of a product_id even if
 # it already has a lifetime-confident QA row, whenever that product_id's sku_name/kategori differs
@@ -20,15 +20,12 @@ set -euo pipefail
 # default so every other dataset's query is byte-identical to before. See worklist_query()'s
 # listing_changed logic.
 #
-# v2 differs from non_niq_qa.sh (v1) in exactly one respect: how the worklist is SOURCED.
-# v1 reads the Sheet's `table` (AB, "..._dev") column and computes top-90%-cumulative-GMV itself
-# via a window function. v2 reads the Sheet's `master_table_prod` (AC, no "_dev" suffix) column
-# and trusts that table's own precomputed `product_tier` column ('Tier 1' = in scope) instead of
-# recomputing GMV ranking -- confirmed live this is a genuinely different table with its own
-# qa_status column, not a view/alias of the _dev table. Everything downstream (decision tree,
-# retry-once confidence loop, filter-table exclusion, result summary) is unchanged from v1 --
-# only the worklist source differs. Neither script writes qa_status -- a separate external
-# QA-labelling update process reads product_id_dict_qa and flips it independently.
+# v2 reads the Sheet's `master_table_prod` (AC, no "_dev" suffix), which is a genuinely distinct
+# table with its own qa_status column. Its normal worklist scope intentionally matches the
+# stakeholder coverage query: filter first, recompute Tier 1 as the top 80% cumulative GMV, then
+# require an exact product_id + whitespace-normalized sku_name QA match. Product-ID-only history
+# is retained solely for the pending-unconfident retry safety loop. Neither script writes
+# qa_status -- a separate external QA-labelling update process owns it.
 # See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the shared design this
 # still implements (decision tree, confidence loop, _meta stamping).
 
@@ -72,17 +69,11 @@ default_month_query() {
   echo "SELECT FORMAT_DATE('%Y-%m', MAX(month)) FROM \`${PROJECT}.${source_table}\` WHERE ecommerce_platform $(platform_match_clause "$platform_titlecase")"
 }
 
-# Scope: product_tier = 'Tier 1' (precomputed upstream on master_table_prod -- confirmed live,
-# populated per platform, e.g. cookiesbiscuit/Shopee/2026-07: 5043 Tier 1 rows) INSTEAD OF v1's
-# self-computed top-90%-cumulative-GMV window function. Explicit user decision: v2 trusts this
-# table's own tiering rather than recomputing it. Priority tiers (0 = never QA'd, 1 = unconfident
-# retry-eligible) and the filter_table exclusion are otherwise identical to v1's worklist_query --
-# same qa_state/filter_state join shape, same confidence-loop semantics.
-#
-# forced_merchant_ids_sql (main()'s merchant-allowlist Sheet lookup, non_niq_helper.py's
-# forced-merchants subcommand): known client-owned/competitor merchant_ids that must be QA'd
-# regardless of product_tier -- OR'd into the tier scope below rather than replacing it, so a
-# force-included merchant never REMOVES rows that were already Tier 1.
+# Normal scope intentionally mirrors the stakeholder query: filter out confirmed out-of-scope
+# products FIRST, then recompute Tier 1 as the top-80%-cumulative-GMV population. A product is
+# normally covered only when product_id AND whitespace-normalized sku_name match a QA row; title
+# changes under an existing product_id are therefore re-reviewed. The product-ID qa_state remains
+# only for the existing pending-unconfident retry loop.
 worklist_query() {
   local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5" enrichment_table="${6:-}"
   # Same LIMIT rationale as v1: a single agent session's turn budget can't process an unbounded
@@ -91,7 +82,6 @@ worklist_query() {
   local filter_table="${8:-}"
   local kategori="${9:-}"
   local monthly_reverify="${10:-}"
-  local forced_merchant_ids_sql="${11:-}"
   local platform_titlecase="${platform^}"
   # item_description/product_attributes_attrs enrichment is Shopee-only by data availability --
   # ported VERBATIM from non_niq_qa.sh's worklist_query (v1), already debugged there (confirmed
@@ -121,37 +111,30 @@ worklist_query() {
     enrichment_join="LEFT JOIN enrichment_dedup e ON CAST(e.item_itemid AS STRING) = s.product_id"
     enrichment_select="e.item_description, e.product_attributes_attrs"
   fi
-  # image carries the same live-observed embedded-double-quote artifact v1 found and fixed --
-  # stripping here, once, rather than relying on the prompt to strip it per-product.
-  #
-  # filter_table exclusion: same rationale as v1 -- STEP 2a's NO branch writes ONLY to the filter
-  # table, never to qa_table, so a product already confirmed out-of-scope must be excluded here
-  # explicitly (qa_status alone can't be relied on for this -- this harness never writes it; a
-  # separate external process owns that). SELECT DISTINCT absorbs filter_table's own known
-  # duplicate-row issue -- existence is all that matters, not row count.
-  local filter_cte="" filter_join="" filter_priority_check=""
+
+  # Filter before calculating the GMV window, matching the stakeholder query exactly. The config
+  # normally requires this table, but the optional branch preserves the function's testable API.
+  local filter_cte="" filter_join="" filter_where=""
   if [[ -n "$filter_table" && "$filter_table" != "-" && "$filter_table" != "null" ]]; then
     filter_cte="filter_state AS (
   SELECT DISTINCT product_id FROM \`${PROJECT}.${filter_table}\`
 ),
 "
     filter_join="LEFT JOIN filter_state fs ON fs.product_id = sc.product_id"
-    filter_priority_check="WHEN fs.product_id IS NOT NULL THEN NULL
-      "
+    filter_where="WHERE fs.product_id IS NULL"
   fi
+
   local kategori_clause=""
   if [[ -n "$kategori" ]]; then
     kategori_clause="    AND s.kategori = '${kategori}'
 "
   fi
-  local tier_clause="s.product_tier = 'Tier 1'"
-  if [[ -n "$forced_merchant_ids_sql" ]]; then
-    tier_clause="(s.product_tier = 'Tier 1' OR s.merchant_id IN (${forced_merchant_ids_sql}))"
-  fi
-  # listing_changed: only wired up under MONTHLY_REVERIFY=1 -- assumes source_table has a
-  # `kategori` column, true for lighting (the only caller of this flag so far), NOT true for most
-  # other datasets on this shared script, so this must stay conditional rather than a bare
-  # unconditional SELECT (would break every other dataset's query with "column not found").
+
+  # Normal scope is byte-for-byte the stakeholder's post-filter <=80% cumulative-GMV population.
+  local stakeholder_scope_clause="r.cumulative_gmv_share <= 0.8"
+
+  # listing_changed remains an optional safety review for categories that explicitly opt in. The
+  # normal title-mismatch path below already catches title changes relative to QA history.
   local scoped_kategori_select="" reverify_cte="" reverify_join=""
   local reverify_expr="FALSE" reverify_prior_select="NULL AS prior_sku_name, NULL AS prior_kategori"
   if [[ -n "$monthly_reverify" ]]; then
@@ -170,29 +153,42 @@ worklist_query() {
     reverify_expr="(ps.product_id IS NOT NULL AND (ps.prior_sku_name IS DISTINCT FROM sc.sku_name OR ps.prior_kategori IS DISTINCT FROM sc.current_kategori))"
     reverify_prior_select="ps.prior_sku_name, ps.prior_kategori"
   fi
+
   cat <<SQL
-WITH ${enrichment_cte_and_join}scoped AS (
-  SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image, s.ecommerce_platform, s.qa_status, s.gmv_monthly, ${enrichment_select}${scoped_kategori_select}
+WITH ${enrichment_cte_and_join}${filter_cte}scoped AS (
+  SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image, s.ecommerce_platform,
+         s.country, s.category, s.month, s.gmv_monthly, s.merchant_id,
+         ${enrichment_select}${scoped_kategori_select}
   FROM \`${PROJECT}.${source_table}\` s
   ${enrichment_join}
-  WHERE ${tier_clause}
-    AND FORMAT_DATE('%Y-%m', s.month) = '${month}'
+  WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}'
     AND s.ecommerce_platform $(platform_match_clause "$platform_titlecase")
 ${kategori_clause}),
+ranked AS (
+  SELECT sc.*,
+    SUM(sc.gmv_monthly) OVER (
+      PARTITION BY sc.country, sc.category, sc.ecommerce_platform, sc.month
+      ORDER BY sc.gmv_monthly DESC, sc.product_id ASC
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) / NULLIF(SUM(sc.gmv_monthly) OVER (
+      PARTITION BY sc.country, sc.category, sc.ecommerce_platform, sc.month
+    ), 0) AS cumulative_gmv_share
+  FROM scoped sc
+  ${filter_join}
+  ${filter_where}
+),
+stakeholder_scope AS (
+  SELECT * FROM ranked r
+  WHERE ${stakeholder_scope_clause}
+),
+qa_title_state AS (
+  SELECT DISTINCT ${qa_pk_col} AS product_id,
+    REGEXP_REPLACE(TRIM(sku_name), r'\\s+', ' ') AS normalized_sku_name
+  FROM \`${PROJECT}.${qa_table}\`
+),
 qa_state AS (
-  -- product_id_dict_qa is INSERT-ONLY -- a product can have many historical rows, not one. A raw
-  -- SELECT (no dedup) fans out the LEFT JOIN below: a product with an OLD unconfident row and a
-  -- NEWER confident row would match on the old row too, leaking a resolved product back into the
-  -- worklist as priority=1 forever. Confirmed live (project memory
-  -- project_non_niq_qa_state_fanout_bug.md): a 380-row v2 worklist was 100% already-resolved this
-  -- way (332 confident, 48 terminal, 0 genuinely retry-eligible). Deduping to the "latest row by
-  -- timestamp" is NOT the fix -- also confirmed live (same memory): product_id_dict_qa has no
-  -- timestamp COLUMN (only inside _meta JSON, absent entirely on legacy rows), and "latest row"
-  -- ordering was caught silently UN-TERMINATING products whenever a later write landed after a
-  -- human_review:true row. The correct fix is order-independent aggregate flags over the WHOLE
-  -- history per product: has this product EVER been confident, EVER gone terminal, EVER had a
-  -- still-pending unconfident row -- gate priority 1 on pending-and-never-resolved, not on
-  -- whichever row happens to sort last.
+  -- product_id_dict_qa is INSERT-ONLY. These flags are deliberately aggregated across all
+  -- product-ID history to keep the one permitted pending-unconfident retry order-independent.
   SELECT
     ${qa_pk_col} AS product_id,
     LOGICAL_OR(JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.qa_confidence') = 'unconfident'
@@ -202,19 +198,21 @@ qa_state AS (
   FROM \`${PROJECT}.${qa_table}\`
   GROUP BY ${qa_pk_col}
 ),
-${filter_cte}${reverify_cte}prioritized AS (
+${reverify_cte}prioritized AS (
   SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly, sc.ecommerce_platform,
          sc.item_description, sc.product_attributes_attrs,
     ${reverify_expr} AS listing_changed, ${reverify_prior_select},
     CASE
-      ${filter_priority_check}WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
+      WHEN qts.product_id IS NULL THEN 0
       WHEN qs.has_unconfident_pending AND NOT qs.has_confident AND NOT qs.has_terminal THEN 1
       WHEN ${reverify_expr} THEN 0
       ELSE NULL
     END AS priority
-  FROM scoped sc
+  FROM stakeholder_scope sc
+  LEFT JOIN qa_title_state qts
+    ON qts.product_id = sc.product_id
+   AND qts.normalized_sku_name = REGEXP_REPLACE(TRIM(sc.sku_name), r'\\s+', ' ')
   LEFT JOIN qa_state qs ON qs.product_id = sc.product_id
-  ${filter_join}
   ${reverify_join}
 )
 SELECT * FROM prioritized
@@ -264,11 +262,13 @@ build_qa_prompt() {
   fi
 
   cat <<PROMPT
-Non-NIQ Agentic QA session (v2 -- product_tier-based worklist) for dataset=${dataset},
+Non-NIQ Agentic QA session (v2 -- stakeholder-aligned current-title worklist) for dataset=${dataset},
 platform=${platform}, country=${country}. See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the
 decision tree, confidence loop, and _meta conventions this still implements -- read it in full
-before starting. The only difference from the original design: the worklist below comes from
-master_table_prod's precomputed product_tier column, not a self-computed GMV percentile.
+before starting. The normal worklist filters confirmed out-of-scope products, recomputes Tier 1 as
+the top 80% cumulative GMV, then includes any current sku_name that has no matching QA row for the
+same product_id after whitespace normalization. Pending-unconfident retries remain an explicit
+operational exception to that normal stakeholder scope.
 
 Resolved for this run: source_table=${PROJECT}.${source_table} (master_table_prod, NOT the _dev
 table -- confirmed a separate table with its own qa_status column), qa_table=${PROJECT}.${qa_table},
@@ -289,9 +289,10 @@ BigQuery to re-fetch it, and do NOT trust any other row count than ${worklist_co
 (in slices if it's too large for one Read) rather than querying BigQuery for it. Each line has:
 product_id, sku_name, image, gmv_monthly, ecommerce_platform,
 item_description, product_attributes_attrs, listing_changed, prior_sku_name, prior_kategori,
-priority. It is already scoped to
-product_tier = 'Tier 1' and prioritized (unreviewed rows before agent-flagged-unconfident retry
-rows, both by gmv_monthly descending) -- process it in that order. If you cannot account for all
+priority. It is already scoped to the post-filter top-80%-cumulative-GMV Tier 1 population,
+with a product considered reviewed only when its current whitespace-normalized sku_name matches a
+QA row for the same product_id. It is prioritized (current-title mismatches before
+agent-flagged-unconfident retries, both by gmv_monthly descending) -- process it in that order. If you cannot account for all
 ${worklist_count} rows by the end of your turn budget, explicitly report status: partial (or
 status: blocked if you cannot proceed at all) -- never silently process a subset and report
 status: complete.
@@ -692,22 +693,6 @@ main() {
   fi
   log INFO "Latest month resolved: ${month}"
 
-  # Merchant-allowlist Sheet lookup (Client OS Only / Competitor OS, matched on country/category/
-  # platform) -- known client-owned/competitor merchant_ids force-included in the worklist below
-  # regardless of product_tier. Non-fatal: any failure here (Sheets API hiccup, bad JSON) just
-  # means zero force-included merchants this run, never blocks the QA session -- same `|| true`
-  # philosophy as the Sheet write-back further down.
-  local platform_titlecase="${platform^}"
-  local category
-  category=$(echo "$category_json" | jq -r '.category')
-  log INFO "Checking merchant-allowlist Sheet for force-include merchant IDs (country=${country}, category=${category}, platform=${platform_titlecase})..."
-  local forced_merchant_ids_json forced_merchant_ids_sql forced_merchant_count
-  forced_merchant_ids_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" forced-merchants \
-    --country "$country" --category "$category" --platform "$platform_titlecase") || forced_merchant_ids_json="[]"
-  forced_merchant_ids_sql=$(echo "$forced_merchant_ids_json" | jq -r '[.[] | @json] | join(",")' 2>/dev/null) || forced_merchant_ids_sql=""
-  forced_merchant_count=$(echo "$forced_merchant_ids_json" | jq 'length' 2>/dev/null) || forced_merchant_count=0
-  log INFO "Force-include merchants resolved: ${forced_merchant_count}"
-
   local meili_index="${dataset}_taxonomy_qa"
 
   # All of this run's /tmp scratch files are keyed off this tag. MUST include kategori when set --
@@ -723,13 +708,13 @@ main() {
   fi
 
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify" "$forced_merchant_ids_sql")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify")
 
   # Materialize the FULL worklist to a file for Claude to Read -- same rationale as v1: handing
   # Claude raw SQL to re-run risks output truncation on large worklists silently passing as
   # status: partial -> QUEUE_SIGNAL: DONE. --max_rows=1000000 is NOT optional -- bq query silently
   # defaults to --max_rows=100 otherwise (v1 confirmed this live).
-  log INFO "Querying BigQuery to materialize the worklist (product_tier=Tier 1, limit=${max_rows})..."
+  log INFO "Querying BigQuery to materialize the worklist (post-filter top-80%-GMV Tier 1, limit=${max_rows})..."
   local worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"
   if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=json --max_rows=1000000 \
     "$query" | jq -c '.[]' > "$worklist_file"; then
@@ -743,10 +728,10 @@ main() {
   worklist_count=$(wc -l < "$worklist_file" | tr -d ' ')
 
   if [[ "$worklist_count" == "0" ]]; then
-    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, product_tier=Tier 1) -- nothing to do."
+    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, post-filter top-80%-GMV Tier 1) -- nothing to do."
     rm -f "$worklist_file"
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
-    emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope worklist for ${dataset}/${platform}/${country}/${month}"
+    emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope post-filter Tier 1 worklist for ${dataset}/${platform}/${country}/${month}"
     exit 0
   fi
 
