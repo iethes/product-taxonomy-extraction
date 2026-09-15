@@ -478,6 +478,37 @@ Output ONLY this JSON when done, nothing else:
 PROMPT
 }
 
+# Detects claude -p's session-limit response, e.g.:
+#   {"is_error":true,"num_turns":1,"api_error_status":429,"result":"You've hit your session limit
+#    · resets 7:20pm (Asia/Jakarta)",...}
+# Gated on api_error_status==429 AND num_turns<=1 ONLY -- never on a text/grep match anywhere in
+# claude_output. claude_output is the full transcript blob; a real session that hit turns of real
+# BigQuery writes and merely mentioned "429" or a connection error in its own findings must NEVER
+# be treated as "no work done" and retried, or the retry would re-run STEP 2's writes a second
+# time (the exact duplicate-write failure class documented across past sessions in memory). A
+# 429 at num_turns<=1 fired before the prompt was ever acted on -- provably zero writes happened.
+is_claude_rate_limited() {
+  local claude_output="$1"
+  jq -e '.api_error_status == 429 and (.num_turns // 0) <= 1' <<< "$claude_output" >/dev/null 2>&1
+}
+
+# Parses "resets 7:20pm (Asia/Jakarta)" out of claude's .result string into a unix epoch. Rolls
+# forward to tomorrow if that clock time has already passed today (the reset is always in the
+# future, never in the past). Echoes nothing and returns 1 if the string doesn't parse.
+parse_claude_reset_epoch() {
+  local claude_output="$1" result time_str tz epoch now
+  result=$(jq -r '.result // empty' <<< "$claude_output" 2>/dev/null) || return 1
+  time_str=$(grep -oP 'resets \K\d{1,2}:\d{2}\s*[ap]m' <<< "$result" | head -1) || true
+  [[ -z "$time_str" ]] && return 1
+  tz=$(grep -oP '\(\K[A-Za-z_]+/[A-Za-z_]+(?=\))' <<< "$result" | head -1) || true
+  epoch=$(TZ="${tz:-UTC}" date -d "$time_str" +%s 2>/dev/null) || return 1
+  now=$(date +%s)
+  if (( epoch <= now )); then
+    epoch=$(TZ="${tz:-UTC}" date -d "$time_str tomorrow" +%s 2>/dev/null) || return 1
+  fi
+  echo "$epoch"
+}
+
 extract_json_object() {
   local text="$1"
   printf '%s' "$text" | grep -Pzo '(?s)\{.*\}' | tr -d '\0'
@@ -735,8 +766,37 @@ main() {
   # `|| true` is load-bearing under `set -e` -- same rationale as v1: a non-zero claude exit can
   # still follow real BigQuery writes, and dying here would swallow the transcript that says what
   # was written.
-  local claude_output
-  claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt") || true
+  #
+  # Rate-limit retry: queue_worker.sh's heartbeat only fires ONCE per loop iteration, BEFORE this
+  # subprocess starts (script/lib/queue_common.sh) -- there is no heartbeat while we sleep here.
+  # Sleeping past LEASE_TIMEOUT_HOURS (default 4h, reclaim_stale_leases_query) would let another
+  # worker reclaim this task mid-sleep and start a concurrent duplicate run on the same worklist --
+  # the exact bug in project_non_niq_qa_concurrent_session_launch_gap.md. So the wait is capped at
+  # half the lease window; a reset further out than that exits BLOCKED instead of sleeping through
+  # the lease, so the task is safely reclaimed and retried later rather than raced.
+  local claude_output claude_attempt=1 max_claude_attempts=10
+  local lease_safe_cap=$(( (${LEASE_TIMEOUT_HOURS:-4} * 3600) / 2 ))
+  while :; do
+    claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt") || true
+    is_claude_rate_limited "$claude_output" || break
+    local wait_secs
+    wait_secs=$(parse_claude_reset_epoch "$claude_output") && wait_secs=$(( wait_secs - $(date +%s) + 60 )) \
+      || wait_secs=1800
+    (( wait_secs < 60 )) && wait_secs=60
+    if (( wait_secs > lease_safe_cap )); then
+      log WARN "Claude session limit hit; reset is ${wait_secs}s away, longer than the safe lease window (${lease_safe_cap}s) -- exiting BLOCKED instead of sleeping through the task lease."
+      echo "QUEUE_SIGNAL: BLOCKED"
+      emit_result "${dataset}:${platform}" "BLOCKED" "Claude session limit hit; reset further away than the safe lease window"
+      exit 0
+    fi
+    claude_attempt=$((claude_attempt + 1))
+    if (( claude_attempt > max_claude_attempts )); then
+      log ERROR "Claude session limit hit again after ${max_claude_attempts} waits -- giving up."
+      break
+    fi
+    log WARN "Claude session limit hit (attempt ${claude_attempt}/${max_claude_attempts}) -- sleeping ${wait_secs}s until reset."
+    sleep "$wait_secs"
+  done
   log INFO "claude subprocess returned, formatting summary..."
   echo "$claude_output"
   format_result_summary "$claude_output"

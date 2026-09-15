@@ -18,8 +18,30 @@ set +a
 # queue_ctl.sh -- see those files) -- this removes the need for any SET at all, so the leak is
 # structurally impossible rather than merely patched.
 # Usage: queue_psql "<sql>" [extra psql flags...]
+# Retries on connection-establishment failures (PgBouncer/network blips like "No route to host" --
+# confirmed live) -- safe because the error fires before psql ever reaches the server, so the SQL
+# provably never ran. Never retries on any other error (bad SQL, constraint violation, etc.) --
+# those already reached the server and retrying could double-run a non-idempotent statement.
 queue_psql() {
   local sql="$1"
   shift
-  psql "$QUEUE_DATABASE_URL" "$@" -c "$sql"
+  local attempt=1 max_attempts=5 rc errfile
+  errfile=$(mktemp)
+  while :; do
+    if psql "$QUEUE_DATABASE_URL" "$@" -c "$sql" 2>"$errfile"; then
+      cat "$errfile" >&2
+      rm -f "$errfile"
+      return 0
+    fi
+    rc=$?
+    if ! grep -qiE 'no route to host|could not connect to server|connection refused|connection timed out' "$errfile" \
+      || (( attempt >= max_attempts )); then
+      cat "$errfile" >&2
+      rm -f "$errfile"
+      return "$rc"
+    fi
+    echo "[queue_psql] connection error (attempt ${attempt}/${max_attempts}), retrying in $((attempt * 5))s..." >&2
+    sleep $((attempt * 5))
+    attempt=$((attempt + 1))
+  done
 }
