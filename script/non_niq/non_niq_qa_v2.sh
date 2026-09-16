@@ -20,12 +20,22 @@ set -euo pipefail
 # default so every other dataset's query is byte-identical to before. See worklist_query()'s
 # listing_changed logic.
 #
+# AGENT_HARNESS env var (optional, defaults to "claude"): which coding-agent CLI drives the
+# build_qa_prompt() session. Checked for availability (via `command -v`) before any BigQuery work
+# starts -- an unavailable or unsupported harness fails fast with QUEUE_SIGNAL: FAILED rather than
+# burning a worklist query first.
+#       AGENT_HARNESS=codex script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee
+# Claude and Codex have separate adapters in main(): Claude returns its JSON envelope on stdout;
+# Codex writes its schema-constrained final message to --output-last-message. Do not funnel a new
+# harness through either adapter without implementing its own invocation and output contract.
+#
 # v2 reads the Sheet's `master_table_prod` (AC, no "_dev" suffix), which is a genuinely distinct
-# table with its own qa_status column. Its normal worklist scope intentionally matches the
-# stakeholder coverage query: filter first, recompute Tier 1 as the top 80% cumulative GMV, then
-# require an exact product_id + whitespace-normalized sku_name QA match. Product-ID-only history
-# is retained solely for the pending-unconfident retry safety loop. Neither script writes
-# qa_status -- a separate external QA-labelling update process owns it.
+# table with its own qa_status column. Its normal worklist scope is modeled on the stakeholder
+# coverage query but widened: filter first, recompute Tier 1 as the top 90% cumulative GMV
+# (stakeholder query itself uses 80% for Tier 1 -- see worklist_query()'s stakeholder_scope_clause
+# for the deliberate widening), then require an exact product_id + whitespace-normalized sku_name
+# QA match. Product-ID-only history is retained solely for the pending-unconfident retry safety
+# loop. Neither script writes qa_status -- a separate external QA-labelling update process owns it.
 # See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the shared design this
 # still implements (decision tree, confidence loop, _meta stamping).
 
@@ -49,6 +59,38 @@ source "${REPO_ROOT}/script/lib/common.sh"
 # Sheet row -- 'tokopedia' as a CLI platform arg is meant to cover both under the one Sheet row's
 # config (same qa_table/dict_table/filter_table/master_table_prod). Shared by
 # default_month_query() and worklist_query() so the two never drift out of sync on this.
+# Known harness name -> CLI binary. Claude and Codex have real adapters in main(); the remaining
+# names let require_harness() distinguish "not installed" from "recognized but not wired yet".
+declare -A HARNESS_BIN=(
+  [claude]="claude"
+  [codex]="codex"
+  [pi]="pi"
+  [omp]="omp"
+  [opencode]="opencode"
+)
+
+# Fails fast, before any Sheet/BigQuery work, if AGENT_HARNESS names an unrecognized harness or
+# its CLI isn't on PATH. Returns 0 only for a harness this script can actually run.
+require_harness() {
+  local harness="$1" bin
+  bin="${HARNESS_BIN[$harness]:-}"
+  if [[ -z "$bin" ]]; then
+    echo "Unknown AGENT_HARNESS='${harness}' -- supported: ${!HARNESS_BIN[*]}" >&2
+    return 1
+  fi
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "AGENT_HARNESS='${harness}' selected but '${bin}' is not on PATH." >&2
+    return 1
+  fi
+  case "$harness" in
+    claude|codex) ;;
+    *)
+      echo "AGENT_HARNESS='${harness}' found on PATH, but its invocation/output-parsing isn't implemented in this script yet." >&2
+      return 1
+      ;;
+  esac
+}
+
 platform_match_clause() {
   local platform_titlecase="$1"
   if [[ "$platform_titlecase" == "Tokopedia" ]]; then
@@ -70,7 +112,7 @@ default_month_query() {
 }
 
 # Normal scope intentionally mirrors the stakeholder query: filter out confirmed out-of-scope
-# products FIRST, then recompute Tier 1 as the top-80%-cumulative-GMV population. A product is
+# products FIRST, then recompute Tier 1 as the top-90%-cumulative-GMV population. A product is
 # normally covered only when product_id AND whitespace-normalized sku_name match a QA row; title
 # changes under an existing product_id are therefore re-reviewed. The product-ID qa_state remains
 # only for the existing pending-unconfident retry loop.
@@ -130,8 +172,9 @@ worklist_query() {
 "
   fi
 
-  # Normal scope is byte-for-byte the stakeholder's post-filter <=80% cumulative-GMV population.
-  local stakeholder_scope_clause="r.cumulative_gmv_share <= 0.8"
+  # Widened past the stakeholder query's own Tier 1 cutoff (0.8) to <=90% cumulative GMV --
+  # deliberate: this scope now also covers what the stakeholder query itself calls Tier 2.
+  local stakeholder_scope_clause="r.cumulative_gmv_share <= 0.9"
 
   # listing_changed remains an optional safety review for categories that explicitly opt in. The
   # normal title-mismatch path below already catches title changes relative to QA history.
@@ -242,7 +285,7 @@ primary_filter_table() {
 build_qa_prompt() {
   local dataset="$1" platform="$2" country="$3" source_table="$4" qa_table="$5" dict_table="$6" filter_table="$7"
   local qa_pk_col="$8" dict_identity_col="$9" dict_typo_col="${10}" meili_index="${11}" worklist_file="${12}"
-  local worklist_count="${13}" product_id_dict="${14}" tmp_tag="${15}"
+  local worklist_count="${13}" product_id_dict="${14}" tmp_tag="${15}" agent_meta_source="${16:-claude_code}"
 
   # The QA table's identity column is `sku_type_complete` -- same resolution as v1.
   local qa_identity_col="sku_type_complete"
@@ -266,7 +309,7 @@ Non-NIQ Agentic QA session (v2 -- stakeholder-aligned current-title worklist) fo
 platform=${platform}, country=${country}. See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the
 decision tree, confidence loop, and _meta conventions this still implements -- read it in full
 before starting. The normal worklist filters confirmed out-of-scope products, recomputes Tier 1 as
-the top 80% cumulative GMV, then includes any current sku_name that has no matching QA row for the
+the top 90% cumulative GMV, then includes any current sku_name that has no matching QA row for the
 same product_id after whitespace normalization. Pending-unconfident retries remain an explicit
 operational exception to that normal stakeholder scope.
 
@@ -289,7 +332,7 @@ BigQuery to re-fetch it, and do NOT trust any other row count than ${worklist_co
 (in slices if it's too large for one Read) rather than querying BigQuery for it. Each line has:
 product_id, sku_name, image, gmv_monthly, ecommerce_platform,
 item_description, product_attributes_attrs, listing_changed, prior_sku_name, prior_kategori,
-priority. It is already scoped to the post-filter top-80%-cumulative-GMV Tier 1 population,
+priority. It is already scoped to the post-filter top-90%-cumulative-GMV Tier 1 population,
 with a product considered reviewed only when its current whitespace-normalized sku_name matches a
 QA row for the same product_id. It is prioritized (current-title mismatches before
 agent-flagged-unconfident retries, both by gmv_monthly descending) -- process it in that order. If you cannot account for all
@@ -350,7 +393,7 @@ STEP 2 -- For each product in the worklist, in order:
       NO  -> write {product_id, ecommerce_platform, sku_name, reason} to \`${PROJECT}.${filter_table}\`
              (this dataset's OWN filter table -- never write to a different dataset's filter table
              even if the Sheet cross-references one for read context), _meta stamped
-             '{"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}' (see the _meta format
+             '{"source":"${agent_meta_source}","timestamp":"<now, ISO 8601 UTC>"}' (see the _meta format
              rule below), do NOT create a taxonomy entry. Move to the next product.
              Use the worklist row's OWN \`ecommerce_platform\` value verbatim (it's the source
              table's real, Title-Case value, e.g. "Shopee"/"Lazada" -- do not lowercase it or
@@ -388,8 +431,8 @@ ${step2_block}
                        re-inferring.
                      Then insert brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if
                      you have common misspellings) into \`${PROJECT}.${dict_table}\`, _meta
-                     stamped '{"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}' here
-                     (see the _meta format rule below -- NOT the bare string "claude_code", that
+                     stamped '{"source":"${agent_meta_source}","timestamp":"<now, ISO 8601 UTC>"}' here
+                     (see the _meta format rule below -- NOT the bare string "${agent_meta_source}", that
                      is not valid JSON).
              Step B: populate the remaining attribute columns for this dict's schema, GROUNDED on
                      existing dict rows' actual vocabulary and formatting -- query
@@ -410,14 +453,14 @@ ${step2_block}
         existed for it before this run, OR this row's listing_changed is true -- see the
         listing_changed note in STEP 0, a listing swap under an old product_id is a fresh judgment,
         not a retry): write _meta =
-        '{"source":"claude_code","qa_confidence":"confident","timestamp":"<now, ISO 8601 UTC>"}' if
+        '{"source":"${agent_meta_source}","qa_confidence":"confident","timestamp":"<now, ISO 8601 UTC>"}' if
         confident, or
-        '{"source":"claude_code","qa_confidence":"unconfident","human_review":false,"timestamp":"<now>"}'
+        '{"source":"${agent_meta_source}","qa_confidence":"unconfident","human_review":false,"timestamp":"<now>"}'
         if not.
       - If this product ALREADY had a qa_confidence:'unconfident', human_review:false row before
         this run (i.e. this is its one allowed retry): and you are STILL unconfident after
         redoing 2a-2c with full multimodal effort, write _meta =
-        '{"source":"claude_code","qa_confidence":"unconfident","human_review":true,"timestamp":"<now>"}'
+        '{"source":"${agent_meta_source}","qa_confidence":"unconfident","human_review":true,"timestamp":"<now>"}'
         -- this is terminal, the product will not re-enter future worklists for this harness.
         If you ARE confident on this retry, write the confident shape as above.
 
@@ -462,9 +505,9 @@ Hard rules, never relaxed:
 - Every _meta WRITE must be a JSON string, never a bare string. Baseline format, used for every
   _meta write in this session unless a step above specifies a richer shape (2d's self-QA write
   adds qa_confidence/human_review on top of this same base):
-    {"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}
-  e.g. {"source":"claude_code","timestamp":"2026-08-16T19:19:06Z"}. A bare string like
-  "claude_code" (no braces/quotes-as-JSON) is NOT valid JSON -- SAFE.PARSE_JSON on it returns
+    {"source":"${agent_meta_source}","timestamp":"<now, ISO 8601 UTC>"}
+  e.g. {"source":"${agent_meta_source}","timestamp":"2026-08-16T19:19:06Z"}. A bare string like
+  "${agent_meta_source}" (no braces/quotes-as-JSON) is NOT valid JSON -- SAFE.PARSE_JSON on it returns
   NULL, silently losing source/timestamp on every future read of that row.
 - Attempt to resolve the ENTIRE worklist within your turn budget this session -- do not
   self-limit to a small sample. Stop early only when genuinely low on turns, and say so honestly
@@ -474,8 +517,9 @@ If you hit a genuine blocker -- something wrong with these instructions, missing
 that would make proceeding unsafe -- stop and output status='blocked' with the blockers array
 populated. That is a valid, expected outcome.
 
-Output ONLY this JSON when done, nothing else:
-{status: complete|partial|failed|blocked, rows_qa_confirmed, rows_qa_unconfident, rows_filtered, rows_created_in_dict, findings, blockers}.
+Output ONLY a valid JSON object when done, nothing else. Its status must be one of complete,
+partial, failed, or blocked; its row counts must be integers; and findings/blockers must be arrays
+of strings.
 PROMPT
 }
 
@@ -515,17 +559,28 @@ extract_json_object() {
   printf '%s' "$text" | grep -Pzo '(?s)\{.*\}' | tr -d '\0'
 }
 
-# Identical to v1's -- shared contract, not shared code (self-contained script, same as v1).
+# Claude returns the requested final object in a JSON envelope's `.result`; Codex writes the
+# schema-constrained final object directly via `--output-last-message`. Normalize both forms so
+# all downstream queue logic has one result-object contract.
 extract_result_json() {
-  local claude_output="$1"
-  local result_json
-  result_json=$(echo "$claude_output" | jq -r '.result // empty' 2>/dev/null) || result_json=""
+  local agent_output="$1" result_json extracted
+
+  if echo "$agent_output" | jq -e 'type == "object" and has("status")' >/dev/null 2>&1; then
+    echo "$agent_output"
+    return
+  fi
+
+  result_json=$(echo "$agent_output" | jq -r '.result // empty' 2>/dev/null) || result_json=""
   if [[ -z "$result_json" ]]; then
-    echo ""
+    extracted=$(extract_json_object "$agent_output")
+    if [[ -n "$extracted" ]] && echo "$extracted" | jq -e 'type == "object" and has("status")' >/dev/null 2>&1; then
+      echo "$extracted"
+    else
+      echo ""
+    fi
     return
   fi
   if ! echo "$result_json" | jq -e . >/dev/null 2>&1; then
-    local extracted
     extracted=$(extract_json_object "$result_json")
     if [[ -n "$extracted" ]] && echo "$extracted" | jq -e . >/dev/null 2>&1; then
       result_json="$extracted"
@@ -633,6 +688,14 @@ main() {
   local monthly_reverify="${MONTHLY_REVERIFY:-}"
   [[ -n "$monthly_reverify" ]] && log INFO "MONTHLY_REVERIFY enabled -- worklist will force re-review of product_ids whose sku_name/kategori changed since their prior month's row."
 
+  local agent_harness="${AGENT_HARNESS:-claude}"
+  if ! require_harness "$agent_harness"; then
+    echo "QUEUE_SIGNAL: FAILED"
+    emit_result "${dataset}:${platform}" "FAILED" "AGENT_HARNESS='${agent_harness}' unavailable or unsupported"
+    exit 1
+  fi
+  log INFO "Agent harness resolved: ${agent_harness}"
+
   log INFO "Resolving config Sheet row for ${dataset}/${platform}/${country}..."
   local category_json
   category_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" categories --country "$country" \
@@ -714,7 +777,7 @@ main() {
   # Claude raw SQL to re-run risks output truncation on large worklists silently passing as
   # status: partial -> QUEUE_SIGNAL: DONE. --max_rows=1000000 is NOT optional -- bq query silently
   # defaults to --max_rows=100 otherwise (v1 confirmed this live).
-  log INFO "Querying BigQuery to materialize the worklist (post-filter top-80%-GMV Tier 1, limit=${max_rows})..."
+  log INFO "Querying BigQuery to materialize the worklist (post-filter top-90%-GMV Tier 1, limit=${max_rows})..."
   local worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"
   if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=json --max_rows=1000000 \
     "$query" | jq -c '.[]' > "$worklist_file"; then
@@ -728,7 +791,7 @@ main() {
   worklist_count=$(wc -l < "$worklist_file" | tr -d ' ')
 
   if [[ "$worklist_count" == "0" ]]; then
-    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, post-filter top-80%-GMV Tier 1) -- nothing to do."
+    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, post-filter top-90%-GMV Tier 1) -- nothing to do."
     rm -f "$worklist_file"
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
     emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope post-filter Tier 1 worklist for ${dataset}/${platform}/${country}/${month}"
@@ -737,12 +800,43 @@ main() {
 
   log INFO "Worklist materialized: ${worklist_count} rows (${dataset}/${platform}/${country}, month=${month})"
 
+  local agent_meta_source
+  case "$agent_harness" in
+    claude) agent_meta_source="claude_code" ;;
+    codex) agent_meta_source="codex" ;;
+  esac
+
   local prompt
   prompt=$(build_qa_prompt "$dataset" "$platform" "$country" "$source_table" "$qa_table" "$dict_table" \
     "$filter_table" "$qa_pk_col" "$dict_identity_col" "$dict_typo_col" "$meili_index" "$worklist_file" \
-    "$worklist_count" "$product_id_dict" "$tmp_tag")
+    "$worklist_count" "$product_id_dict" "$tmp_tag" "$agent_meta_source")
 
-  # claude -p --output-format json buffers ALL of its output until the subprocess exits -- there is
+  local agent_output=""
+  if [[ "$agent_harness" == "codex" ]]; then
+    # Codex's --output-last-message yields the final JSON object directly. Its --output-schema
+    # makes that machine-readable contract explicit, rather than attempting to parse JSONL
+    # progress events as though they were Claude's `.result` envelope.
+    local codex_final_file codex_stdout_file
+    codex_final_file=$(mktemp "/tmp/${tmp_tag}_v2_codex_final.XXXXXX")
+    codex_stdout_file=$(mktemp "/tmp/${tmp_tag}_v2_codex_stdout.XXXXXX")
+    # network_access=true is load-bearing -- workspace-write's sandbox blocks outbound network by
+    # default regardless of --approve-for-me (confirmed against this Codex install's own docs:
+    # ~/.codex/skills/.system/imagegen/references/codex-network.md -- an approval-bypass flag does
+    # NOT itself enable network). Every step this prompt needs (bq query, curl image downloads,
+    # Meilisearch HTTP calls) requires it; without this the session silently degrades every
+    # product to the text-only/unconfident fallback instead of erroring loudly.
+    log INFO "Delegating to Codex -- uses automatic approval with workspace-write (network enabled); MAX_TURNS is a Claude-only CLI setting."
+    codex exec --cd "$REPO_ROOT" --approve-for-me \
+      -c sandbox_workspace_write.network_access=true \
+      --output-schema "${REPO_ROOT}/script/non_niq/codex_qa_result_schema.json" \
+      --output-last-message "$codex_final_file" "$prompt" > "$codex_stdout_file" || true
+    if [[ -s "$codex_final_file" ]]; then
+      agent_output=$(<"$codex_final_file")
+    else
+      agent_output=$(<"$codex_stdout_file")
+    fi
+  else
+    # claude -p --output-format json buffers ALL of its output until the subprocess exits -- there is
   # no incremental progress from here until it returns, potentially several minutes for a large
   # worklist (it embeds+retrieves via Meilisearch, then works the per-product QA loop internally).
   # Logged explicitly so that gap reads as "expected, still running" rather than "hung".
@@ -782,17 +876,19 @@ main() {
     log WARN "Claude session limit hit (attempt ${claude_attempt}/${max_claude_attempts}) -- sleeping ${wait_secs}s until reset."
     sleep "$wait_secs"
   done
-  log INFO "claude subprocess returned, formatting summary..."
-  echo "$claude_output"
-  format_result_summary "$claude_output"
+    agent_output="$claude_output"
+  fi
+  log INFO "${agent_harness} subprocess returned, formatting summary..."
+  echo "$agent_output"
+  format_result_summary "$agent_output"
 
-  # Sheet write-back: bash-invoked (not a Claude tool call), reading the same STEP 3 JSONL Claude
+  # Sheet write-back: bash-invoked (not an agent tool call), reading the same STEP 3 JSONL agent
   # already wrote for Meilisearch indexing -- never re-derives which rows are new. Non-fatal by
   # design (`|| true`), same contract the removed Discord notifier had: a Sheets/BigQuery hiccup
   # here must never fail the QA session or its QUEUE_SIGNAL.
   local sheet_url rows_created new_entries_file
   sheet_url=$(echo "$category_json" | jq -r '.taxonomy_url')
-  rows_created=$(extract_rows_created "$claude_output")
+  rows_created=$(extract_rows_created "$agent_output")
   new_entries_file="/tmp/${tmp_tag}_v2_new_entries.jsonl"
   if [[ "$rows_created" != "0" && -s "$new_entries_file" ]]; then
     if [[ -n "$sheet_url" && "$sheet_url" != "-" && "$sheet_url" != "null" ]]; then
@@ -806,9 +902,9 @@ main() {
   fi
 
   local signal
-  signal=$(decide_queue_signal "$claude_output")
+  signal=$(decide_queue_signal "$agent_output")
   echo "QUEUE_SIGNAL: ${signal}"
-  emit_result "${dataset}:${platform}" "$signal" "QA v2 session finished" "rows_created=$(extract_rows_created "$claude_output")"
+  emit_result "${dataset}:${platform}" "$signal" "QA v2 session finished" "rows_created=$(extract_rows_created "$agent_output")"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

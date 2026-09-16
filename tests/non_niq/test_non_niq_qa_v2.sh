@@ -9,6 +9,12 @@ source script/non_niq/non_niq_qa_v2.sh
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+# --- require_harness (AGENT_HARNESS availability gate) ---
+require_harness "claude" || fail "require_harness must accept 'claude' (the only wired-up, and presumably installed, harness in this environment)"
+require_harness "not_a_real_harness" 2>/dev/null && fail "require_harness must reject an unrecognized harness name"
+require_harness "codex" || fail "require_harness must accept 'codex' when its CLI is on PATH"
+echo "PASS: require_harness"
+
 # --- platform_match_clause (Tokopedia's own first-party 'Tokopedia | Shop' channel has NO
 # separate config Sheet row -- 'tokopedia' as a CLI arg must match BOTH BigQuery platform values) ---
 [[ "$(platform_match_clause "Tokopedia")" == "IN ('Tokopedia', 'Tokopedia | Shop')" ]] || fail "platform_match_clause must expand Tokopedia to match both 'Tokopedia' and 'Tokopedia | Shop'"
@@ -31,7 +37,7 @@ echo "PASS: default_month_query"
 # --- worklist_query (stakeholder-aligned current-title coverage) ---
 q=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee")
 echo "$q" | grep -qF "cumulative_gmv_share" || fail "worklist_query (v2) must calculate stakeholder cumulative GMV share"
-echo "$q" | grep -qF "r.cumulative_gmv_share <= 0.8" || fail "worklist_query (v2) must scope normal coverage to the stakeholder's top 80% GMV"
+echo "$q" | grep -qF "r.cumulative_gmv_share <= 0.9" || fail "worklist_query (v2) must scope normal coverage to the top 90% GMV"
 echo "$q" | grep -qF "PARTITION BY sc.country, sc.category, sc.ecommerce_platform, sc.month" || fail "worklist_query (v2) must calculate Tier 1 at the stakeholder query's partition grain"
 if echo "$q" | grep -qF "s.product_tier = 'Tier 1'"; then
   fail "worklist_query (v2) must not trust stored product_tier for the normal stakeholder scope"
@@ -154,9 +160,9 @@ prompt=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.master_c
 
 echo "$prompt" | grep -qF "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" || fail "STEP 0 must reference the materialized worklist file path"
 echo "$prompt" | grep -qF "exactly 42 rows" || fail "STEP 0 must state the exact worklist row count"
-echo "$prompt" | grep -qi "top 80% cumulative GMV" || fail "STEP 0 must describe the post-filter stakeholder Tier 1 scope"
+echo "$prompt" | grep -qi "top 90% cumulative GMV" || fail "STEP 0 must describe the post-filter Tier 1 scope"
 echo "$prompt" | grep -qi "whitespace-normalized sku_name" || fail "STEP 0 must explain the current-title QA matching rule"
-if echo "$prompt" | grep -qi "precomputed product_tier\|top 90%"; then
+if echo "$prompt" | grep -qi "precomputed product_tier"; then
   fail "prompt (v2) must not describe the retired stored-tier scope"
 fi
 echo "$prompt" | grep -q "item_description, product_attributes_attrs, listing_changed" || fail "STEP 0 must list enrichment and reverify fields in the worklist row shape"
@@ -220,14 +226,18 @@ echo "$prompt_nodict" | grep -q "2b. SKIPPED for this category" || fail "an unco
 if grep -qi "run the qa_status UPDATE\|SET qa_status" <<< "$prompt_nodict"; then
   fail "prompt_nodict must never instruct writing to qa_status either"
 fi
+prompt_codex=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "source" "qa" "dict" "filter" \
+  "product_id" "sku_type_complete" "keywords_typo" "index" "/tmp/worklist.jsonl" "1" "-" "codex_test" "codex")
+echo "$prompt_codex" | grep -qF '{"source":"codex","timestamp":"<now, ISO 8601 UTC>"}' || fail "Codex prompt must stamp _meta writes with source=codex"
 echo "PASS: build_qa_prompt"
 
-# --- extract_json_object / decide_queue_signal / format_result_summary (identical contract to v1) ---
+# --- extract_json_object / decide_queue_signal / format_result_summary (shared contract) ---
 [[ "$(extract_json_object 'prose {"status":"complete"} trailing')" == '{"status":"complete"}' ]] || fail "extract_json_object should pull the JSON object out of mixed text"
 echo "PASS: extract_json_object"
 
 [[ "$(extract_result_json '{"result":"{\"status\":\"complete\"}"}')" == '{"status":"complete"}' ]] || fail "extract_result_json should pull the inner result JSON out of the envelope"
 [[ "$(extract_result_json '{"result":""}')" == "" ]] || fail "extract_result_json should return empty when .result itself is empty"
+[[ "$(extract_result_json '{"status":"complete","rows_qa_confirmed":1}')" == '{"status":"complete","rows_qa_confirmed":1}' ]] || fail "extract_result_json should accept Codex's direct final JSON object"
 echo "PASS: extract_result_json"
 
 [[ "$(decide_queue_signal '{"result":"{\"status\":\"blocked\"}"}')" == "BLOCKED" ]] || fail "decide_queue_signal should map status=blocked to BLOCKED"
@@ -265,11 +275,16 @@ grep -qF 'country="${country^^}"' <<< "$script_src" || fail "main() (v2) must up
 grep -qF 'local tmp_tag="${dataset}_${platform}_${country}"' <<< "$script_src" || fail "main() (v2) must derive a country-scoped scratch tag"
 grep -qF 'worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"' <<< "$script_src" || fail "main() (v2) must materialize the worklist to a v2-distinctly-named, country-scoped file"
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() (v2) must emit NOTHING_TO_DO when the worklist is empty"
-grep -qF 'signal=$(decide_queue_signal "$claude_output")' <<< "$script_src" || fail "main() (v2) must derive the post-run signal from decide_queue_signal"
+grep -qF 'signal=$(decide_queue_signal "$agent_output")' <<< "$script_src" || fail "main() (v2) must derive the post-run signal from the normalized agent result"
 grep -qF 'echo "QUEUE_SIGNAL: ${signal}"' <<< "$script_src" || fail "main() (v2) must emit the derived post-run signal"
-grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() (v2) must tolerate a non-zero claude exit"
-grep -qF 'format_result_summary "$claude_output"' <<< "$script_src" || fail "main() (v2) must print the human-readable summary"
-grep -qF 'echo "$claude_output"' <<< "$script_src" || fail "main() (v2) must still echo the raw envelope"
+grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() (v2) must tolerate a non-zero Claude exit"
+grep -qF 'codex exec --cd "$REPO_ROOT" --approve-for-me' <<< "$script_src" || fail "main() (v2) must invoke Codex with the automatic-approval adapter"
+grep -qF -- '-c sandbox_workspace_write.network_access=true' <<< "$script_src" || fail "main() (v2) must enable network access for Codex's workspace-write sandbox -- bq/curl/Meilisearch all need it, and --approve-for-me alone does not grant it"
+grep -qF -- '--output-schema ' <<< "$script_src" || fail "main() (v2) must constrain Codex's final result with a JSON Schema"
+grep -qF -- '--output-last-message "$codex_final_file"' <<< "$script_src" || fail "main() (v2) must capture Codex's final message separately from stdout"
+grep -qF 'format_result_summary "$agent_output"' <<< "$script_src" || fail "main() (v2) must print the normalized agent summary"
+grep -qF 'echo "$agent_output"' <<< "$script_src" || fail "main() (v2) must still echo the normalized agent result"
+jq -e '.properties.status.enum == ["complete", "partial", "failed", "blocked"]' script/non_niq/codex_qa_result_schema.json >/dev/null || fail "Codex result schema must constrain the session status"
 if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discord\|notify_discord"; then
   fail "non_niq_qa_v2.sh must not reference Discord notification or load_env.sh"
 fi

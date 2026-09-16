@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Non-NIQ QA v2 Codex result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "rows_qa_confirmed",
+    "rows_qa_unconfident",
+    "rows_filtered",
+    "rows_created_in_dict",
+    "findings",
+    "blockers"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["complete", "partial", "failed", "blocked"]
+    },
+    "rows_qa_confirmed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rows_qa_unconfident": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rows_filtered": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rows_created_in_dict": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
