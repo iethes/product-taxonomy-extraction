@@ -58,6 +58,9 @@ script needs) -- subcommands, called directly from non_niq_qa.sh/non_niq_qa_v2.s
       append-sheet, matches rows on (Country, Category Pipeline, Platform), unions merchant_id
       across both tabs. Never raises -- a Sheets hiccup yields an empty list, never blocks a QA run.
 """
+from dataclasses import dataclass
+from typing import Dict, Mapping, Optional, Sequence, Tuple
+
 import argparse
 import csv
 import io
@@ -329,62 +332,144 @@ def _map_row_to_header(row, header):
     return out
 
 
-def append_sheet_new_entries(project, dict_table, dataset, sheet_url, entries, client=None, service=None):
-    """entries: list of {"brand", "identity_col", "identity_value"} -- WHICH rows to write back,
-    taken from Claude's own STEP 3 JSONL. Trusted only for identity, never for content: each
-    entry's full row is re-read from BigQuery before anything is written to the Sheet. Never
-    raises past this function -- a Sheets/BigQuery hiccup must never fail or block the QA session
-    that called it."""
-    if not entries:
-        return 0
+@dataclass(frozen=True)
+class SheetAppendOutcome:
+    status: str
+    error: Optional[str] = None
+
+
+SheetEntryKey = Tuple[str, str, str]
+
+
+def _sheet_entry_key(entry: Mapping[str, str]) -> SheetEntryKey:
+    return tuple(str(entry.get(field, "")).strip() for field in (
+        "brand", "identity_col", "identity_value",
+    ))
+
+
+def append_sheet_new_entries_strict(
+    project: str,
+    dict_table: str,
+    sheet_url: str,
+    entries: Sequence[Mapping[str, str]],
+    client=None,
+    service=None,
+) -> Dict[SheetEntryKey, SheetAppendOutcome]:
+    """Return an explicit append result for every supplied dictionary identity."""
+    entries_by_key = {_sheet_entry_key(entry): entry for entry in entries}
+    outcomes = {}
+    valid_entries = {}
+    for key, entry in entries_by_key.items():
+        if not all(key) or key[1] not in DICT_IDENTITY_CANDIDATES:
+            outcomes[key] = SheetAppendOutcome("failed", "invalid dictionary identity")
+        else:
+            valid_entries[key] = entry
+    if not valid_entries:
+        return outcomes
+
+    def fail_remaining(error):
+        message = "%s: %s" % (type(error).__name__, error)
+        for key in valid_entries:
+            if key not in outcomes:
+                outcomes[key] = SheetAppendOutcome("failed", message)
+        return outcomes
+
     try:
         sheet_url = (sheet_url or "").strip()
         if not sheet_url or sheet_url == "-":
-            print(f"  append-sheet: no taxonomy_url configured for {dataset} -- skipping")
-            return 0
+            raise ValueError("taxonomy_url is not configured")
         spreadsheet_id, gid = _parse_sheet_url(sheet_url)
         service = service or _sheets_service()
         tab_title = _tab_title_for_gid(service, spreadsheet_id, gid)
-        header = service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id, range=f"'{tab_title}'!1:1"
-        ).execute().get("values", [[]])[0]
+        sheet_values = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id, range=f"'{tab_title}'!A:ZZ"
+        ).execute().get("values", [])
+        header = sheet_values[0] if sheet_values else []
+        header_index = {name: i for i, name in enumerate(header)}
+        if "brand" not in header_index:
+            raise ValueError("Sheet is missing brand header")
+        unsupported = {
+            key[1] for key in valid_entries if key[1] not in header_index
+        }
+        if unsupported:
+            raise ValueError(
+                "Sheet is missing identity header(s): %s" % ", ".join(sorted(unsupported))
+            )
+    except Exception as error:
+        return fail_remaining(error)
 
-        client = client or bigquery.Client(project=project)
-        rows_to_append = []
-        for entry in entries:
-            identity_col = entry["identity_col"]
-            if identity_col not in DICT_IDENTITY_CANDIDATES:
-                print(f"  WARNING: append-sheet refusing unexpected identity_col {identity_col!r} -- skipping entry")
-                continue
+    existing_keys = set()
+    brand_index = header_index["brand"]
+    for key in valid_entries:
+        identity_index = header_index[key[1]]
+        for row in sheet_values[1:]:
+            brand = row[brand_index] if brand_index < len(row) else ""
+            identity = row[identity_index] if identity_index < len(row) else ""
+            existing_keys.add((brand, key[1], identity))
+
+    client = client or bigquery.Client(project=project)
+    rows_to_append = []
+    for key in valid_entries:
+        if key in existing_keys:
+            outcomes[key] = SheetAppendOutcome("already_present")
+            continue
+        try:
             query = f"""
                 SELECT * FROM `{project}.{dict_table}`
-                WHERE brand = @brand AND {identity_col} = @identity_value
+                WHERE brand = @brand AND {key[1]} = @identity_value
                 LIMIT 1
             """
             job_config = bigquery.QueryJobConfig(query_parameters=[
-                bigquery.ScalarQueryParameter("brand", "STRING", entry["brand"]),
-                bigquery.ScalarQueryParameter("identity_value", "STRING", entry["identity_value"]),
+                bigquery.ScalarQueryParameter("brand", "STRING", key[0]),
+                bigquery.ScalarQueryParameter("identity_value", "STRING", key[2]),
             ])
             rows = list(client.query(query, job_config=job_config).result())
             if not rows:
-                print(f"  WARNING: append-sheet found no row for brand={entry['brand']!r} {identity_col}={entry['identity_value']!r} in {dict_table} -- skipping")
+                outcomes[key] = SheetAppendOutcome("failed", "authoritative dictionary row not found")
                 continue
-            rows_to_append.append(_map_row_to_header(dict(rows[0].items()), header))
+            rows_to_append.append((key, _map_row_to_header(dict(rows[0].items()), header)))
+        except Exception as error:
+            outcomes[key] = SheetAppendOutcome(
+                "failed", "%s: %s" % (type(error).__name__, error)
+            )
 
-        if not rows_to_append:
-            return 0
+    if not rows_to_append:
+        return outcomes
+    try:
         service.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
             range=f"'{tab_title}'!A1",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
-            body={"values": rows_to_append},
+            body={"values": [row for _, row in rows_to_append]},
         ).execute()
-        print(f"  Sheet appended: {len(rows_to_append)} row(s) -> {sheet_url}")
-        return len(rows_to_append)
-    except Exception as e:
-        print(f"  WARNING: append-sheet failed (non-fatal): {type(e).__name__}: {e}")
+    except Exception as error:
+        message = "%s: %s" % (type(error).__name__, error)
+        for key, _ in rows_to_append:
+            outcomes[key] = SheetAppendOutcome("failed", message)
+        return outcomes
+
+    for key, _ in rows_to_append:
+        outcomes[key] = SheetAppendOutcome("appended")
+    return outcomes
+
+
+def append_sheet_new_entries(project, dict_table, dataset, sheet_url, entries, client=None, service=None):
+    """Legacy non-fatal wrapper for v2 callers."""
+    try:
+        outcomes = append_sheet_new_entries_strict(
+            project, dict_table, sheet_url, entries, client=client, service=service,
+        )
+    except Exception as error:
+        print(f"  WARNING: append-sheet failed (non-fatal): {type(error).__name__}: {error}")
         return 0
+    failure = next(
+        (outcome.error for outcome in outcomes.values() if outcome.status == "failed"),
+        None,
+    )
+    if failure:
+        print(f"  WARNING: append-sheet failed (non-fatal): {failure}")
+    return sum(outcome.status == "appended" for outcome in outcomes.values())
 
 
 # ---------------------------------------------------------------------------

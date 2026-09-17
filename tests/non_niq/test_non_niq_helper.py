@@ -366,6 +366,108 @@ def test_cli_categories_prints_json():
         assert len(rows) == 2
     finally:
         os.unlink(path)
+# --- strict Sheet append outcomes (v3 only) ---
+
+class _StrictSheetsRequest:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def execute(self):
+        return self.payload
+
+
+class _StrictSheetsService:
+    def __init__(self, values):
+        self.values_data = values
+        self.appended = []
+
+    def spreadsheets(self):
+        return self
+
+    def values(self):
+        return self
+
+    def get(self, **kwargs):
+        return _StrictSheetsRequest({"values": self.values_data})
+
+    def append(self, **kwargs):
+        self.appended.extend(kwargs["body"]["values"])
+        return _StrictSheetsRequest({})
+
+
+def test_strict_append_marks_existing_identity_already_present(monkeypatch):
+    monkeypatch.setattr(non_niq_helper, "_tab_title_for_gid", lambda *args: "Coffee")
+    entry = {
+        "brand": "Acme",
+        "identity_col": "sku_type",
+        "identity_value": "Acme Wash 200 ml",
+    }
+    outcomes = non_niq_helper.append_sheet_new_entries_strict(
+        "proj", "coffee.coffee_dict_ph",
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?gid=1#gid=1",
+        [entry],
+        client=_FakeBQClient([]),
+        service=_StrictSheetsService([
+            ["brand", "sku_type"],
+            ["Acme", "Acme Wash 200 ml"],
+        ]),
+    )
+    assert outcomes[("Acme", "sku_type", "Acme Wash 200 ml")].status == "already_present"
+
+
+def test_strict_append_marks_successful_identity_appended(monkeypatch):
+    monkeypatch.setattr(non_niq_helper, "_tab_title_for_gid", lambda *args: "Coffee")
+    entry = {
+        "brand": "Acme",
+        "identity_col": "sku_type",
+        "identity_value": "Acme Wash 200 ml",
+    }
+    service = _StrictSheetsService([["brand", "sku_type"]])
+    outcomes = non_niq_helper.append_sheet_new_entries_strict(
+        "proj", "coffee.coffee_dict_ph",
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?gid=1#gid=1",
+        [entry],
+        client=_FakeBQClient([_FakeRow({
+            "brand": "Acme",
+            "sku_type": "Acme Wash 200 ml",
+        })]),
+        service=service,
+    )
+    assert outcomes[("Acme", "sku_type", "Acme Wash 200 ml")].status == "appended"
+    assert service.appended == [["Acme", "Acme Wash 200 ml"]]
+
+
+def test_strict_append_preserves_failure_for_legacy_noop(monkeypatch):
+    class FailingSheetsService(_StrictSheetsService):
+        def append(self, **kwargs):
+            raise RuntimeError("Sheets unavailable")
+
+    monkeypatch.setattr(non_niq_helper, "_tab_title_for_gid", lambda *args: "Coffee")
+    entry = {
+        "brand": "Acme",
+        "identity_col": "sku_type",
+        "identity_value": "Acme Wash 200 ml",
+    }
+    service = FailingSheetsService([["brand", "sku_type"]])
+    client = _FakeBQClient([_FakeRow({
+        "brand": "Acme",
+        "sku_type": "Acme Wash 200 ml",
+    })])
+    outcomes = non_niq_helper.append_sheet_new_entries_strict(
+        "proj", "coffee.coffee_dict_ph",
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?gid=1#gid=1",
+        [entry],
+        client=client,
+        service=service,
+    )
+    assert outcomes[("Acme", "sku_type", "Acme Wash 200 ml")].status == "failed"
+    assert non_niq_helper.append_sheet_new_entries(
+        "proj", "coffee.coffee_dict_ph", "coffee",
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?gid=1#gid=1",
+        [entry],
+        client=client,
+        service=FailingSheetsService([["brand", "sku_type"]]),
+    ) == 0
 
 class _Monkeypatch:
     """Minimal stand-in for pytest's monkeypatch fixture -- this repo's tests run as plain
