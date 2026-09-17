@@ -384,3 +384,30 @@ table:
 | `taxonomy_match_audit_flags` | One row per flagged disagreement | Unused — audit-mode output, never populated in production |
 
 Full context: [`docs/superpowers/plans/2026-07-17-embedding-nn-match.md`](superpowers/plans/2026-07-17-embedding-nn-match.md).
+
+---
+
+## Reference Layer — `magpie_reference.non_niq_qa_outbox`
+
+> Granularity: one durable post-commit delivery event for `script/non_niq/non_niq_qa_v3.py`.
+> Created by: `sql/migrations/006_add_non_niq_qa_outbox.sql`
+
+V3 inserts each event in the same BigQuery transaction as its QA, dictionary, and filter changes. BigQuery does not enforce a primary key; the driver conditionally inserts `event_id` in that transaction and uses it for idempotent recovery.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `event_id` | STRING | Driver-derived idempotency key. |
+| `attempt_id` | STRING | QA attempt that caused the event. |
+| `decision_id` | STRING | Agent decision that caused the event. |
+| `dataset` | STRING | Non-NIQ category dataset. |
+| `platform` | STRING | Canonical platform; `Tokopedia \| Shop` is stored as `Tokopedia`. |
+| `country` | STRING | Two-letter market code. |
+| `event_type` | STRING | `meili_index` or `sheet_append`. |
+| `payload` | STRING | Serialized JSON delivery payload. |
+| `status` | STRING | `pending` until delivery succeeds; then `complete`. |
+| `attempts` | INT64 | Number of delivery attempts. |
+| `last_error` | STRING | Last delivery failure; NULL after a successful delivery. |
+| `created_at` | TIMESTAMP | Event creation time. |
+| `completed_at` | TIMESTAMP | Delivery completion time; NULL while pending. |
+
+Before planning new products, v3 recovers pending events scoped to the current dataset, platform, and country. A failed Meilisearch or Sheets delivery remains `pending`, records `last_error`, and makes the session `FAILED`; it never becomes `DONE` silently.
