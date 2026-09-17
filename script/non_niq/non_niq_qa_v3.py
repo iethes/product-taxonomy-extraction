@@ -15,6 +15,17 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 import zlib
 
+from google.cloud import bigquery
+
+from non_niq_helper import (
+    MEILI_URL,
+    _table_columns,
+    fetch_config_csv,
+    fetch_forced_merchant_ids,
+    parse_categories,
+    resolve_category_columns,
+)
+
 
 @dataclass(frozen=True)
 class PreparedImage:
@@ -94,32 +105,55 @@ def build_attachment_manifest(images: Sequence[PreparedImage]) -> Tuple[Attachme
     return tuple(attachments)
 
 
+def _normalize_attempt_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _canonical_platform(value: Any) -> str:
+    platform = _normalize_attempt_text(value)
+    return "Tokopedia" if platform == "Tokopedia | Shop" else platform
+
+
 def plan_attempt(row: Mapping[str, Any], qa_state: Mapping[str, Any]) -> AttemptPlan:
-    """Return a stable initial, retry, or listing-change attempt."""
+    """Return the stable logical initial, retry, or listing-change attempt."""
     attempt_kind = str(qa_state.get("kind", "initial"))
     if attempt_kind not in {"initial", "retry", "listing_change"}:
         raise ValueError("unsupported attempt kind: %s" % attempt_kind)
+
+    current_title = _normalize_attempt_text(row.get("sku_name"))
+    current_category = _normalize_attempt_text(row.get("kategori"))
     work_item_id = _stable_digest({
         "product_id": str(row.get("product_id", "")),
-        "platform": str(row.get("platform", row.get("ecommerce_platform", ""))),
-        "country": str(row.get("country", "")),
-        "dataset": str(row.get("dataset", "")),
+        "platform": _canonical_platform(row.get("platform", row.get("ecommerce_platform"))),
+        "country": _normalize_attempt_text(row.get("country")),
+        "dataset": _normalize_attempt_text(row.get("dataset")),
+        "current_title": current_title,
     })
     input_fingerprint = _stable_digest({
-        "product_id": str(row.get("product_id", "")),
-        "sku_name": str(row.get("sku_name", "")),
-        "kategori": str(row.get("kategori", "")),
+        "work_item_id": work_item_id,
+        "current_title": current_title,
+        "current_category": current_category,
         "item_description": str(row.get("item_description", "")),
         "product_attributes_attrs": str(row.get("product_attributes_attrs", "")),
+        "image_url": str(row.get("image", "")),
     })
+    if attempt_kind in {"initial", "retry"}:
+        attempt_id = "%s:%s-1" % (work_item_id, attempt_kind)
+    else:
+        generation = _stable_digest({
+            "month": str(row.get("month", "")),
+            "prior_title": _normalize_attempt_text(row.get("prior_sku_name")),
+            "current_title": current_title,
+            "prior_category": _normalize_attempt_text(row.get("prior_kategori")),
+            "current_category": current_category,
+        })
+        attempt_id = "%s:listing-change:%s:%s" % (
+            work_item_id, str(row.get("month", "")), generation,
+        )
     return AttemptPlan(
         work_item_id=work_item_id,
         input_fingerprint=input_fingerprint,
-        attempt_id=_stable_digest({
-            "work_item_id": work_item_id,
-            "input_fingerprint": input_fingerprint,
-            "attempt_kind": attempt_kind,
-        }),
+        attempt_id=attempt_id,
         attempt_kind=attempt_kind,
     )
 
@@ -356,6 +390,22 @@ def _run_command(command: Sequence[str], env: Mapping[str, str]) -> subprocess.C
     )
 
 
+def _write_probe_schema(path: Path) -> None:
+    path.write_text(json.dumps({
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["labels"],
+        "properties": {
+            "labels": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {"type": "string"},
+            },
+        },
+    }))
+
+
 def verify_adapter_vision(
     adapter: str,
     run_command: Callable[..., subprocess.CompletedProcess] = _run_command,
@@ -365,7 +415,15 @@ def verify_adapter_vision(
         raise AdapterVisionError("unsupported adapter: %s" % adapter)
     with tempfile.TemporaryDirectory(prefix="non-niq-v3-sentinel-") as directory:
         root = Path(directory)
-        labels = ["%08d" % secrets.randbelow(10 ** 8) for _ in range(2)]
+        first_label = "%08d" % secrets.randbelow(10 ** 8)
+        second_label = first_label
+        for _ in range(8):
+            second_label = "%08d" % secrets.randbelow(10 ** 8)
+            if second_label != first_label:
+                break
+        if second_label == first_label:
+            raise AdapterVisionError("could not generate distinct sentinel labels")
+        labels = [first_label, second_label]
         attachments = []
         for index, label in enumerate(labels, 1):
             path = root / ("attachment-%04d.png" % index)
@@ -382,15 +440,15 @@ def verify_adapter_vision(
             "Return JSON only: {\"labels\":[\"first\",\"second\"]}."
         )
         output_path = root / "result.json"
+        command = (
+            build_codex_command(
+                prompt, root / "probe-schema.json", output_path, attachments,
+            )
+            if adapter == "codex"
+            else build_omp_command(prompt, attachments)
+        )
         if adapter == "codex":
-            command = [
-                "codex", "exec", "--ephemeral", "--sandbox", "read-only",
-                "-c", "sandbox_workspace_write.network_access=false",
-                "--output-last-message", str(output_path),
-                "--image", *[str(item.local_path) for item in attachments], prompt,
-            ]
-        else:
-            command = build_omp_command(prompt, attachments)
+            _write_probe_schema(root / "probe-schema.json")
         result = run_command(command, env=_adapter_env())
         if result.returncode:
             raise AdapterVisionError(

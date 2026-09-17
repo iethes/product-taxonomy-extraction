@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "script" / "non_niq"))
+import non_niq_qa_v3 as qa_v3
 from non_niq_qa_v3 import (
     AdapterVisionError,
     Attachment,
@@ -90,6 +91,8 @@ def test_retry_attempt_differs_from_initial_but_replays_stably():
     retry = plan_attempt(row, {"kind": "retry"})
     assert initial.attempt_id != retry.attempt_id
     assert retry == plan_attempt(row, {"kind": "retry"})
+    assert initial.attempt_id == initial.work_item_id + ":initial-1"
+    assert retry.attempt_id == retry.work_item_id + ":retry-1"
 
 
 def test_listing_change_attempt_changes_when_listing_input_changes():
@@ -103,6 +106,34 @@ def test_listing_change_attempt_changes_when_listing_input_changes():
     )
     assert original.input_fingerprint != changed.input_fingerprint
     assert original.attempt_id != changed.attempt_id
+
+
+def test_work_item_uses_normalized_title_not_incidental_description():
+    base = {
+        "product_id": "p-1",
+        "platform": "Shopee",
+        "sku_name": "Acme   Wash",
+        "item_description": "old marketing copy",
+    }
+    cosmetic_change = dict(base, sku_name="  Acme Wash ", item_description="new marketing copy")
+    renamed = dict(base, sku_name="Acme Wash Plus")
+    base_attempt = plan_attempt(base, {"kind": "initial"})
+    assert base_attempt.work_item_id == plan_attempt(cosmetic_change, {"kind": "initial"}).work_item_id
+    assert base_attempt.attempt_id == plan_attempt(cosmetic_change, {"kind": "initial"}).attempt_id
+    assert base_attempt.work_item_id != plan_attempt(renamed, {"kind": "initial"}).work_item_id
+
+
+def test_listing_change_attempt_includes_month_and_prior_snapshot():
+    row = {"product_id": "p-1", "platform": "Shopee", "sku_name": "Acme Wash"}
+    september = plan_attempt(
+        dict(row, month="2026-09", prior_sku_name="Acme Old", prior_kategori="Old"),
+        {"kind": "listing_change"},
+    )
+    october = plan_attempt(
+        dict(row, month="2026-10", prior_sku_name="Acme Older", prior_kategori="Older"),
+        {"kind": "listing_change"},
+    )
+    assert september.attempt_id != october.attempt_id
 
 
 def test_rejects_image_evidence_from_another_products_attachment():
@@ -223,3 +254,107 @@ def test_wrong_random_label_fails_before_product_decision():
 
     with pytest.raises(AdapterVisionError):
         verify_adapter_vision("codex", wrong_runner)
+
+
+def test_sentinel_uses_a_schema_without_label_values_and_resamples_duplicates(monkeypatch):
+    labels = []
+    draws = iter([7, 7, 8])
+
+    def write_probe(path, label):
+        labels.append(label)
+        path.write_bytes(b"probe")
+
+    def runner(command, **kwargs):
+        schema_path = Path(command[command.index("--output-schema") + 1])
+        schema = json.loads(schema_path.read_text())
+        assert schema["properties"]["labels"]["items"]["type"] == "string"
+        assert all(label not in schema_path.read_text() for label in labels)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"labels": ["wrong", "wrong"]}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(qa_v3.secrets, "randbelow", lambda maximum: next(draws))
+    monkeypatch.setattr(qa_v3, "_write_label_png", write_probe)
+    with pytest.raises(AdapterVisionError):
+        verify_adapter_vision("codex", runner)
+    assert labels == ["00000007", "00000008"]
+
+
+# --- deterministic planner ---
+
+def _context(platform="Shopee"):
+    return qa_v3.RunContext(
+        project="project",
+        dataset="babybath",
+        platform=platform,
+        country="ID",
+        category="Baby Bath & Shampoo",
+        source_table="babybath.master_babybath_id",
+        qa_table="babybath.product_id_dict_qa",
+        dict_table="babybath.babybath_dict",
+        filter_table="babybath.filter_babybath",
+        product_id_dict="babybath.product_id_dict",
+        enrichment_table=None,
+        qa_pk_col="product_id",
+        dict_identity_col="sku_type",
+        dict_typo_col="keyword_typo",
+        dict_has_meta=False,
+        dict_columns=frozenset({"brand", "sku_type", "keyword_typo"}),
+        generated_attributes=frozenset({"sku_type"}),
+        month="2026-09",
+        meili_index="babybath_taxonomy_qa",
+        taxonomy_url=None,
+    )
+
+
+def test_primary_filter_table_selects_only_the_dataset_owned_table():
+    assert qa_v3.primary_filter_table(
+        "other.reference_filter;babybath.filter_babybath",
+        "babybath",
+    ) == "babybath.filter_babybath"
+
+
+def test_worklist_sql_preserves_v2_scope_and_tokopedia_canonicalization():
+    sql = qa_v3.build_worklist_sql(
+        _context("Tokopedia"),
+        max_rows=10,
+        kategori="",
+        monthly_reverify=False,
+        merchant_ids=(),
+    )
+    assert "r.cumulative_gmv_share <= 0.9" in sql
+    assert "JSON_VALUE(SAFE.PARSE_JSON(_meta)" in sql
+    assert "qa_status" not in sql.lower()
+    assert "Tokopedia | Shop" in sql
+    assert "`project.babybath.filter_babybath`" in sql
+    assert "ORDER BY priority ASC, gmv_monthly DESC" in sql
+
+
+def test_missing_dict_pattern_fails_before_retrieval(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        qa_v3.load_dict_pattern("missing", tmp_path)
+
+
+def test_product_packets_are_ordered_and_candidate_refs_are_product_local(tmp_path):
+    image_path = tmp_path / "one.png"
+    image_path.write_bytes(b"one")
+    rows = [
+        {"product_id": "later", "sku_name": "Later", "priority": 1, "gmv_monthly": 9},
+        {"product_id": "first", "sku_name": "First", "priority": 0, "gmv_monthly": 10},
+    ]
+    candidates = {
+        "first": {"dict:first": {"brand": "Acme"}},
+        "later": {"dict:later": {"brand": "Later"}},
+    }
+    images = {
+        "first": PreparedImage("first", "https://example.com/one.png", "ready", image_path),
+        "later": PreparedImage("later", None, "unavailable", None),
+    }
+    packets = qa_v3.build_product_packets(_context(), rows, candidates, images)
+    assert [packet["product_id"] for packet in packets] == ["first", "later"]
+    assert packets[0]["candidate_refs"] == {"dict:first"}
+    assert packets[1]["candidate_refs"] == {"dict:later"}
+    assert packets[0]["attachment_index"] == 1
+    assert packets[1]["attachment_index"] is None
