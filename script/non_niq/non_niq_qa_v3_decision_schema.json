@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisions"],
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "reason"],
+            "properties": {
+              "product_id": {"type": "string"},
+              "work_item_id": {"type": "string"},
+              "input_fingerprint": {"type": "string"},
+              "kind": {"const": "filter"},
+              "confidence": {"const": "confident"},
+              "reason": {"type": "string", "minLength": 1},
+              "evidence": {"$ref": "#/$defs/evidence"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "candidate_ref"],
+            "properties": {
+              "product_id": {"type": "string"},
+              "work_item_id": {"type": "string"},
+              "input_fingerprint": {"type": "string"},
+              "kind": {"const": "map_existing"},
+              "confidence": {"enum": ["confident", "unconfident"]},
+              "candidate_ref": {"type": "string", "minLength": 1},
+              "evidence": {"$ref": "#/$defs/evidence"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "attributes"],
+            "properties": {
+              "product_id": {"type": "string"},
+              "work_item_id": {"type": "string"},
+              "input_fingerprint": {"type": "string"},
+              "kind": {"const": "create_dict"},
+              "confidence": {"enum": ["confident", "unconfident"]},
+              "attributes": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}},
+              "evidence": {"$ref": "#/$defs/evidence"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "reason"],
+            "properties": {
+              "product_id": {"type": "string"},
+              "work_item_id": {"type": "string"},
+              "input_fingerprint": {"type": "string"},
+              "kind": {"const": "defer"},
+              "confidence": {"const": "unconfident"},
+              "reason": {"type": "string", "minLength": 1},
+              "evidence": {"$ref": "#/$defs/evidence"}
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source", "claim"],
+            "properties": {
+              "source": {"type": "string", "not": {"const": "image"}},
+              "claim": {"type": "string", "minLength": 1}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source", "claim", "attachment_index"],
+            "properties": {
+              "source": {"const": "image"},
+              "claim": {"type": "string", "minLength": 1},
+              "attachment_index": {"type": "integer", "minimum": 1}
+            }
+          }
+        ]
+      }
+    }
+  }
+}
