@@ -1,5 +1,7 @@
 import json
 from types import SimpleNamespace
+from datetime import datetime, timezone
+
 
 import sys
 from pathlib import Path
@@ -335,6 +337,7 @@ def _context(platform="Shopee"):
         filter_table="babybath.filter_babybath",
         product_id_dict="babybath.product_id_dict",
         enrichment_table=None,
+        qa_identity_col="sku_type_complete",
         qa_pk_col="product_id",
         dict_identity_col="sku_type",
         dict_typo_col="keyword_typo",
@@ -498,3 +501,209 @@ def test_product_packets_are_ordered_and_candidate_refs_are_product_local(tmp_pa
     assert packets[0]["attachment_index"] == 1
     assert packets[1]["attachment_index"] is None
     assert packets[0]["image_raw"] == "https://example.com/first.jpg"
+
+
+# --- transactional executor ---
+
+NOW = datetime(2026, 9, 17, tzinfo=timezone.utc)
+
+
+def _executor_context():
+    return qa_v3.RunContext(
+        **{
+            **_context().__dict__,
+            "qa_identity_col": "sku_type_complete",
+            "dict_columns": frozenset({
+                "brand", "sub_brand", "function", "packsize", "sku_type", "keywords",
+            }),
+            "generated_attributes": frozenset({"sku_type", "keywords"}),
+            "taxonomy_url": "https://sheets.example/taxonomy",
+        },
+    )
+
+
+def _commit_packet(context, attempt_kind="initial"):
+    attempt = plan_attempt(
+        {
+            "product_id": "p-1",
+            "platform": context.platform,
+            "country": context.country,
+            "dataset": context.dataset,
+            "sku_name": "Acme Wash",
+        },
+        {"kind": attempt_kind},
+    )
+    return {
+        "product_id": "p-1",
+        "ecommerce_platform": context.platform,
+        "sku_name": "Acme Wash",
+        "image_raw": "https://example.com/product.jpg",
+        "url": "https://example.com/product",
+        "merchant_id": "merchant-1",
+        "gmv_monthly": 12,
+        "work_item_id": attempt.work_item_id,
+        "input_fingerprint": attempt.input_fingerprint,
+        "attempt": attempt,
+        "attempt_id": attempt.attempt_id,
+        "attempt_kind": attempt.attempt_kind,
+        "image_status": "ready",
+        "attachment_index": 1,
+        "candidate_refs": {"dict:1"},
+        "candidates": {"dict:1": {"brand": "Acme", "sku_type": "Acme Wash"}},
+        "writable_attributes": frozenset(
+            context.dict_columns - context.generated_attributes - {"_meta"},
+        ),
+        "generated_attributes": context.generated_attributes,
+        "dict_pattern": context.dict_pattern,
+        "allowed_categorical_values": context.allowed_categorical_values,
+        "prior_mapping": None,
+    }
+
+
+def test_retry_qa_insert_dedupes_attempt_not_title():
+    context = _executor_context()
+    packet = _commit_packet(context, "retry")
+    decision = _decision(packet, "map_existing", candidate_ref="dict:1")
+    sql, _ = qa_v3.build_chunk_script(context, [packet], [decision], NOW)
+    assert "JSON_VALUE(SAFE.PARSE_JSON(_meta), '$.attempt_id')" in sql
+    assert "normalized_sku_name" not in sql
+    assert "qa_status" not in sql.lower()
+    assert "BEGIN TRANSACTION" in sql and "COMMIT TRANSACTION" in sql
+
+
+def test_unconfident_retry_metadata_is_driver_terminal():
+    context = _executor_context()
+    packet = _commit_packet(context, "retry")
+    decision = _decision(
+        packet,
+        "map_existing",
+        confidence="unconfident",
+        candidate_ref="dict:1",
+    )
+    _, parameters = qa_v3.build_chunk_script(context, [packet], [decision], NOW)
+    metadata = [
+        json.loads(parameter.value)
+        for parameter in parameters
+        if isinstance(parameter.value, str) and '"attempt_id"' in parameter.value
+    ]
+    assert len(metadata) == 1
+    assert metadata[0]["qa_confidence"] == "unconfident"
+    assert metadata[0]["human_review"] is True
+
+
+def test_create_dict_writes_pending_outbox_in_same_transaction():
+    context = _executor_context()
+
+    packet = _commit_packet(context)
+    packet["candidate_refs"] = set()
+    packet["candidates"] = {}
+    decision = _decision(
+        packet,
+        "create_dict",
+        attributes={
+            "brand": "Acme",
+            "sub_brand": "Acme",
+            "function": "Wash",
+            "packsize": "200 ml",
+        },
+    )
+    sql, parameters = qa_v3.build_chunk_script(context, [packet], [decision], NOW)
+    assert "INSERT INTO `project.magpie_reference.non_niq_qa_outbox`" in sql
+    values = [str(parameter.value) for parameter in parameters]
+    for parameter in parameters:
+        parameter.to_api_repr()
+    assert any('"meili_index"' in value for value in values)
+    assert "sheet_append" in values
+    assert "BEGIN TRANSACTION" in sql and "COMMIT TRANSACTION" in sql
+
+
+def test_filter_insert_is_product_level_replay_safe():
+    context = _executor_context()
+    packet = _commit_packet(context)
+    decision = _decision(packet, "filter", reason="outside category")
+    sql, _ = qa_v3.build_chunk_script(context, [packet], [decision], NOW)
+    assert "INSERT INTO `project.babybath.filter_babybath`" in sql
+    assert "WHERE NOT EXISTS" in sql
+    assert "product_id" in sql
+
+
+def test_defer_generates_no_dml_or_outbox_event():
+    context = _executor_context()
+    packet = _commit_packet(context)
+    decision = _decision(
+        packet,
+        "defer",
+        confidence="unconfident",
+        evidence=[],
+        reason="image unavailable",
+    )
+    sql, parameters = qa_v3.build_chunk_script(context, [packet], [decision], NOW)
+    assert sql == ""
+    assert parameters == ()
+
+
+def test_known_natural_identity_conflict_fails_before_dml():
+    context = _executor_context()
+    packet = _commit_packet(context)
+    packet["candidates"]["dict:1"]["sku_type"] = "Acme Wash 200 ml"
+    decision = _decision(
+        packet,
+        "create_dict",
+        attributes={
+            "brand": "Acme",
+            "sub_brand": "Acme",
+            "function": "Wash",
+            "packsize": "200 ml",
+        },
+    )
+    with pytest.raises(DecisionValidationError):
+        qa_v3.build_chunk_script(context, [packet], [decision], NOW)
+
+
+
+def test_apply_chunk_retries_the_validated_decisions_without_adapter(monkeypatch):
+    context = _executor_context()
+    packet = _commit_packet(context, "retry")
+    decision = _decision(packet, "map_existing", candidate_ref="dict:1")
+    calls = []
+
+    class FlakyClient:
+        def query(self, sql, job_config):
+            calls.append(sql)
+            if len(calls) == 1:
+                raise TimeoutError("transient")
+            return SimpleNamespace(result=lambda: [])
+
+    monkeypatch.setattr(qa_v3, "invoke_adapter", lambda *args: pytest.fail("adapter invoked"))
+    monkeypatch.setattr(qa_v3, "verify_chunk_commit", lambda *args: None)
+    commit = qa_v3.apply_chunk(FlakyClient(), context, [packet], [decision], NOW)
+    assert commit.attempts == (packet["attempt"],)
+    assert len(calls) == 2
+
+
+def test_apply_chunk_preflights_natural_identity_before_dml():
+    context = _executor_context()
+    packet = _commit_packet(context)
+    packet["candidate_refs"] = set()
+    packet["candidates"] = {}
+    decision = _decision(
+        packet,
+        "create_dict",
+        attributes={
+            "brand": "Acme",
+            "sub_brand": "Acme",
+            "function": "Wash",
+            "packsize": "200 ml",
+        },
+    )
+    queries = []
+
+    class ConflictClient:
+        def query(self, sql, job_config):
+            queries.append(sql)
+            return SimpleNamespace(result=lambda: [{"brand": "Acme", "sku_type": "Acme Wash 200 ml"}])
+
+    with pytest.raises(DecisionValidationError):
+        qa_v3.apply_chunk(ConflictClient(), context, [packet], [decision], NOW)
+    assert len(queries) == 1
+    assert queries[0].startswith("WITH requested AS")

@@ -2,6 +2,8 @@
 """Deterministic Python driver for non-NIQ QA v3."""
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+
 from hashlib import sha256
 import json
 import os
@@ -657,6 +659,7 @@ class RunContext:
     qa_pk_col: str
     dict_identity_col: str
     dict_typo_col: str
+    qa_identity_col: str
     dict_has_meta: bool
     qa_columns: frozenset
     dict_columns: frozenset
@@ -923,11 +926,15 @@ def resolve_run_context(args: Any, client) -> RunContext:
         primary_filter_table(config["filter_table"], dataset), "filter_table",
     )
     pattern = load_dict_pattern(dataset)
+
     qa_columns = frozenset(_table_columns(client, PROJECT, qa_table))
     dict_columns = frozenset(_table_columns(client, PROJECT, dict_table))
     filter_columns = frozenset(_table_columns(client, PROJECT, filter_table))
     qa_pk_col = _first_available(
         qa_columns, ("product_id", "prod_id"), qa_table + " primary key",
+    )
+    qa_identity_col = _first_available(
+        qa_columns, ("sku_type_complete", "sku_type"), qa_table + " identity",
     )
     dict_identity_col = _first_available(
         dict_columns, ("sku_type_complete", "sku_type"), dict_table + " identity",
@@ -1002,6 +1009,7 @@ def resolve_run_context(args: Any, client) -> RunContext:
             None if str(config.get("0", "")) in {"", "-", "null"}
             else _table_component(str(config["0"]))
         ),
+        qa_identity_col=qa_identity_col,
         qa_pk_col=qa_pk_col,
         dict_identity_col=dict_identity_col,
         dict_typo_col=dict_typo_col,
@@ -1182,3 +1190,582 @@ def build_product_packets(
             "allowed_categorical_values": context.allowed_categorical_values,
         })
     return packets
+
+
+@dataclass(frozen=True)
+class OutboxEvent:
+    event_id: str
+    attempt_id: str
+    decision_id: str
+    event_type: str
+    payload: str
+
+
+@dataclass(frozen=True)
+class ChunkCommit:
+    attempts: Tuple[AttemptPlan, ...]
+    created_dict_identities: Tuple[Tuple[str, str, str], ...]
+    outbox_events: Tuple[OutboxEvent, ...]
+    qa_writes: Tuple[Tuple[str, str, str, str, str], ...]
+    filtered_products: Tuple[Tuple[str, str], ...]
+
+
+class _ParameterBuilder:
+    def __init__(self) -> None:
+        self.parameters: List[bigquery.QueryParameter] = []
+
+    def add(self, value: Any, parameter_type: str = "STRING") -> str:
+        name = "p_%d" % len(self.parameters)
+        self.parameters.append(
+            bigquery.ScalarQueryParameter(name, parameter_type, value),
+        )
+        return "@" + name
+
+
+def _timestamp(now: datetime) -> str:
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _metadata(
+    now: datetime, run_id: str, attempt: AttemptPlan, decision_id: str, confidence: str,
+    human_review: bool,
+) -> str:
+    return json.dumps({
+        "source": "non_niq_qa_v3",
+        "timestamp": _timestamp(now),
+        "run_id": run_id,
+        "attempt_id": attempt.attempt_id,
+        "attempt_kind": attempt.attempt_kind,
+        "decision_id": decision_id,
+        "qa_confidence": confidence,
+        "human_review": human_review,
+    }, sort_keys=True, separators=(",", ":"))
+
+
+def _filter_platform_column(context: RunContext) -> Optional[str]:
+    for column in ("ecommerce_platform", "ecommerce"):
+        if column in context.filter_columns:
+            return column
+    return None
+
+
+def _qa_platform_column(context: RunContext) -> str:
+    for column in ("ecommerce_platform", "ecommerce"):
+        if column in context.qa_columns:
+            return column
+    raise ValueError("%s has no platform column" % context.qa_table)
+
+
+def _build_operations(
+    context: RunContext,
+    packets: Sequence[Mapping[str, Any]],
+    decisions: Sequence[Mapping[str, Any]],
+    now: datetime,
+) -> Tuple[List[Mapping[str, Any]], ChunkCommit]:
+    validated = validate_decision_batch({"decisions": list(decisions)}, packets)
+    run_id = _stable_digest({
+        "dataset": context.dataset,
+        "platform": context.platform,
+        "country": context.country,
+        "attempts": [packet["attempt_id"] for packet in packets],
+        "timestamp": _timestamp(now),
+    })[:24]
+    operations: List[Mapping[str, Any]] = []
+    attempts: List[AttemptPlan] = []
+    created_identities: List[Tuple[str, str, str]] = []
+    qa_writes: List[Tuple[str, str, str, str, str]] = []
+    filtered_products: List[Tuple[str, str]] = []
+    outbox_events: List[OutboxEvent] = []
+    seen_identities = set()
+
+    for packet, decision in zip(packets, validated):
+        kind = decision["kind"]
+        if kind == "defer":
+            continue
+        attempt = packet.get("attempt")
+        _require(isinstance(attempt, AttemptPlan), "packet attempt is invalid")
+        decision_id = _stable_digest({
+            "attempt_id": attempt.attempt_id,
+            "decision": decision,
+        })
+        confidence = str(decision["confidence"])
+        human_review = attempt.attempt_kind == "retry" and confidence == "unconfident"
+        base = {
+            "packet": packet,
+            "decision": decision,
+            "attempt": attempt,
+            "decision_id": decision_id,
+            "confidence": confidence,
+            "human_review": human_review,
+            "run_id": run_id,
+        }
+        if kind == "filter":
+            operations.append({**base, "kind": kind})
+            filtered_products.append((str(packet["product_id"]), context.platform))
+            continue
+
+        if kind == "map_existing":
+            candidate = packet.get("candidates", {}).get(decision["candidate_ref"])
+            _require(isinstance(candidate, Mapping), "candidate row is unavailable")
+            brand = str(candidate.get("brand", "")).strip()
+            identity = str(candidate.get(context.dict_identity_col, "")).strip()
+            _require(brand and identity, "candidate row has no natural identity")
+            dictionary_values = None
+        else:
+            attributes = decision["attributes"]
+            generated = compose_generated_attributes(attributes, context.dict_pattern)
+            dictionary_values = {**attributes, **generated}
+            brand = str(dictionary_values.get("brand", "")).strip()
+            identity = str(dictionary_values.get(context.dict_identity_col, "")).strip()
+            _require(brand and identity, "create_dict requires brand and dictionary identity")
+            natural_identity = (brand, context.dict_identity_col, identity)
+            _require(
+                natural_identity not in seen_identities,
+                "duplicate dictionary identity in one chunk",
+            )
+            seen_identities.add(natural_identity)
+            for candidate in packet.get("candidates", {}).values():
+                if (
+                    str(candidate.get("brand", "")).strip() == brand
+                    and str(candidate.get(context.dict_identity_col, "")).strip() == identity
+                ):
+                    raise DecisionValidationError(
+                        "create_dict natural identity already exists in packet candidates",
+                    )
+            created_identities.append(natural_identity)
+
+        qa_identity = identity
+        attempts.append(attempt)
+        qa_writes.append((
+            str(packet["product_id"]), context.platform, brand, qa_identity, attempt.attempt_id,
+        ))
+        operation = {
+            **base,
+            "kind": kind,
+            "brand": brand,
+            "identity": identity,
+            "qa_identity": qa_identity,
+            "dictionary_values": dictionary_values,
+        }
+        operations.append(operation)
+        if kind != "create_dict":
+            continue
+
+        identity_entry = {
+            "brand": brand,
+            "identity_col": context.dict_identity_col,
+            "identity_value": identity,
+        }
+        if context.taxonomy_url:
+            payload = json.dumps({
+                "project": context.project,
+                "dict_table": context.dict_table,
+                "sheet_url": context.taxonomy_url,
+                "entry": identity_entry,
+            }, sort_keys=True, separators=(",", ":"))
+            event_id = _stable_digest({
+                "attempt_id": attempt.attempt_id,
+                "decision_id": decision_id,
+                "event_type": "sheet_append",
+                "payload": payload,
+            })
+            outbox_events.append(OutboxEvent(
+                event_id, attempt.attempt_id, decision_id, "sheet_append", payload,
+            ))
+        if confidence == "confident":
+            payload = json.dumps({
+                "meili_url": MEILI_URL,
+                "meili_index": context.meili_index,
+                "document": {
+                    "product_id": str(packet["product_id"]),
+                    "sku_name": str(packet.get("sku_name", "")),
+                    "sku_type_complete": qa_identity,
+                    "brand": brand,
+                },
+            }, sort_keys=True, separators=(",", ":"))
+            event_id = _stable_digest({
+                "attempt_id": attempt.attempt_id,
+                "decision_id": decision_id,
+                "event_type": "meili_index",
+                "payload": payload,
+            })
+            outbox_events.append(OutboxEvent(
+                event_id, attempt.attempt_id, decision_id, "meili_index", payload,
+            ))
+
+    return operations, ChunkCommit(
+        attempts=tuple(attempts),
+        created_dict_identities=tuple(created_identities),
+        outbox_events=tuple(outbox_events),
+        qa_writes=tuple(qa_writes),
+        filtered_products=tuple(filtered_products),
+    )
+
+
+def _conditional_insert(
+    table: str,
+    values: Mapping[str, Tuple[str, str]],
+    predicate: str,
+) -> str:
+    columns = ", ".join("`%s`" % _identifier(column) for column in values)
+    selected = ", ".join(parameter for _, parameter in values.values())
+    return "INSERT INTO %s (%s)\nSELECT %s\nWHERE %s;" % (
+        table, columns, selected, predicate,
+    )
+
+
+def _insert_values(
+    builder: _ParameterBuilder, values: Mapping[str, Any],
+) -> Mapping[str, Tuple[str, str]]:
+    return {
+        column: ("STRING", builder.add(value))
+        for column, value in values.items()
+    }
+
+
+def _filter_values(
+    context: RunContext, operation: Mapping[str, Any],
+    now: datetime,
+) -> Mapping[str, Any]:
+    packet = operation["packet"]
+    values = {"product_id": str(packet["product_id"])}
+    platform_column = _filter_platform_column(context)
+    if platform_column:
+        values[platform_column] = context.platform
+    for column, packet_column in (
+        ("sku_name", "sku_name"),
+        ("merchant_id", "merchant_id"),
+        ("url", "url"),
+        ("reason", None),
+    ):
+        if column not in context.filter_columns:
+            continue
+        values[column] = (
+            operation["decision"]["reason"] if packet_column is None
+            else str(packet.get(packet_column, ""))
+        )
+    if "_meta" in context.filter_columns:
+        values["_meta"] = _metadata(
+            now, operation["run_id"], operation["attempt"], operation["decision_id"],
+            operation["confidence"], operation["human_review"],
+        )
+    return values
+
+
+def _qa_values(
+    context: RunContext, operation: Mapping[str, Any], now: datetime,
+) -> Mapping[str, Any]:
+    packet = operation["packet"]
+    platform_column = _qa_platform_column(context)
+    required = {
+        context.qa_pk_col: str(packet["product_id"]),
+        platform_column: context.platform,
+        "brand": operation["brand"],
+        context.qa_identity_col: operation["qa_identity"],
+        "_meta": _metadata(
+            now, operation["run_id"], operation["attempt"], operation["decision_id"],
+            operation["confidence"], operation["human_review"],
+        ),
+    }
+    if not set(required).issubset(context.qa_columns):
+        raise ValueError("%s is missing a required v3 QA column" % context.qa_table)
+    values = dict(required)
+    if "sku_name" in context.qa_columns:
+        values["sku_name"] = str(packet.get("sku_name", ""))
+    if "url" in context.qa_columns:
+        values["url"] = str(packet.get("url", ""))
+    if "gmv" in context.qa_columns:
+        values["gmv"] = str(packet.get("gmv_monthly", ""))
+    return values
+
+
+def _outbox_table(context: RunContext) -> str:
+    return _table_reference(context.project, "magpie_reference.non_niq_qa_outbox")
+
+
+def build_chunk_script(
+    context: RunContext,
+    packets: Sequence[Mapping[str, Any]],
+    decisions: Sequence[Mapping[str, Any]],
+    now: datetime,
+) -> Tuple[str, Sequence[Any]]:
+    """Return one parameterized transaction script and its query parameters."""
+    operations, commit = _build_operations(context, packets, decisions, now)
+    if not operations:
+        return "", ()
+
+    builder = _ParameterBuilder()
+    statements = ["BEGIN TRANSACTION;"]
+    create_operations = [item for item in operations if item["kind"] == "create_dict"]
+    dict_table = _table_reference(context.project, context.dict_table)
+    if create_operations:
+        requested_rows = []
+        for operation in create_operations:
+            requested_rows.append("SELECT %s AS brand, %s AS identity_value" % (
+                builder.add(operation["brand"]),
+                builder.add(operation["identity"]),
+            ))
+        statements.extend([
+            "CREATE TEMP TABLE _v3_requested_dict AS\n" + "\nUNION ALL\n".join(requested_rows) + ";",
+            """CREATE TEMP TABLE _v3_existing_dict AS
+SELECT d.brand, d.`%s` AS identity_value
+FROM %s d
+JOIN _v3_requested_dict r
+  ON d.brand = r.brand AND d.`%s` = r.identity_value;""" % (
+                _identifier(context.dict_identity_col), dict_table,
+                _identifier(context.dict_identity_col),
+            ),
+            """CREATE TEMP TABLE _v3_new_dict AS
+SELECT r.brand, r.identity_value
+FROM _v3_requested_dict r
+LEFT JOIN _v3_existing_dict e
+  ON e.brand = r.brand AND e.identity_value = r.identity_value
+WHERE e.brand IS NULL;""",
+        ])
+
+    for operation in (item for item in operations if item["kind"] == "filter"):
+        values = _insert_values(builder, _filter_values(context, operation, now))
+        product_parameter = values["product_id"][1]
+        predicate = "NOT EXISTS (SELECT 1 FROM %s f WHERE f.`product_id` = %s" % (
+            _table_reference(context.project, context.filter_table), product_parameter,
+        )
+        platform_column = _filter_platform_column(context)
+        if platform_column:
+            predicate += " AND %s = %s" % (
+                _canonical_platform_sql("f.`%s`" % _identifier(platform_column)),
+                values[platform_column][1],
+            )
+        predicate += ")"
+        statements.append(_conditional_insert(
+            _table_reference(context.project, context.filter_table), values, predicate,
+        ))
+
+    for operation in create_operations:
+        dict_values = dict(operation["dictionary_values"])
+        if context.dict_has_meta:
+            dict_values["_meta"] = _metadata(
+                now, operation["run_id"], operation["attempt"], operation["decision_id"],
+                operation["confidence"], operation["human_review"],
+            )
+        if not set(dict_values).issubset(context.dict_columns):
+            raise ValueError("create_dict values do not match %s schema" % context.dict_table)
+        values = _insert_values(builder, dict_values)
+        statements.append(_conditional_insert(
+            dict_table,
+            values,
+            "NOT EXISTS (SELECT 1 FROM %s d WHERE d.brand = %s AND d.`%s` = %s)" % (
+                dict_table, values["brand"][1],
+                _identifier(context.dict_identity_col),
+                values[context.dict_identity_col][1],
+            ),
+        ))
+
+    qa_table = _table_reference(context.project, context.qa_table)
+    qa_platform_column = _qa_platform_column(context)
+    for operation in (item for item in operations if item["kind"] in {"map_existing", "create_dict"}):
+        values = _insert_values(builder, _qa_values(context, operation, now))
+        attempt_parameter = builder.add(operation["attempt"].attempt_id)
+        predicate = """NOT EXISTS (
+  SELECT 1 FROM %s q
+  WHERE q.`%s` = %s
+    AND %s = %s
+    AND JSON_VALUE(SAFE.PARSE_JSON(_meta), '$.attempt_id') = %s
+)""" % (
+            qa_table, _identifier(context.qa_pk_col), values[context.qa_pk_col][1],
+            _canonical_platform_sql("q.`%s`" % _identifier(qa_platform_column)),
+            values[qa_platform_column][1],
+            attempt_parameter,
+        )
+        statements.append(_conditional_insert(qa_table, values, predicate))
+
+    for operation in create_operations:
+        for event in commit.outbox_events:
+            if event.attempt_id != operation["attempt"].attempt_id:
+                continue
+            values = _insert_values(builder, {
+                "event_id": event.event_id,
+                "attempt_id": event.attempt_id,
+                "decision_id": event.decision_id,
+                "dataset": context.dataset,
+                "platform": context.platform,
+                "country": context.country,
+                "event_type": event.event_type,
+                "payload": event.payload,
+                "status": "pending",
+                "last_error": None,
+            })
+            values["attempts"] = ("INT64", builder.add(0, "INT64"))
+            values["created_at"] = ("TIMESTAMP", builder.add(now, "TIMESTAMP"))
+            values["completed_at"] = ("TIMESTAMP", builder.add(None, "TIMESTAMP"))
+            statements.append(_conditional_insert(
+                _outbox_table(context),
+                values,
+                """EXISTS (
+  SELECT 1 FROM _v3_new_dict n
+  WHERE n.brand = %s AND n.identity_value = %s
+) AND NOT EXISTS (
+  SELECT 1 FROM %s o WHERE o.event_id = %s
+)""" % (
+                    builder.add(operation["brand"]),
+                    builder.add(operation["identity"]),
+                    _outbox_table(context),
+                    values["event_id"][1],
+                ),
+            ))
+    statements.append("COMMIT TRANSACTION;")
+    return "\n\n".join(statements), tuple(builder.parameters)
+
+
+def _preflight_create_identities(
+    client, context: RunContext, operations: Sequence[Mapping[str, Any]],
+) -> None:
+    creates = [operation for operation in operations if operation["kind"] == "create_dict"]
+    if not creates:
+        return
+    builder = _ParameterBuilder()
+    requested = "\nUNION ALL\n".join(
+        "SELECT %s AS brand, %s AS identity_value" % (
+            builder.add(operation["brand"]),
+            builder.add(operation["identity"]),
+        )
+        for operation in creates
+    )
+    query = """WITH requested AS (
+%s
+)
+SELECT d.brand, d.`%s` AS identity_value
+FROM %s d
+JOIN requested r
+  ON d.brand = r.brand AND d.`%s` = r.identity_value
+""" % (
+        requested,
+        _identifier(context.dict_identity_col),
+        _table_reference(context.project, context.dict_table),
+        _identifier(context.dict_identity_col),
+    )
+    conflicts = list(client.query(
+        query,
+        job_config=bigquery.QueryJobConfig(query_parameters=builder.parameters),
+    ).result())
+    if conflicts:
+        raise DecisionValidationError(
+            "create_dict natural identity already exists in %s" % context.dict_table,
+        )
+
+
+def _is_transient(error: Exception) -> bool:
+    if isinstance(error, (ConnectionError, TimeoutError)):
+        return True
+    status = getattr(error, "code", None)
+    status = status() if callable(status) else status
+    return status in {429, 500, 502, 503, 504}
+
+
+def apply_chunk(
+    client,
+    context: RunContext,
+    packets: Sequence[Mapping[str, Any]],
+    decisions: Sequence[Mapping[str, Any]],
+    now: datetime,
+) -> ChunkCommit:
+    """Execute one validated chunk with bounded transient retries and read-back."""
+    operations, commit = _build_operations(context, packets, decisions, now)
+    if not operations:
+        return commit
+    _preflight_create_identities(client, context, operations)
+    script, parameters = build_chunk_script(context, packets, decisions, now)
+    for attempt_number in range(3):
+        try:
+            client.query(
+                script,
+                job_config=bigquery.QueryJobConfig(query_parameters=list(parameters)),
+            ).result()
+            break
+        except Exception as error:
+            if attempt_number == 2 or not _is_transient(error):
+                raise
+    verify_chunk_commit(client, context, commit)
+    return commit
+
+
+def _assert_readback(
+    client, query: str, parameters: Sequence[bigquery.QueryParameter], label: str,
+) -> None:
+    rows = list(client.query(
+        query,
+        job_config=bigquery.QueryJobConfig(query_parameters=list(parameters)),
+    ).result())
+    if not rows:
+        raise RuntimeError("missing committed %s" % label)
+
+
+def verify_chunk_commit(client, context: RunContext, commit: ChunkCommit) -> None:
+    """Read back exact committed QA, filter, dictionary, and outbox identities."""
+    qa_table = _table_reference(context.project, context.qa_table)
+    qa_platform_column = _qa_platform_column(context)
+    for product_id, platform, brand, qa_identity, attempt_id in commit.qa_writes:
+        _assert_readback(
+            client,
+            """SELECT 1
+FROM %s q
+WHERE q.`%s` = @product_id
+  AND %s = @platform
+  AND q.`brand` = @brand
+  AND q.`%s` = @qa_identity
+  AND JSON_VALUE(SAFE.PARSE_JSON(_meta), '$.attempt_id') = @attempt_id
+LIMIT 1""" % (
+                qa_table, _identifier(context.qa_pk_col),
+                _canonical_platform_sql("q.`%s`" % _identifier(qa_platform_column)),
+                _identifier(context.qa_identity_col),
+            ),
+            [
+                bigquery.ScalarQueryParameter("product_id", "STRING", product_id),
+                bigquery.ScalarQueryParameter("platform", "STRING", platform),
+                bigquery.ScalarQueryParameter("brand", "STRING", brand),
+                bigquery.ScalarQueryParameter("qa_identity", "STRING", qa_identity),
+                bigquery.ScalarQueryParameter("attempt_id", "STRING", attempt_id),
+            ],
+            "QA row for attempt_id=%s" % attempt_id,
+        )
+
+    filter_table = _table_reference(context.project, context.filter_table)
+    filter_platform_column = _filter_platform_column(context)
+    for product_id, platform in commit.filtered_products:
+        predicate = "f.`product_id` = @product_id"
+        parameters = [bigquery.ScalarQueryParameter("product_id", "STRING", product_id)]
+        if filter_platform_column:
+            predicate += " AND %s = @platform" % _canonical_platform_sql(
+                "f.`%s`" % _identifier(filter_platform_column),
+            )
+            parameters.append(bigquery.ScalarQueryParameter("platform", "STRING", platform))
+        _assert_readback(
+            client,
+            "SELECT 1 FROM %s f WHERE %s LIMIT 1" % (filter_table, predicate),
+            parameters,
+            "filter row for product_id=%s" % product_id,
+        )
+
+    dict_table = _table_reference(context.project, context.dict_table)
+    for brand, identity_column, identity_value in commit.created_dict_identities:
+        _assert_readback(
+            client,
+            "SELECT 1 FROM %s d WHERE d.`brand` = @brand AND d.`%s` = @identity LIMIT 1" % (
+                dict_table, _identifier(identity_column),
+            ),
+            [
+                bigquery.ScalarQueryParameter("brand", "STRING", brand),
+                bigquery.ScalarQueryParameter("identity", "STRING", identity_value),
+            ],
+            "dictionary identity %s/%s" % (brand, identity_value),
+        )
+
+    outbox_table = _outbox_table(context)
+    for event in commit.outbox_events:
+        _assert_readback(
+            client,
+            "SELECT 1 FROM %s WHERE event_id = @event_id AND status = 'pending' LIMIT 1" % outbox_table,
+            [bigquery.ScalarQueryParameter("event_id", "STRING", event.event_id)],
+            "outbox event %s" % event.event_id,
+        )
