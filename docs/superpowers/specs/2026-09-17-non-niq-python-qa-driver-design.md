@@ -140,11 +140,29 @@ Before the selected adapter receives any production product, v3 performs a no-wr
 
 A failed probe, unavailable attachment capability, invalid output, or wrong label emits `FAILED` before the worklist is processed.
 
-For production chunks, exactly one downloaded local image per product is attached through this mechanism. Textual local paths are audit metadata only.
+#### Chunk attachment manifest
+
+For each readable product image, the driver creates an immutable manifest entry:
+
+```json
+{
+  "product_id": "...",
+  "attachment_index": 1,
+  "attachment_filename": "attachment-0001.jpg",
+  "sha256": "...",
+  "local_path": "..."
+}
+```
+
+`attachment_index` is the one-based position in the frozen chunk manifest. The driver builds Codex `--image` flags or OMP `@file` arguments in ascending `attachment_index` order, then gives each product packet its own index and filename. No-image packets have no attachment index.
+
+The response schema requires image-derived evidence to name an `attachment_index`. The driver accepts it only when it equals that decision's packet index. A product can never use another product's attachment as evidence.
+
+For production chunks, exactly one downloaded local image per product is attached through this manifest. Textual local paths are audit metadata only.
 
 ## Decision protocol
 
-The driver supplies each product packet with `work_item_id`, `input_fingerprint`, source signals, image state, prior mapping, candidate summaries/references, and writable dictionary attribute rules.
+The driver supplies each product packet with `work_item_id`, `input_fingerprint`, source signals, image state, immutable attachment metadata, prior mapping, candidate summaries/references, and writable dictionary attribute rules.
 
 The selected agent must return exactly one decision per supplied product. It echoes `work_item_id` and `input_fingerprint`; mismatches are rejected.
 
@@ -157,9 +175,13 @@ All variants share:
   "input_fingerprint": "...",
   "kind": "filter | map_existing | create_dict | defer",
   "confidence": "confident | unconfident",
-  "evidence": ["..."]
+  "evidence": [
+    {"source": "image", "attachment_index": 1, "claim": "Brand and size are visible"}
+  ]
 }
 ```
+
+Each evidence item has `source`, `claim`, and—only when `source` is `image`—an `attachment_index`. For a readable image, every non-defer decision requires an image evidence item whose index exactly matches that packet. An unavailable-image `map_existing` or `create_dict` can contain non-image evidence only and must be unconfident.
 
 The JSON schema uses a discriminated union with `additionalProperties: false`. Cross-verdict fields are rejected.
 
@@ -173,7 +195,7 @@ The JSON schema uses a discriminated union with `additionalProperties: false`. C
 }
 ```
 
-A filter requires a reason, `confidence: "confident"`, and a readable attached image. It cannot include candidate, mapping, or dictionary fields. It is the only terminal filter-table exclusion path.
+A filter requires a reason, `confidence: "confident"`, a readable attached image, and an image-evidence index matching its packet. It cannot include candidate, mapping, or dictionary fields. It is the only terminal filter-table exclusion path.
 
 ### `map_existing`
 
@@ -185,7 +207,7 @@ A filter requires a reason, `confidence: "confident"`, and a readable attached i
 }
 ```
 
-A map requires a packet-provided `candidate_ref`. It cannot include free-form `brand` or `sku_type_complete`. The driver resolves and revalidates the selected exact dictionary row, then derives the QA values itself.
+A map requires a packet-provided `candidate_ref`. It cannot include free-form `brand` or `sku_type_complete`. The driver resolves and revalidates the selected exact dictionary row, then derives the QA values itself. When an image is readable, its evidence must reference this product's attachment index.
 
 ### `create_dict`
 
@@ -201,7 +223,7 @@ A map requires a packet-provided `candidate_ref`. It cannot include free-form `b
 }
 ```
 
-A creation can include only live writable, non-generated dictionary attributes. The driver rejects unsupported columns, invented generated fields, missing required sources, and invalid categorical vocabulary. It generates identity/composite values from the approved per-dataset pattern.
+A creation can include only live writable, non-generated dictionary attributes. The driver rejects unsupported columns, invented generated fields, missing required sources, and invalid categorical vocabulary. It generates identity/composite values from the approved per-dataset pattern. When an image is readable, its evidence must reference this product's attachment index.
 
 ### `defer`
 
@@ -333,6 +355,8 @@ V3 has no `partial -> DONE` path. Earlier successfully committed chunks remain r
 ### Driver tests with fakes
 
 - Agent adapters receive native image attachment inputs and no write authority.
+- Attachment manifests preserve product-to-image order; a response that cites another product's distinctive image index is rejected.
+- Two-product fixture chunks with deliberately swapped distinctive images prove both CLI argument construction and cross-association rejection.
 - Failed vision sentinel blocks production work.
 - Invalid agent output reaches no DML.
 - Transaction failure creates no committed outbox completion.
