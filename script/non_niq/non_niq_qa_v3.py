@@ -4,10 +4,16 @@
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+import secrets
+import struct
+import subprocess
+import tempfile
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
+import zlib
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,10 @@ class AttemptPlan:
     input_fingerprint: str
     attempt_id: str
     attempt_kind: str
+
+
+class AdapterVisionError(RuntimeError):
+    pass
 
 
 class DecisionValidationError(ValueError):
@@ -119,7 +129,9 @@ def _require(condition: bool, message: str) -> None:
         raise DecisionValidationError(message)
 
 
-def _has_own_image_evidence(evidence: Sequence[Mapping[str, Any]], attachment_index: Any) -> bool:
+def _has_own_image_evidence(
+    evidence: Sequence[Mapping[str, Any]], attachment_index: Any, image_ready: bool,
+) -> bool:
     has_own_image = False
     for item in evidence:
         _require(isinstance(item, Mapping), "evidence item must be an object")
@@ -128,12 +140,22 @@ def _has_own_image_evidence(evidence: Sequence[Mapping[str, Any]], attachment_in
         claim = item.get("claim")
         _require(isinstance(claim, str) and claim, "evidence claim is required")
         if source == "image":
+            _require(image_ready, "image evidence requires a readable attachment")
+            _require(
+                isinstance(attachment_index, int) and not isinstance(attachment_index, bool) and attachment_index > 0,
+                "packet has no valid attachment index",
+            )
             _require(
                 set(item) == {"source", "claim", "attachment_index"},
                 "image evidence has unexpected fields",
             )
+            item_index = item.get("attachment_index")
             _require(
-                item.get("attachment_index") == attachment_index,
+                isinstance(item_index, int) and not isinstance(item_index, bool) and item_index > 0,
+                "image evidence attachment_index must be a positive integer",
+            )
+            _require(
+                item_index == attachment_index,
                 "image evidence cites another product attachment",
             )
             has_own_image = True
@@ -186,12 +208,15 @@ def validate_decision_batch(
         _require(confidence in {"confident", "unconfident"}, "unsupported confidence")
         evidence = decision.get("evidence")
         _require(isinstance(evidence, list), "evidence must be an array")
-        has_own_image = _has_own_image_evidence(evidence, packet.get("attachment_index"))
         image_ready = packet.get("image_status") == "ready"
+        has_own_image = _has_own_image_evidence(
+            evidence, packet.get("attachment_index"), image_ready,
+        )
 
         if kind == "filter":
             _require(confidence == "confident", "filter must be confident")
             _require(isinstance(decision.get("reason"), str) and decision["reason"], "filter reason is required")
+            _require(image_ready, "filter requires a readable image")
             _require(has_own_image, "filter requires its own image evidence")
         elif kind == "map_existing":
             _require(decision.get("candidate_ref") in packet.get("candidate_refs", set()), "unknown candidate_ref")
@@ -214,3 +239,186 @@ def validate_decision_batch(
         decisions_by_id[product_id] = decision
 
     return [decisions_by_id[packet["product_id"]] for packet in packets]
+
+
+SCHEMA_PATH = Path(__file__).with_name("non_niq_qa_v3_decision_schema.json")
+_PIXEL_DIGITS = {
+    "0": ("111", "101", "101", "101", "111"),
+    "1": ("010", "110", "010", "010", "111"),
+    "2": ("111", "001", "111", "100", "111"),
+    "3": ("111", "001", "111", "001", "111"),
+    "4": ("101", "101", "111", "001", "001"),
+    "5": ("111", "100", "111", "001", "111"),
+    "6": ("111", "100", "111", "101", "111"),
+    "7": ("111", "001", "010", "010", "010"),
+    "8": ("111", "101", "111", "101", "111"),
+    "9": ("111", "101", "111", "001", "111"),
+}
+
+
+def build_codex_command(
+    prompt: str, schema_path: Path, output_path: Path, attachments: Sequence[Attachment],
+) -> List[str]:
+    """Build Codex's one ordered native image invocation."""
+    return [
+        "codex", "exec", "--ephemeral", "--sandbox", "read-only",
+        "-c", "sandbox_workspace_write.network_access=false",
+        "--output-schema", str(schema_path),
+        "--output-last-message", str(output_path),
+        "--image",
+        *[str(attachment.local_path) for attachment in attachments],
+        prompt,
+    ]
+
+
+def build_omp_command(prompt: str, attachments: Sequence[Attachment]) -> List[str]:
+    """Build OMP's one ordered native image invocation."""
+    return [
+        "omp", "--print", "--mode", "json", "--no-tools", "--no-session",
+        *["@" + str(attachment.local_path) for attachment in attachments],
+        prompt,
+    ]
+
+
+def _adapter_env() -> Dict[str, str]:
+    allowed = {
+        "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "CODEX_HOME",
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN",
+        "GEMINI_API_KEY", "OMP_PROFILE", "PI_CODING_AGENT_DIR",
+    }
+    return {key: value for key, value in os.environ.items() if key in allowed}
+
+
+def _write_label_png(path: Path, label: str) -> None:
+    scale = 12
+    width = 24 + len(label) * 48
+    height = 84
+    pixels = bytearray(b"\xff\xff\xff" * width * height)
+    for char_index, digit in enumerate(label):
+        glyph = _PIXEL_DIGITS[digit]
+        for row_index, row in enumerate(glyph):
+            for column_index, pixel in enumerate(row):
+                if pixel != "1":
+                    continue
+                x0 = 12 + char_index * 48 + column_index * scale
+                y0 = 12 + row_index * scale
+                for y in range(y0, y0 + scale):
+                    for x in range(x0, x0 + scale):
+                        offset = (y * width + x) * 3
+                        pixels[offset:offset + 3] = b"\x00\x00\x00"
+
+    def chunk(name: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + name + data +
+            struct.pack(">I", zlib.crc32(name + data) & 0xffffffff)
+        )
+
+    rows = b"".join(
+        b"\x00" + pixels[row * width * 3:(row + 1) * width * 3]
+        for row in range(height)
+    )
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n" +
+        chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) +
+        chunk(b"IDAT", zlib.compress(rows)) +
+        chunk(b"IEND", b"")
+    )
+
+
+def _parse_adapter_json(text: str) -> Mapping[str, Any]:
+    candidates = [text]
+    candidates.extend(reversed([line for line in text.splitlines() if line.strip()]))
+    for candidate in candidates:
+        try:
+            decoded = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(decoded, Mapping) and "labels" in decoded:
+            return decoded
+        if isinstance(decoded, Mapping) and "decisions" in decoded:
+            return decoded
+        if isinstance(decoded, Mapping):
+            for key in ("result", "message", "content"):
+                value = decoded.get(key)
+                if isinstance(value, str):
+                    try:
+                        nested = json.loads(value)
+                    except ValueError:
+                        continue
+                    if isinstance(nested, Mapping):
+                        return nested
+    raise AdapterVisionError("adapter returned no parseable JSON result")
+
+
+def _run_command(command: Sequence[str], env: Mapping[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        list(command), capture_output=True, check=False, env=dict(env), text=True,
+    )
+
+
+def verify_adapter_vision(
+    adapter: str,
+    run_command: Callable[..., subprocess.CompletedProcess] = _run_command,
+) -> None:
+    """Raise AdapterVisionError unless both random image labels are read exactly."""
+    if adapter not in {"codex", "omp"}:
+        raise AdapterVisionError("unsupported adapter: %s" % adapter)
+    with tempfile.TemporaryDirectory(prefix="non-niq-v3-sentinel-") as directory:
+        root = Path(directory)
+        labels = ["%08d" % secrets.randbelow(10 ** 8) for _ in range(2)]
+        attachments = []
+        for index, label in enumerate(labels, 1):
+            path = root / ("attachment-%04d.png" % index)
+            _write_label_png(path, label)
+            attachments.append(Attachment(
+                product_id="sentinel-%d" % index,
+                attachment_index=index,
+                attachment_filename=path.name,
+                sha256=sha256(path.read_bytes()).hexdigest(),
+                local_path=path,
+            ))
+        prompt = (
+            "Read the visible label in each attached image in attachment order. "
+            "Return JSON only: {\"labels\":[\"first\",\"second\"]}."
+        )
+        output_path = root / "result.json"
+        if adapter == "codex":
+            command = [
+                "codex", "exec", "--ephemeral", "--sandbox", "read-only",
+                "-c", "sandbox_workspace_write.network_access=false",
+                "--output-last-message", str(output_path),
+                "--image", *[str(item.local_path) for item in attachments], prompt,
+            ]
+        else:
+            command = build_omp_command(prompt, attachments)
+        result = run_command(command, env=_adapter_env())
+        if result.returncode:
+            raise AdapterVisionError(
+                "%s sentinel failed: %s" % (adapter, result.stderr.strip())
+            )
+        text = output_path.read_text() if output_path.exists() else result.stdout
+        parsed = _parse_adapter_json(text)
+        if parsed.get("labels") != labels:
+            raise AdapterVisionError("adapter did not read both image labels exactly")
+
+
+def invoke_adapter(
+    adapter: str, packet_prompt: str, attachments: Sequence[Attachment],
+) -> Mapping[str, Any]:
+    """Return the adapter's parsed final response only."""
+    if adapter not in {"codex", "omp"}:
+        raise AdapterVisionError("unsupported adapter: %s" % adapter)
+    with tempfile.TemporaryDirectory(prefix="non-niq-v3-result-") as directory:
+        output_path = Path(directory) / "result.json"
+        command = (
+            build_codex_command(packet_prompt, SCHEMA_PATH, output_path, attachments)
+            if adapter == "codex"
+            else build_omp_command(packet_prompt, attachments)
+        )
+        result = _run_command(command, _adapter_env())
+        if result.returncode:
+            raise AdapterVisionError(
+                "%s invocation failed: %s" % (adapter, result.stderr.strip())
+            )
+        text = output_path.read_text() if output_path.exists() else result.stdout
+        return _parse_adapter_json(text)

@@ -1,3 +1,6 @@
+import json
+from types import SimpleNamespace
+
 import sys
 from pathlib import Path
 
@@ -5,14 +8,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "script" / "non_niq"))
 from non_niq_qa_v3 import (
+    AdapterVisionError,
     Attachment,
     DecisionValidationError,
     PreparedImage,
     build_attachment_manifest,
+    build_codex_command,
+    build_omp_command,
     first_complete_https_url,
     normalize_first_image_url,
     plan_attempt,
     validate_decision_batch,
+    verify_adapter_vision,
 )
 
 
@@ -128,6 +135,13 @@ def test_confident_filter_requires_own_image_evidence():
         validate_decision_batch({"decisions": [decision]}, [packet])
 
 
+def test_filter_rejects_image_evidence_without_a_readable_attachment():
+    packet = _packet(attachment_index=None, image_status="unavailable")
+    decision = _decision(packet, "filter", reason="outside category")
+    with pytest.raises(DecisionValidationError):
+        validate_decision_batch({"decisions": [decision]}, [packet])
+
+
 def test_unavailable_image_cannot_produce_confident_mapping():
     packet = _packet(image_status="unavailable")
     decision = _decision(packet, "map_existing", candidate_ref="dict:1")
@@ -156,3 +170,56 @@ def test_defer_is_unconfident_and_never_requires_an_attachment():
         reason="image unavailable",
     )
     assert validate_decision_batch({"decisions": [deferred]}, [packet]) == [deferred]
+
+# --- native adapter boundary ---
+
+def _attachment(tmp_path, product_id, attachment_index):
+    local_path = tmp_path / ("%s.png" % product_id)
+    local_path.write_bytes(product_id.encode("utf-8"))
+    return Attachment(
+        product_id=product_id,
+        attachment_index=attachment_index,
+        attachment_filename="attachment-%04d.png" % attachment_index,
+        sha256="hash-" + product_id,
+        local_path=local_path,
+    )
+
+
+def test_codex_command_passes_images_in_attachment_index_order(tmp_path):
+    first = _attachment(tmp_path, "p-1", 1)
+    second = _attachment(tmp_path, "p-2", 2)
+    command = build_codex_command(
+        "decide",
+        Path(__file__).parent.parent.parent / "script" / "non_niq" / "non_niq_qa_v3_decision_schema.json",
+        tmp_path / "result.json",
+        [first, second],
+    )
+    image_flag = command.index("--image")
+    assert command[image_flag + 1:image_flag + 3] == [
+        str(first.local_path), str(second.local_path),
+    ]
+    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert "sandbox_workspace_write.network_access=false" in command
+
+
+def test_omp_command_uses_native_at_file_arguments_in_order(tmp_path):
+    first = _attachment(tmp_path, "p-1", 1)
+    second = _attachment(tmp_path, "p-2", 2)
+    command = build_omp_command("decide", [first, second])
+    assert [arg for arg in command if arg.startswith("@")] == [
+        "@%s" % first.local_path, "@%s" % second.local_path,
+    ]
+    assert "--no-tools" in command
+    assert "--no-session" in command
+
+
+def test_wrong_random_label_fails_before_product_decision():
+    def wrong_runner(*args, **kwargs):
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"labels": ["wrong", "wrong"]}),
+            stderr="",
+        )
+
+    with pytest.raises(AdapterVisionError):
+        verify_adapter_vision("codex", wrong_runner)
