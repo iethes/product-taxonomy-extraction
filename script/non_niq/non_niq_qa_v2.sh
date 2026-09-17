@@ -28,6 +28,8 @@ set -euo pipefail
 # Claude and Codex have separate adapters in main(): Claude returns its JSON envelope on stdout;
 # Codex writes its schema-constrained final message to --output-last-message. Do not funnel a new
 # harness through either adapter without implementing its own invocation and output contract.
+# Codex progress/thinking events are captured in /tmp instead of printed; only errors and the
+# final result are shown alongside this wrapper's phase/status messages.
 #
 # v2 reads the Sheet's `master_table_prod` (AC, no "_dev" suffix), which is a genuinely distinct
 # table with its own qa_status column. Its normal worklist scope is modeled on the stakeholder
@@ -36,6 +38,8 @@ set -euo pipefail
 # for the deliberate widening), then require an exact product_id + whitespace-normalized sku_name
 # QA match. Product-ID-only history is retained solely for the pending-unconfident retry safety
 # loop. Neither script writes qa_status -- a separate external QA-labelling update process owns it.
+# Client OS Only and Competitor OS merchant IDs bypass the GMV rank restriction; filter-table
+# exclusions and current-title QA checks still apply.
 # See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the shared design this
 # still implements (decision tree, confidence loop, _meta stamping).
 
@@ -124,6 +128,7 @@ worklist_query() {
   local filter_table="${8:-}"
   local kategori="${9:-}"
   local monthly_reverify="${10:-}"
+  local forced_merchant_ids_sql="${11:-}"
   local platform_titlecase="${platform^}"
   # item_description/product_attributes_attrs enrichment is Shopee-only by data availability --
   # ported VERBATIM from non_niq_qa.sh's worklist_query (v1), already debugged there (confirmed
@@ -175,6 +180,9 @@ worklist_query() {
   # Widened past the stakeholder query's own Tier 1 cutoff (0.8) to <=90% cumulative GMV --
   # deliberate: this scope now also covers what the stakeholder query itself calls Tier 2.
   local stakeholder_scope_clause="r.cumulative_gmv_share <= 0.9"
+  if [[ -n "$forced_merchant_ids_sql" ]]; then
+    stakeholder_scope_clause="(${stakeholder_scope_clause} OR r.merchant_id IN (${forced_merchant_ids_sql}))"
+  fi
 
   # listing_changed remains an optional safety review for categories that explicitly opt in. The
   # normal title-mismatch path below already catches title changes relative to QA history.
@@ -310,7 +318,9 @@ platform=${platform}, country=${country}. See docs/superpowers/specs/2026-08-06-
 decision tree, confidence loop, and _meta conventions this still implements -- read it in full
 before starting. The normal worklist filters confirmed out-of-scope products, recomputes Tier 1 as
 the top 90% cumulative GMV, then includes any current sku_name that has no matching QA row for the
-same product_id after whitespace normalization. Pending-unconfident retries remain an explicit
+same product_id after whitespace normalization. Client OS Only and Competitor OS merchants are
+included regardless of GMV rank, including zero-GMV products, but filter exclusions and the same
+QA checks still apply. Pending-unconfident retries remain an explicit
 operational exception to that normal stakeholder scope.
 
 Resolved for this run: source_table=${PROJECT}.${source_table} (master_table_prod, NOT the _dev
@@ -332,7 +342,8 @@ BigQuery to re-fetch it, and do NOT trust any other row count than ${worklist_co
 (in slices if it's too large for one Read) rather than querying BigQuery for it. Each line has:
 product_id, sku_name, image, gmv_monthly, ecommerce_platform,
 item_description, product_attributes_attrs, listing_changed, prior_sku_name, prior_kategori,
-priority. It is already scoped to the post-filter top-90%-cumulative-GMV Tier 1 population,
+priority. It is already scoped to the post-filter top-90%-cumulative-GMV Tier 1 population
+plus products from whitelisted Client OS Only and Competitor OS merchants regardless of GMV,
 with a product considered reviewed only when its current whitespace-normalized sku_name matches a
 QA row for the same product_id. It is prioritized (current-title mismatches before
 agent-flagged-unconfident retries, both by gmv_monthly descending) -- process it in that order. If you cannot account for all
@@ -756,6 +767,18 @@ main() {
   fi
   log INFO "Latest month resolved: ${month}"
 
+  # Match the reference Sheet's category label, not the dataset name. The helper handles
+  # Tokopedia | Shop aliases. Lookup failures retain the existing non-fatal behavior.
+  local platform_titlecase="${platform^}" category
+  category=$(echo "$category_json" | jq -r '.category')
+  log INFO "Checking merchant-allowlist Sheet (country=${country}, category=${category}, platform=${platform_titlecase})..."
+  local forced_merchant_ids_json forced_merchant_ids_sql forced_merchant_count
+  forced_merchant_ids_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" forced-merchants \
+    --country "$country" --category "$category" --platform "$platform_titlecase") || forced_merchant_ids_json="[]"
+  forced_merchant_ids_sql=$(echo "$forced_merchant_ids_json" | jq -r '[.[] | @json] | join(",")') || forced_merchant_ids_sql=""
+  forced_merchant_count=$(echo "$forced_merchant_ids_json" | jq 'length') || forced_merchant_count=0
+  log INFO "Force-include merchants resolved: ${forced_merchant_count}"
+
   local meili_index="${dataset}_taxonomy_qa"
 
   # All of this run's /tmp scratch files are keyed off this tag. MUST include kategori when set --
@@ -771,13 +794,13 @@ main() {
   fi
 
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify" "$forced_merchant_ids_sql")
 
   # Materialize the FULL worklist to a file for Claude to Read -- same rationale as v1: handing
   # Claude raw SQL to re-run risks output truncation on large worklists silently passing as
   # status: partial -> QUEUE_SIGNAL: DONE. --max_rows=1000000 is NOT optional -- bq query silently
   # defaults to --max_rows=100 otherwise (v1 confirmed this live).
-  log INFO "Querying BigQuery to materialize the worklist (post-filter top-90%-GMV Tier 1, limit=${max_rows})..."
+  log INFO "Querying BigQuery to materialize the worklist (post-filter top-90%-GMV Tier 1 + merchant whitelist, limit=${max_rows})..."
   local worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"
   if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=json --max_rows=1000000 \
     "$query" | jq -c '.[]' > "$worklist_file"; then
@@ -791,10 +814,10 @@ main() {
   worklist_count=$(wc -l < "$worklist_file" | tr -d ' ')
 
   if [[ "$worklist_count" == "0" ]]; then
-    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, post-filter top-90%-GMV Tier 1) -- nothing to do."
+    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, post-filter top-90%-GMV Tier 1 + merchant whitelist) -- nothing to do."
     rm -f "$worklist_file"
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
-    emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope post-filter Tier 1 worklist for ${dataset}/${platform}/${country}/${month}"
+    emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope post-filter Tier 1 + merchant whitelist worklist for ${dataset}/${platform}/${country}/${month}"
     exit 0
   fi
 
@@ -828,12 +851,23 @@ main() {
     log INFO "Delegating to Codex -- uses automatic approval with workspace-write (network enabled); MAX_TURNS is a Claude-only CLI setting."
     codex exec --cd "$REPO_ROOT" --approve-for-me \
       -c sandbox_workspace_write.network_access=true \
+      -c hide_agent_reasoning=true --json \
       --output-schema "${REPO_ROOT}/script/non_niq/codex_qa_result_schema.json" \
-      --output-last-message "$codex_final_file" "$prompt" > "$codex_stdout_file" || true
+      --output-last-message "$codex_final_file" "$prompt" \
+      | tee "$codex_stdout_file" \
+      | jq --unbuffered -r '
+          select(.type == "error" or .type == "turn.failed")
+          | "Codex error: \(.error.message // .message // .error // "Unknown error")"
+        ' >&2 || true
     if [[ -s "$codex_final_file" ]]; then
       agent_output=$(<"$codex_final_file")
     else
-      agent_output=$(<"$codex_stdout_file")
+      # JSONL progress is not a final result. Recover the last completed agent message if
+      # Codex exited before writing --output-last-message; empty/malformed output fails below.
+      agent_output=$(jq -sr '
+        [.[] | select(.type == "item.completed" and .item.type == "agent_message")
+         | .item.text] | last // empty
+      ' "$codex_stdout_file") || true
     fi
   else
     # claude -p --output-format json buffers ALL of its output until the subprocess exits -- there is

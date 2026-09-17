@@ -99,6 +99,37 @@ if echo "$q" | grep -q "filter_state\|fs.product_id"; then
 fi
 echo "PASS: worklist_query filter_table exclusion"
 
+# Run generated scope SQL against fixture data to verify merchant inclusion and exclusions.
+q_forced=$(worklist_query "fixture.source" "fixture.qa" "prod_id" "2026-07" "tokopedia" "" "300" "fixture.filter" "" "" '"client","competitor"')
+q_unforced=$(worklist_query "fixture.source" "fixture.qa" "prod_id" "2026-07" "tokopedia" "" "300" "fixture.filter")
+python3 - "$q_forced" "$q_unforced" <<'PY_SCOPE'
+import sqlite3
+import sys
+
+db = sqlite3.connect(":memory:")
+db.create_function("FORMAT_DATE", 2, lambda fmt, date: date[:7])
+db.executescript("""
+CREATE TABLE source (product_id TEXT, sku_name TEXT, image TEXT, ecommerce_platform TEXT,
+                     country TEXT, category TEXT, month TEXT, gmv_monthly REAL, merchant_id TEXT);
+CREATE TABLE filter (product_id TEXT);
+INSERT INTO source VALUES
+ ('top', 'top', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 80, 'ordinary'),
+ ('tail', 'tail', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 11, 'ordinary'),
+ ('client-low', 'low', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 9, 'client'),
+ ('competitor-zero', 'zero', '', 'Tokopedia | Shop', 'ID', 'Cookies Biscuit', '2026-07-01', 0, 'competitor'),
+ ('client-filtered', 'filtered', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 500, 'client');
+INSERT INTO filter VALUES ('client-filtered');
+""")
+def scope_ids(query):
+    query = query.split(",\nqa_title_state AS (", 1)[0]
+    query = query.replace("`sincere-hearth-273704.fixture.source`", "source")
+    query = query.replace("`sincere-hearth-273704.fixture.filter`", "filter")
+    return {row[0] for row in db.execute(query + " SELECT product_id FROM stakeholder_scope")}
+assert scope_ids(sys.argv[1]) == {'top', 'client-low', 'competitor-zero'}
+assert scope_ids(sys.argv[2]) == {'top'}
+PY_SCOPE
+echo "PASS: merchant whitelist includes low/zero-GMV products and retains filter exclusions"
+
 # --- worklist_query enrichment (item_description/product_attributes_attrs, ported from v1) ---
 q_enriched=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee" "0_pipeline_cookiesbiscuit_shopee_id")
 echo "$q_enriched" | grep -q "enrichment_dedup AS" || fail "worklist_query (v2) must create an enrichment_dedup CTE for deduplication"
@@ -289,7 +320,9 @@ if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discor
   fail "non_niq_qa_v2.sh must not reference Discord notification or load_env.sh"
 fi
 grep -qF "enrichment_table=\$(echo \"\$category_json\" | jq -r '.\"0\"')" <<< "$script_src" || fail "main() (v2) must resolve enrichment_table from the Sheet's \"0\" column, same as v1"
-grep -qF '"$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify")' <<< "$script_src" || fail "main() (v2) must thread enrichment and scope options through to worklist_query"
+grep -qF '"$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify" "$forced_merchant_ids_sql")' <<< "$script_src" || fail "main() (v2) must thread enrichment and scope options through to worklist_query"
+grep -qF 'non_niq_helper.py" forced-merchants' <<< "$script_src" || fail "main() must fetch client/competitor merchant IDs"
+grep -qF -- '--country "$country" --category "$category" --platform "$platform_titlecase"' <<< "$script_src" || fail "merchant lookup must use the resolved country, category, and platform"
 echo "PASS: main() wiring"
 
 echo "ALL TESTS PASSED (part 2: prompt + main)"
