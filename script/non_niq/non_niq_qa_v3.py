@@ -23,7 +23,6 @@ from non_niq_helper import (
     fetch_config_csv,
     fetch_forced_merchant_ids,
     parse_categories,
-    resolve_category_columns,
 )
 
 
@@ -262,7 +261,28 @@ def validate_decision_batch(
             generated = packet.get("generated_attributes", set())
             _require(set(attributes).issubset(writable), "create_dict includes a non-writable attribute")
             _require(not (set(attributes) & set(generated)), "create_dict includes a generated attribute")
-            _require(all(isinstance(value, str) for value in attributes.values()), "attributes must be strings")
+            _require(
+                all(isinstance(value, str) and value.strip() for value in attributes.values()),
+                "attributes must be non-empty strings",
+            )
+            pattern = packet.get("dict_pattern", {})
+            _require(isinstance(pattern, Mapping), "packet dict pattern is invalid")
+            try:
+                required_leaves = _pattern_leaf_sources(pattern)
+            except (KeyError, TypeError, ValueError) as error:
+                raise DecisionValidationError("packet dict pattern is invalid") from error
+            _require(
+                required_leaves.issubset(attributes),
+                "create_dict omits a required generated-pattern leaf",
+            )
+            allowed_values = packet.get("allowed_categorical_values", {})
+            _require(isinstance(allowed_values, Mapping), "packet categorical vocabulary is invalid")
+            for attribute, values in allowed_values.items():
+                if attribute in attributes:
+                    _require(
+                        attributes[attribute] in values,
+                        "create_dict uses an unknown categorical value: %s" % attribute,
+                    )
             _require(not image_ready or has_own_image, "readable image requires its own evidence")
         else:
             _require(confidence == "unconfident", "defer must be unconfident")
@@ -484,6 +504,20 @@ def invoke_adapter(
 
 PROJECT = "sincere-hearth-273704"
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_TABLE_COMPONENT = re.compile(r"^[A-Za-z0-9_]+$")
+_PROJECT_ID = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+_CATEGORICAL_ATTRIBUTES = frozenset({
+    "age_group",
+    "bundle_type",
+    "category",
+    "fragrance_group",
+    "function",
+    "group_scent",
+    "packaging",
+    "sub_category",
+    "variant",
+    "variant_group",
+})
 
 
 def _identifier(value: str) -> str:
@@ -492,12 +526,24 @@ def _identifier(value: str) -> str:
     return value
 
 
+def _table_component(value: str) -> str:
+    if not _TABLE_COMPONENT.fullmatch(value):
+        raise ValueError("invalid table component: %r" % value)
+    return value
+
+
+def _project_identifier(value: str) -> str:
+    if not _PROJECT_ID.fullmatch(value):
+        raise ValueError("invalid project ID: %r" % value)
+    return value
+
+
 def _table_reference(project: str, table: str) -> str:
     parts = table.split(".")
     if len(parts) != 2:
         raise ValueError("table must be dataset.table: %r" % table)
     return "`%s.%s.%s`" % (
-        _identifier(project), _identifier(parts[0]), _identifier(parts[1]),
+        _project_identifier(project), _table_component(parts[0]), _table_component(parts[1]),
     )
 
 
@@ -510,12 +556,78 @@ def _configured_table(value: Any, label: str) -> str:
 
 
 def primary_filter_table(filter_table_config: str, dataset: str) -> str:
-    """Return the only configured filter table that belongs to this dataset."""
+    """Return the configured filter table owned by this dataset, if any."""
     tables = [entry.strip() for entry in str(filter_table_config or "").split(";") if entry.strip()]
     for table in tables:
         if table.startswith(dataset + "."):
             return table
-    return tables[0] if tables else ""
+    return ""
+
+
+def _validate_dict_pattern(pattern: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not pattern:
+        raise ValueError("dict pattern must not be empty")
+    for target, definition in pattern.items():
+        _identifier(str(target))
+        if not isinstance(definition, Mapping):
+            raise ValueError("dict pattern definition must be an object: %s" % target)
+        if set(definition) != {"sources", "separator"}:
+            raise ValueError("dict pattern must contain sources and separator: %s" % target)
+        sources = definition["sources"]
+        if not isinstance(sources, list) or not sources or not all(
+            isinstance(source, str) and _IDENTIFIER.fullmatch(source) for source in sources
+        ):
+            raise ValueError("dict pattern sources must be non-empty identifiers: %s" % target)
+        if not isinstance(definition["separator"], str):
+            raise ValueError("dict pattern separator must be a string: %s" % target)
+    _pattern_leaf_sources(pattern)
+    return pattern
+
+
+def _pattern_leaf_sources(pattern: Mapping[str, Any]) -> frozenset:
+    leaves = set()
+    active = set()
+
+    def visit(target: str) -> None:
+        if target in active:
+            raise ValueError("dict pattern has a generated-column cycle: %s" % target)
+        active.add(target)
+        for source in pattern[target]["sources"]:
+            if source in pattern:
+                visit(source)
+            else:
+                leaves.add(source)
+        active.remove(target)
+
+    for target in pattern:
+        visit(target)
+    return frozenset(leaves)
+
+
+def compose_generated_attributes(
+    attributes: Mapping[str, str], pattern: Mapping[str, Any],
+) -> Mapping[str, str]:
+    """Generate deterministic dictionary columns from their validated leaf values."""
+    values = {key: str(value).strip() for key, value in attributes.items()}
+
+    def compose(target: str) -> str:
+        if target in values:
+            return values[target]
+        definition = pattern[target]
+        components = []
+        for source in definition["sources"]:
+            value = compose(source) if source in pattern else values.get(source, "")
+            if value:
+                components.append(value)
+        value = definition["separator"].join(components)
+        if not value:
+            raise DecisionValidationError(
+                "generated dictionary attribute is empty: %s" % target,
+            )
+        values[target] = value
+        return value
+
+    return {target: compose(target) for target in pattern}
 
 
 def load_dict_pattern(dataset: str, root: Optional[Path] = None) -> Mapping[str, Any]:
@@ -526,7 +638,7 @@ def load_dict_pattern(dataset: str, root: Optional[Path] = None) -> Mapping[str,
         pattern = json.load(handle)
     if not isinstance(pattern, Mapping):
         raise ValueError("dict pattern must be an object: %s" % path)
-    return pattern
+    return _validate_dict_pattern(pattern)
 
 
 @dataclass(frozen=True)
@@ -546,11 +658,19 @@ class RunContext:
     dict_identity_col: str
     dict_typo_col: str
     dict_has_meta: bool
+    qa_columns: frozenset
     dict_columns: frozenset
+    filter_columns: frozenset
+    prior_mapping_columns: frozenset
     generated_attributes: frozenset
+    dict_pattern: Mapping[str, Mapping[str, Any]]
+    allowed_categorical_values: Mapping[str, frozenset]
+    prior_mapping_pk_col: Optional[str]
+    prior_mapping_identity_col: Optional[str]
     month: str
     meili_index: str
     taxonomy_url: Optional[str]
+
 
 
 def _platform_match_sql(platform: str) -> str:
@@ -608,8 +728,9 @@ def build_worklist_sql(
     if context.platform == "Shopee" and context.enrichment_table:
         enrichment = _table_reference(
             context.project,
-            "%s.%s" % (context.dataset, _identifier(context.enrichment_table)),
+            "%s.%s" % (context.dataset, _table_component(context.enrichment_table)),
         )
+
         enrichment_cte = """enrichment_dedup AS (
   SELECT item_itemid, item_description,
     (SELECT STRING_AGG(CONCAT(JSON_VALUE(a, '$.name'), '=', JSON_VALUE(a, '$.value')), '; ')
@@ -651,10 +772,11 @@ def build_worklist_sql(
         )
         reverify_prior = "ps.prior_sku_name, ps.prior_kategori"
     return """WITH %s%s%s scoped AS (
-  SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image,
+  SELECT s.product_id, s.sku_name, s.image AS image_raw,
          %s AS ecommerce_platform,
          s.country, s.category, s.month, s.gmv_monthly, s.merchant_id,
          %s%s
+
   FROM %s s
   %s
   WHERE FORMAT_DATE('%%Y-%%m', s.month) = @month
@@ -696,7 +818,7 @@ qa_state AS (
   GROUP BY 1, 2
 ),
 %sprioritized AS (
-  SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly, sc.ecommerce_platform, sc.merchant_id,
+  SELECT sc.product_id, sc.sku_name, sc.image_raw, sc.gmv_monthly, sc.ecommerce_platform, sc.merchant_id,
          sc.item_description, sc.product_attributes_attrs,
          %s AS listing_changed, %s,
     CASE
@@ -736,6 +858,49 @@ def materialize_worklist(
     return [dict(row.items()) for row in client.query(sql, job_config=job_config).result()]
 
 
+def _first_available(
+    columns: frozenset, candidates: Sequence[str], label: str,
+) -> str:
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    raise ValueError("%s has none of %s" % (label, ", ".join(candidates)))
+
+
+def _load_allowed_categorical_values(
+    client, project: str, dict_table: str, dict_columns: frozenset,
+) -> Mapping[str, frozenset]:
+    categorical_columns = sorted(_CATEGORICAL_ATTRIBUTES & dict_columns)
+    if not categorical_columns:
+        return {}
+    table = _table_reference(project, dict_table)
+    selections = [
+        "SELECT '%s' AS attribute, CAST(`%s` AS STRING) AS value FROM %s" % (
+            column, _identifier(column), table,
+        )
+        for column in categorical_columns
+    ]
+    query = """SELECT attribute, value
+FROM (%s)
+WHERE NULLIF(TRIM(value), '') IS NOT NULL
+GROUP BY attribute, value
+""" % "\nUNION ALL\n".join(selections)
+    values = {column: set() for column in categorical_columns}
+    for row in client.query(query).result():
+        row_values = dict(row.items())
+        values[str(row_values["attribute"])].add(str(row_values["value"]))
+    return {
+        column: frozenset(column_values)
+        for column, column_values in values.items()
+    }
+
+
+def _configured_optional_table(value: Any, label: str) -> Optional[str]:
+    if str(value or "").strip() in {"", "-", "null"}:
+        return None
+    return _configured_table(value, label)
+
+
 def resolve_run_context(args: Any, client) -> RunContext:
     """Resolve live config, schemas, month, merchant IDs, and dict pattern."""
     country = str(args.country).upper()
@@ -758,8 +923,52 @@ def resolve_run_context(args: Any, client) -> RunContext:
         primary_filter_table(config["filter_table"], dataset), "filter_table",
     )
     pattern = load_dict_pattern(dataset)
-    columns = resolve_category_columns(client, PROJECT, qa_table, dict_table)
+    qa_columns = frozenset(_table_columns(client, PROJECT, qa_table))
     dict_columns = frozenset(_table_columns(client, PROJECT, dict_table))
+    filter_columns = frozenset(_table_columns(client, PROJECT, filter_table))
+    qa_pk_col = _first_available(
+        qa_columns, ("product_id", "prod_id"), qa_table + " primary key",
+    )
+    dict_identity_col = _first_available(
+        dict_columns, ("sku_type_complete", "sku_type"), dict_table + " identity",
+    )
+    dict_typo_col = _first_available(
+        dict_columns, ("keywords_typo", "keyword_typo"), dict_table + " typo",
+    )
+    pattern_columns = frozenset(pattern)
+    missing_pattern_columns = pattern_columns - dict_columns
+    missing_pattern_leaves = _pattern_leaf_sources(pattern) - dict_columns
+    if missing_pattern_columns or missing_pattern_leaves:
+        raise ValueError(
+            "dict pattern does not match %s: missing generated=%s leaves=%s" % (
+                dict_table, sorted(missing_pattern_columns), sorted(missing_pattern_leaves),
+            ),
+        )
+    if "product_id" not in filter_columns:
+        raise ValueError("%s has no product_id column" % filter_table)
+    product_id_dict = _configured_optional_table(
+        config.get("product_id_dict", ""), "product_id_dict",
+    )
+    prior_mapping_columns = frozenset()
+    prior_mapping_pk_col = None
+    prior_mapping_identity_col = None
+    if product_id_dict:
+        prior_mapping_columns = frozenset(
+            _table_columns(client, PROJECT, product_id_dict),
+        )
+        prior_mapping_pk_col = _first_available(
+            prior_mapping_columns, ("product_id", "prod_id"),
+            product_id_dict + " primary key",
+        )
+        prior_mapping_identity_col = _first_available(
+            prior_mapping_columns, ("sku_type_complete", "sku_type"),
+            product_id_dict + " identity",
+        )
+        if "brand" not in prior_mapping_columns:
+            raise ValueError("%s has no brand column" % product_id_dict)
+    allowed_categorical_values = _load_allowed_categorical_values(
+        client, PROJECT, dict_table, dict_columns,
+    )
     platform = str(config["ecommerce_platform"]).capitalize()
     platform_match = _platform_match_sql(platform)
     month_query = (
@@ -788,17 +997,24 @@ def resolve_run_context(args: Any, client) -> RunContext:
         qa_table=qa_table,
         dict_table=dict_table,
         filter_table=filter_table,
-        product_id_dict=str(config.get("product_id_dict", "")),
+        product_id_dict=product_id_dict or "",
         enrichment_table=(
             None if str(config.get("0", "")) in {"", "-", "null"}
-            else str(config["0"])
+            else _table_component(str(config["0"]))
         ),
-        qa_pk_col=str(columns["qa_pk_col"]),
-        dict_identity_col=str(columns["dict_identity_col"]),
-        dict_typo_col=str(columns["dict_typo_col"]),
-        dict_has_meta=bool(columns["dict_has_meta"]),
+        qa_pk_col=qa_pk_col,
+        dict_identity_col=dict_identity_col,
+        dict_typo_col=dict_typo_col,
+        dict_has_meta="_meta" in dict_columns,
+        qa_columns=qa_columns,
         dict_columns=dict_columns,
-        generated_attributes=frozenset(pattern),
+        filter_columns=filter_columns,
+        prior_mapping_columns=prior_mapping_columns,
+        generated_attributes=pattern_columns,
+        dict_pattern=pattern,
+        allowed_categorical_values=allowed_categorical_values,
+        prior_mapping_pk_col=prior_mapping_pk_col,
+        prior_mapping_identity_col=prior_mapping_identity_col,
         month=str(month_rows[0].month),
         meili_index=dataset + "_taxonomy_qa",
         taxonomy_url=str(config.get("taxonomy_url", "") or "") or None,
@@ -816,13 +1032,13 @@ def resolve_candidate_refs(
         product_hits[product_id] = []
         for hit in result.get("candidates", []):
             brand = str(hit.get("brand", "")).strip()
-            identity = str(hit.get(context.dict_identity_col, hit.get("sku_type_complete", ""))).strip()
+            identity = str(hit.get(context.dict_identity_col, hit.get("sku_type_complete", "")).strip())
             if brand and identity:
                 product_hits[product_id].append((brand, identity))
-                requested.append({"brand": brand, "identity_value": identity})
+                requested.append((brand, identity))
     if not requested:
         return {product_id: {} for product_id in product_hits}
-    pairs = list({(item["brand"], item["identity_value"]) for item in requested})
+    pairs = sorted(set(requested))
     query = """WITH requested AS (
   SELECT brand, identity_value
   FROM UNNEST(@candidate_pairs)
@@ -833,13 +1049,25 @@ JOIN requested r
   ON d.brand = r.brand AND d.%s = r.identity_value
 """ % (_table_reference(context.project, context.dict_table), _identifier(context.dict_identity_col))
     parameter = bigquery.ArrayQueryParameter(
-        "candidate_pairs", "STRUCT<brand STRING, identity_value STRING>", pairs,
+        "candidate_pairs",
+        "STRUCT",
+        [
+            bigquery.StructQueryParameter(
+                None,
+                bigquery.ScalarQueryParameter("brand", "STRING", brand),
+                bigquery.ScalarQueryParameter("identity_value", "STRING", identity),
+            )
+            for brand, identity in pairs
+        ],
     )
     rows = list(client.query(
         query, job_config=bigquery.QueryJobConfig(query_parameters=[parameter]),
     ).result())
     resolved = {
-        (str(row.brand), str(getattr(row, context.dict_identity_col))): dict(row.items())
+        (
+            str(dict(row.items())["brand"]),
+            str(dict(row.items())[context.dict_identity_col]),
+        ): dict(row.items())
         for row in rows
     }
     output = {}
@@ -855,12 +1083,45 @@ JOIN requested r
     return output
 
 
+def resolve_prior_mappings(
+    client, context: RunContext, product_ids: Sequence[str],
+) -> Mapping[str, Mapping[str, Any]]:
+    """Read configured product mappings in one batch without mutating them."""
+    if not context.product_id_dict:
+        return {}
+    if not context.prior_mapping_pk_col or not context.prior_mapping_identity_col:
+        raise ValueError("product_id_dict shape is unresolved")
+    ids = sorted({str(product_id) for product_id in product_ids if str(product_id)})
+    if not ids:
+        return {}
+    query = """SELECT *
+FROM %s
+WHERE `%s` IN UNNEST(@product_ids)
+""" % (
+        _table_reference(context.project, context.product_id_dict),
+        _identifier(context.prior_mapping_pk_col),
+    )
+    parameter = bigquery.ArrayQueryParameter("product_ids", "STRING", ids)
+    output = {}
+    for row in client.query(
+        query, job_config=bigquery.QueryJobConfig(query_parameters=[parameter]),
+    ).result():
+        row_values = dict(row.items())
+        product_id = str(row_values[context.prior_mapping_pk_col])
+        if product_id in output:
+            raise ValueError("product_id_dict has multiple rows for product_id=%s" % product_id)
+        output[product_id] = row_values
+    return output
+
+
 def build_product_packets(
     context: RunContext,
     rows: Sequence[Mapping[str, Any]],
     candidates: Mapping[str, Mapping[str, Mapping[str, Any]]],
     images: Mapping[str, PreparedImage],
+    prior_mappings: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> List[Mapping[str, Any]]:
+
     """Combine ordered planning outputs into packet dictionaries bound to local attachments."""
     ordered_rows = sorted(
         rows,
@@ -880,7 +1141,9 @@ def build_product_packets(
     writable_attributes = frozenset(
         context.dict_columns - context.generated_attributes - {"_meta"}
     )
+    prior_mappings = prior_mappings or {}
     packets = []
+
     for row, image in zip(ordered_rows, ordered_images):
         product_id = str(row["product_id"])
         attempt_kind = (
@@ -909,9 +1172,13 @@ def build_product_packets(
             "image_status": image.image_status,
             "attachment_index": attachment.attachment_index if attachment else None,
             "attachment": attachment,
+            "image_raw": row.get("image_raw"),
             "candidate_refs": set(candidate_rows),
             "candidates": candidate_rows,
+            "prior_mapping": prior_mappings.get(product_id),
             "writable_attributes": writable_attributes,
             "generated_attributes": context.generated_attributes,
+            "dict_pattern": context.dict_pattern,
+            "allowed_categorical_values": context.allowed_categorical_values,
         })
     return packets

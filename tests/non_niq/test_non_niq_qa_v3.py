@@ -180,6 +180,44 @@ def test_unavailable_image_cannot_produce_confident_mapping():
         validate_decision_batch({"decisions": [decision]}, [packet])
 
 
+def test_create_dict_requires_pattern_leaves_and_existing_categorical_values():
+    packet = {
+        **_packet(),
+        "writable_attributes": {"brand", "sub_brand", "function", "packsize"},
+        "generated_attributes": {"sku_type", "keywords"},
+        "dict_pattern": {
+            "sku_type": {
+                "sources": ["sub_brand", "function", "packsize"],
+                "separator": " ",
+            },
+            "keywords": {"sources": ["sku_type"], "separator": " "},
+        },
+        "allowed_categorical_values": {
+            "function": {"Wash"},
+        },
+    }
+    missing_leaf = _decision(
+        packet,
+        "create_dict",
+        attributes={"brand": "Acme", "sub_brand": "Acme", "function": "Wash"},
+    )
+    with pytest.raises(DecisionValidationError):
+        validate_decision_batch({"decisions": [missing_leaf]}, [packet])
+
+    invalid_vocabulary = _decision(
+        packet,
+        "create_dict",
+        attributes={
+            "brand": "Acme",
+            "sub_brand": "Acme",
+            "function": "Unknown",
+            "packsize": "200 ml",
+        },
+    )
+    with pytest.raises(DecisionValidationError):
+        validate_decision_batch({"decisions": [invalid_vocabulary]}, [packet])
+
+
 def test_rejects_unknown_candidate_and_generated_attribute():
     packet = _packet()
     unknown = _decision(packet, "map_existing", candidate_ref="dict:missing")
@@ -301,9 +339,28 @@ def _context(platform="Shopee"):
         dict_identity_col="sku_type",
         dict_typo_col="keyword_typo",
         dict_has_meta=False,
+        qa_columns=frozenset({
+            "product_id", "ecommerce_platform", "sku_name", "brand",
+            "sku_type_complete", "gmv", "url", "_meta",
+        }),
         dict_columns=frozenset({"brand", "sku_type", "keyword_typo"}),
+        filter_columns=frozenset({
+            "product_id", "ecommerce_platform", "sku_name", "merchant_id", "url", "_meta",
+        }),
+        prior_mapping_columns=frozenset(),
         generated_attributes=frozenset({"sku_type"}),
         month="2026-09",
+        dict_pattern={
+            "sku_type": {
+                "sources": ["sub_brand", "function", "packsize"],
+                "separator": " ",
+            },
+            "keywords": {"sources": ["sku_type"], "separator": " "},
+        },
+        allowed_categorical_values={"function": frozenset({"Wash"})},
+        prior_mapping_pk_col=None,
+        prior_mapping_identity_col=None,
+
         meili_index="babybath_taxonomy_qa",
         taxonomy_url=None,
     )
@@ -315,6 +372,27 @@ def test_primary_filter_table_selects_only_the_dataset_owned_table():
         "babybath",
     ) == "babybath.filter_babybath"
 
+
+def test_primary_filter_table_rejects_foreign_only_configuration():
+    assert qa_v3.primary_filter_table(
+        "other.reference_filter;another.filter_table",
+        "babybath",
+    ) == ""
+
+
+def test_table_reference_accepts_the_real_hyphenated_project_id():
+    assert qa_v3._table_reference(
+        "sincere-hearth-273704",
+        "babybath.filter_babybath",
+    ) == "`sincere-hearth-273704.babybath.filter_babybath`"
+
+
+
+def test_table_reference_accepts_live_numeric_enrichment_table_name():
+    assert qa_v3._table_reference(
+        "sincere-hearth-273704",
+        "babybath.0_pipeline_babybath_shopee_id",
+    ) == "`sincere-hearth-273704.babybath.0_pipeline_babybath_shopee_id`"
 
 def test_worklist_sql_preserves_v2_scope_and_tokopedia_canonicalization():
     sql = qa_v3.build_worklist_sql(
@@ -331,18 +409,79 @@ def test_worklist_sql_preserves_v2_scope_and_tokopedia_canonicalization():
     assert "`project.babybath.filter_babybath`" in sql
     assert "ORDER BY priority ASC, gmv_monthly DESC" in sql
 
+    assert "s.image AS image_raw" in sql
+    assert "REPLACE(s.image" not in sql
+    assert "sc.image_raw" in sql
+
 
 def test_missing_dict_pattern_fails_before_retrieval(tmp_path):
     with pytest.raises(FileNotFoundError):
         qa_v3.load_dict_pattern("missing", tmp_path)
 
 
+
+def test_candidate_pair_parameter_serializes_for_bigquery():
+    class RecordingClient:
+        def query(self, sql, job_config):
+            job_config.query_parameters[0].to_api_repr()
+            return SimpleNamespace(result=lambda: [])
+
+    refs = qa_v3.resolve_candidate_refs(
+        RecordingClient(),
+        _context(),
+        [{"id": "p-1", "candidates": [{"brand": "Acme", "sku_type": "Acme Wash"}]}],
+    )
+    assert refs == {"p-1": {}}
+
+
+
+def test_prior_mappings_are_batched_and_attached_product_locally():
+    class RecordingClient:
+        def query(self, sql, job_config):
+            job_config.query_parameters[0].to_api_repr()
+            return SimpleNamespace(
+                result=lambda: [{
+                    "product_id": "first",
+                    "brand": "Acme",
+                    "sku_type": "Acme Wash",
+                }],
+            )
+
+    context = qa_v3.RunContext(
+        **{
+            **_context().__dict__,
+            "product_id_dict": "babybath.product_id_dict",
+            "prior_mapping_pk_col": "product_id",
+            "prior_mapping_identity_col": "sku_type",
+        },
+    )
+    prior_mappings = qa_v3.resolve_prior_mappings(RecordingClient(), context, ["first"])
+    packets = qa_v3.build_product_packets(
+        context,
+        [{"product_id": "first", "sku_name": "First", "priority": 0, "gmv_monthly": 10}],
+        {"first": {}},
+        {"first": PreparedImage("first", None, "unavailable", None)},
+        prior_mappings,
+    )
+    assert packets[0]["prior_mapping"] == {
+        "product_id": "first",
+        "brand": "Acme",
+        "sku_type": "Acme Wash",
+    }
+
+
 def test_product_packets_are_ordered_and_candidate_refs_are_product_local(tmp_path):
     image_path = tmp_path / "one.png"
     image_path.write_bytes(b"one")
     rows = [
-        {"product_id": "later", "sku_name": "Later", "priority": 1, "gmv_monthly": 9},
-        {"product_id": "first", "sku_name": "First", "priority": 0, "gmv_monthly": 10},
+        {
+            "product_id": "later", "sku_name": "Later", "priority": 1,
+            "gmv_monthly": 9, "image_raw": "https://example.com/later.jpg",
+        },
+        {
+            "product_id": "first", "sku_name": "First", "priority": 0,
+            "gmv_monthly": 10, "image_raw": "https://example.com/first.jpg",
+        },
     ]
     candidates = {
         "first": {"dict:first": {"brand": "Acme"}},
@@ -358,3 +497,4 @@ def test_product_packets_are_ordered_and_candidate_refs_are_product_local(tmp_pa
     assert packets[1]["candidate_refs"] == {"dict:later"}
     assert packets[0]["attachment_index"] == 1
     assert packets[1]["attachment_index"] is None
+    assert packets[0]["image_raw"] == "https://example.com/first.jpg"
