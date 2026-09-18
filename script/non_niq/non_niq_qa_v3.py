@@ -418,6 +418,19 @@ def _parse_adapter_json(text: str) -> Mapping[str, Any]:
         if isinstance(decoded, Mapping) and "decisions" in decoded:
             return decoded
         if isinstance(decoded, Mapping):
+            message = decoded.get("message")
+            if isinstance(message, Mapping):
+                content = message.get("content")
+                if isinstance(content, Sequence):
+                    for item in reversed(content):
+                        if not isinstance(item, Mapping) or not isinstance(item.get("text"), str):
+                            continue
+                        try:
+                            nested = json.loads(item["text"])
+                        except ValueError:
+                            continue
+                        if isinstance(nested, Mapping):
+                            return nested
             for key in ("result", "message", "content"):
                 value = decoded.get(key)
                 if isinstance(value, str):

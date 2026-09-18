@@ -289,6 +289,26 @@ def test_omp_command_uses_native_at_file_arguments_in_order(tmp_path):
     assert "--no-session" in command
 
 
+def test_adapter_parser_reads_omp_final_message_text():
+    raw = "\n".join([
+        json.dumps({"type": "agent_start"}),
+        json.dumps({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": '{"labels":["474747474747","747474747474"]}',
+                }],
+            },
+        }),
+        json.dumps({"type": "turn_end"}),
+    ])
+
+    assert qa_v3._parse_adapter_json(raw) == {
+        "labels": ["474747474747", "747474747474"],
+    }
+
 def test_wrong_random_label_fails_before_product_decision():
     def wrong_runner(*args, **kwargs):
         return SimpleNamespace(

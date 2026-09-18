@@ -369,3 +369,18 @@ V3 has no `partial -> DONE` path. Earlier successfully committed chunks remain r
 - Codex dry run and small production chunk prove attachment, decision validation, read-back, and outbox completion.
 - OMP uses its native image attachment path and passes the same no-write random-label vision probe before a small production chunk.
 - V2 remains selectable throughout all proof runs.
+
+## Operational proof record
+
+On 2026-09-18 UTC, migration `006_add_non_niq_qa_outbox.sql` was deployed to
+`magpie_reference.non_niq_qa_outbox`. Codex and OMP each completed native-attachment
+sentinel, dry-run, and non-dry invocations for `babybath shopee ID` at workload
+`500 10`.
+
+Every invocation emitted `NOTHING_TO_DO`: no eligible current-title QA work existed.
+Before and after the non-dry runs, v3-scoped QA, dictionary, filter, and outbox counts
+for that scope were all zero. Therefore no live product decision, transactional mutation,
+read-back, or outbox delivery was exercised.
+
+Do not enable the v3 queue for this scope until an eligible work item has completed the
+small Codex and OMP production chunks. V2 remains the selectable rollback path.
