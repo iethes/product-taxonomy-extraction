@@ -18,8 +18,9 @@ script needs) -- subcommands, called directly from non_niq_qa.sh/non_niq_qa_v2.s
 
   columns --project P --qa-table dataset.qa --dict-table dataset.dict
       Resolves the handful of column names that vary per category's dict/QA table schema
-      (sku_type vs sku_type_complete, prod_id vs product_id, keywords_typo vs keyword_typo) live
-      via INFORMATION_SCHEMA.COLUMNS -> JSON.
+      (sku_type vs sku_type_complete, prod_id vs product_id, ecommerce_platform vs ecommerce,
+      keywords_typo vs keyword_typo), plus whether the dict table has an optional `_meta` column, live via
+      INFORMATION_SCHEMA.COLUMNS -> JSON.
 
   retrieve --input-file WORKLIST.jsonl --meili-index IDX --output-file OUT.jsonl [--limit 10]
       Batch-embeds the WHOLE worklist's sku_name text in one model call, then runs one Meilisearch
@@ -68,6 +69,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -114,6 +116,7 @@ ROW_FIELDS = ["category", "dataset", "ecommerce_platform", "table", "master_tabl
               "product_id_dict_qa", "product_id_dict", "dict", "filter_table", "0", "taxonomy_url"]
 
 QA_PK_CANDIDATES = ["product_id", "prod_id"]
+QA_PLATFORM_CANDIDATES = ["ecommerce_platform", "ecommerce"]
 DICT_IDENTITY_CANDIDATES = ["sku_type_complete", "sku_type"]
 DICT_TYPO_CANDIDATES = ["keywords_typo", "keyword_typo"]
 
@@ -174,8 +177,12 @@ def resolve_category_columns(client, project, qa_table, dict_table):
     dict_cols = _table_columns(client, project, dict_table)
     return {
         "qa_pk_col": pick_column(qa_cols, QA_PK_CANDIDATES, f"{qa_table} primary key"),
+        "qa_platform_col": pick_column(
+            qa_cols, QA_PLATFORM_CANDIDATES, f"{qa_table} platform"
+        ),
         "dict_identity_col": pick_column(dict_cols, DICT_IDENTITY_CANDIDATES, f"{dict_table} identity"),
         "dict_typo_col": pick_column(dict_cols, DICT_TYPO_CANDIDATES, f"{dict_table} typo"),
+        "dict_has_meta": "_meta" in dict_cols,
     }
 
 
@@ -237,49 +244,95 @@ def retrieve_candidates(lines, meili_url, meili_index, limit=10, model=None):
 # Indexing: embed + upsert newly-minted taxonomy entries into Meilisearch
 # ---------------------------------------------------------------------------
 
-def ensure_index(meili_url, index_uid):
-    """Create the index if it doesn't exist yet, then (re-)apply settings either way -- cheap and
-    idempotent, so no need to branch on whether settings already match. Same conventions as
-    non_niq_embed.py's Windmill-deployed version (docs/windmill-non-niq-embed-prompt.md), so a
-    v2-created index and a Windmill-synced index are interchangeable."""
+def _ensure_index(meili_url, index_uid, strict=False):
+    """Create/configure an index and optionally return setup task UIDs."""
+    task_uids = []
     existing = _meili_request(meili_url, "GET", "/indexes?limit=200")
     uids = {r["uid"] for r in existing.get("results", [])}
     if index_uid not in uids:
-        _meili_request(meili_url, "POST", "/indexes", {"uid": index_uid, "primaryKey": "product_id"})
-    _meili_request(meili_url, "PATCH", f"/indexes/{index_uid}/settings", {
+        response = _meili_request(
+            meili_url, "POST", "/indexes", {"uid": index_uid, "primaryKey": "product_id"},
+        )
+        if strict:
+            task_uids.append(response.get("taskUid"))
+    response = _meili_request(meili_url, "PATCH", f"/indexes/{index_uid}/settings", {
         "searchableAttributes": ["sku_name", "sku_type_complete", "brand", "product_type"],
         "embedders": {"default": {"source": "userProvided", "dimensions": EMBED_DIM}},
     })
+    if strict:
+        task_uids.append(response.get("taskUid"))
+    if strict and any(task_uid is None for task_uid in task_uids):
+        raise RuntimeError("Meilisearch index setup did not return taskUid")
+    return tuple(task_uids)
+
+
+def ensure_index(meili_url, index_uid):
+    """Create/configure an index for legacy v2 callers."""
+    _ensure_index(meili_url, index_uid)
+
+
+def _prepare_index_documents(lines, meili_url, meili_index, model=None, strict_setup=False):
+    if not lines:
+        return []
+    model = model or SentenceTransformer(MODEL_NAME)
+    setup_tasks = _ensure_index(meili_url, meili_index, strict=strict_setup)
+    if strict_setup:
+        for task_uid in setup_tasks:
+            _wait_for_meili_task(meili_url, task_uid, 60, 0.25)
+    texts = [_format_passage_text(line["sku_name"]) for line in lines]
+    vectors = model.encode(
+        texts,
+        batch_size=BATCH_SIZE,
+        show_progress_bar=False,
+        normalize_embeddings=True,
+    )
+    return [
+        {**line, "product_id": str(line["product_id"]), "_vectors": {"default": vector.tolist()}}
+        for line, vector in zip(lines, vectors)
+    ]
+
 
 
 def index_documents(lines, meili_url, meili_index, model=None):
-    """lines: list of {"product_id","sku_name","sku_type_complete","brand"} plus any optional
-    extra fields (e.g. eiger_qa.sh's mgh_2/mgh_3/mgh_4/product_type) -- the shape v2's STEP 3
-    batches up from its own session writes. Extra fields are passed through to the indexed
-    Meilisearch document unchanged, so a later retrieve() call's candidates[] carries them
-    automatically (Meilisearch returns full stored documents on search, not just
-    searchableAttributes). Embeds sku_name as an E5 passage (corpus side),
-    upserts into meili_index (creating/configuring it first if needed), batched at BATCH_SIZE -- a
-    384-dim vector serialises to ~7.5KB of JSON, so a single POST for a large batch would blow
-    past Meilisearch's 100MB payload limit. Returns the number of documents submitted; a caller
-    with zero qualifying products should simply not call this (STEP 3's prompt instructs that),
-    but an empty list is handled as a no-op regardless."""
-    if not lines:
-        return 0
-    model = model or SentenceTransformer(MODEL_NAME)
-    ensure_index(meili_url, meili_index)
-    texts = [_format_passage_text(l["sku_name"]) for l in lines]
-    vectors = model.encode(texts, batch_size=BATCH_SIZE, show_progress_bar=False, normalize_embeddings=True)
-    docs = [
-        {
-            **l,
-            "product_id": str(l["product_id"]),
-            "_vectors": {"default": vec.tolist()},
-        }
-        for l, vec in zip(lines, vectors)
-    ]
-    for i in range(0, len(docs), BATCH_SIZE):
-        _meili_request(meili_url, "POST", f"/indexes/{meili_index}/documents", docs[i:i + BATCH_SIZE])
+    """Submit document upserts and return their count for legacy v2 callers."""
+    docs = _prepare_index_documents(lines, meili_url, meili_index, model)
+    for index in range(0, len(docs), BATCH_SIZE):
+        _meili_request(meili_url, "POST", f"/indexes/{meili_index}/documents", docs[index:index + BATCH_SIZE])
+    return len(docs)
+
+
+def _wait_for_meili_task(meili_url, task_uid, timeout, poll_interval):
+    deadline = time.monotonic() + timeout
+    while True:
+        task = _meili_request(meili_url, "GET", f"/tasks/{task_uid}")
+        status = task.get("status")
+        if status == "succeeded":
+            return
+        if status in {"failed", "canceled"}:
+            error = task.get("error")
+            message = error.get("message") if isinstance(error, Mapping) else str(error or status)
+            raise RuntimeError(f"Meilisearch task {task_uid} {status}: {message}")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Meilisearch task {task_uid} did not finish before timeout")
+        time.sleep(poll_interval)
+
+
+def index_documents_strict(
+    lines, meili_url, meili_index, model=None, timeout=60, poll_interval=0.25,
+):
+    """Submit document upserts and require every asynchronous Meilisearch task to succeed."""
+    docs = _prepare_index_documents(lines, meili_url, meili_index, model, strict_setup=True)
+    for index in range(0, len(docs), BATCH_SIZE):
+        response = _meili_request(
+            meili_url,
+            "POST",
+            f"/indexes/{meili_index}/documents",
+            docs[index:index + BATCH_SIZE],
+        )
+        task_uid = response.get("taskUid")
+        if task_uid is None:
+            raise RuntimeError("Meilisearch document upsert did not return taskUid")
+        _wait_for_meili_task(meili_url, task_uid, timeout, poll_interval)
     return len(docs)
 
 

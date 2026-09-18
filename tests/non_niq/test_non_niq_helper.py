@@ -2,11 +2,12 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "script" / "non_niq"))
 from non_niq_helper import (
     parse_categories, pick_column, QA_PK_CANDIDATES, DICT_IDENTITY_CANDIDATES, DICT_TYPO_CANDIDATES,
-    _format_query_text, retrieve_candidates,
+    _format_query_text, retrieve_candidates, index_documents_strict,
 )
 import non_niq_helper
 
@@ -73,6 +74,34 @@ def test_dict_identity_candidates_prefer_complete():
 def test_dict_typo_candidates():
     assert pick_column({"keyword_typo"}, DICT_TYPO_CANDIDATES, "dict typo") == "keyword_typo"
     assert pick_column({"keywords_typo"}, DICT_TYPO_CANDIDATES, "dict typo") == "keywords_typo"
+
+def test_resolve_category_columns_reports_optional_dict_meta(monkeypatch):
+    schemas = {
+        "dataset.qa": {"product_id", "sku_name", "ecommerce_platform", "_meta"},
+        "dataset.dict_with_meta": {"sku_type", "keyword_typo", "_meta"},
+        "dataset.dict_without_meta": {"sku_type", "keyword_typo"},
+    }
+    monkeypatch.setattr(non_niq_helper, "_table_columns", lambda client, project, table: schemas[table])
+
+    with_meta = non_niq_helper.resolve_category_columns(None, "project", "dataset.qa", "dataset.dict_with_meta")
+    without_meta = non_niq_helper.resolve_category_columns(None, "project", "dataset.qa", "dataset.dict_without_meta")
+
+    assert with_meta["dict_has_meta"] is True
+    assert without_meta["dict_has_meta"] is False
+
+def test_resolve_category_columns_accepts_both_qa_platform_schemas(monkeypatch):
+    schemas = {
+        "dataset.qa_standard": {"product_id", "ecommerce_platform"},
+        "dataset.qa_regional": {"product_id", "ecommerce"},
+        "dataset.dict": {"sku_type_complete", "keyword_typo"},
+    }
+    monkeypatch.setattr(non_niq_helper, "_table_columns", lambda client, project, table: schemas[table])
+
+    standard = non_niq_helper.resolve_category_columns(None, "project", "dataset.qa_standard", "dataset.dict")
+    regional = non_niq_helper.resolve_category_columns(None, "project", "dataset.qa_regional", "dataset.dict")
+
+    assert standard["qa_platform_col"] == "ecommerce_platform"
+    assert regional["qa_platform_col"] == "ecommerce"
 
 # --- E5 prefix formatting ---
 
@@ -175,6 +204,54 @@ def test_index_documents_doc_shape(monkeypatch):
     assert doc["brand"] == "Acme"
     assert doc["_vectors"]["default"] == [float(len("passage: Baby Shampoo 200ml"))]
 
+
+def test_strict_indexing_rejects_an_async_task_failure(monkeypatch):
+    calls = []
+
+    def fake_meili_request(meili_url, method, path, body=None):
+        calls.append((method, path))
+        if method == "GET" and path == "/indexes?limit=200":
+            return {"results": [{"uid": "babybath_taxonomy_qa"}]}
+        if method == "POST" and path.endswith("/documents"):
+            return {"taskUid": 7}
+        if method == "PATCH":
+            return {"taskUid": 8}
+        if method == "GET" and path == "/tasks/8":
+            return {"status": "succeeded"}
+        if method == "GET" and path == "/tasks/7":
+            return {"status": "failed", "error": {"message": "invalid document"}}
+        return {}
+    monkeypatch.setattr(non_niq_helper, "_meili_request", fake_meili_request)
+    with pytest.raises(RuntimeError, match="invalid document"):
+        index_documents_strict(
+            [{"product_id": 123, "sku_name": "Baby Shampoo", "sku_type_complete": "Shampoo", "brand": "Acme"}],
+            "http://fake",
+            "babybath_taxonomy_qa",
+            model=_FakeModel(),
+            poll_interval=0,
+        )
+    assert ("GET", "/tasks/7") in calls
+
+
+def test_strict_indexing_rejects_an_index_setup_failure(monkeypatch):
+    def fake_meili_request(meili_url, method, path, body=None):
+        if method == "GET" and path == "/indexes?limit=200":
+            return {"results": [{"uid": "babybath_taxonomy_qa"}]}
+        if method == "PATCH":
+            return {"taskUid": 9}
+        if method == "GET" and path == "/tasks/9":
+            return {"status": "failed", "error": {"message": "invalid settings"}}
+        return {}
+
+    monkeypatch.setattr(non_niq_helper, "_meili_request", fake_meili_request)
+    with pytest.raises(RuntimeError, match="invalid settings"):
+        index_documents_strict(
+            [{"product_id": 123, "sku_name": "Baby Shampoo", "sku_type_complete": "Shampoo", "brand": "Acme"}],
+            "http://fake",
+            "babybath_taxonomy_qa",
+            model=_FakeModel(),
+            poll_interval=0,
+        )
 def test_index_documents_passes_through_extra_fields(monkeypatch):
     posted = []
     def fake_meili_request(meili_url, method, path, body=None):
@@ -290,6 +367,53 @@ class _FakeBQClient:
         self._rows = rows
     def query(self, query, job_config=None):
         return _FakeQueryResult(self._rows)
+
+
+class _FakeSheetsRequest:
+    def __init__(self, payload):
+        self.payload = payload
+    def execute(self):
+        return self.payload
+
+
+class _FakeSheetsService:
+    def __init__(self, values):
+        self.values_data = values
+        self.appended = []
+    def spreadsheets(self):
+        return self
+    def values(self):
+        return self
+    def get(self, **kwargs):
+        return _FakeSheetsRequest({"values": self.values_data})
+    def append(self, **kwargs):
+        self.appended.extend(kwargs["body"]["values"])
+        return _FakeSheetsRequest({})
+
+
+def test_append_sheet_is_idempotent_and_deduplicates_input(monkeypatch):
+    monkeypatch.setattr(non_niq_helper, "_tab_title_for_gid", lambda *args: "Coffee")
+    service = _FakeSheetsService([
+        ["brand", "sku_type", "keywords"],
+        ["Existing", "Existing Coffee 100 g 1 pcs", "Existing Coffee 100 g 1 pcs"],
+    ])
+    client = _FakeBQClient([_FakeRow({
+        "brand": "New", "sku_type": "New Coffee 200 g 1 pcs",
+        "keywords": "New Coffee 200 g 1 pcs",
+    })])
+    entries = [
+        {"brand": "Existing", "identity_col": "sku_type", "identity_value": "Existing Coffee 100 g 1 pcs"},
+        {"brand": "New", "identity_col": "sku_type", "identity_value": "New Coffee 200 g 1 pcs"},
+        {"brand": "New", "identity_col": "sku_type", "identity_value": "New Coffee 200 g 1 pcs"},
+    ]
+    count = non_niq_helper.append_sheet_new_entries(
+        "proj", "coffee.coffee_dict_ph", "coffee",
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?gid=1#gid=1",
+        entries, client=client, service=service,
+    )
+    assert count == 1
+    assert service.appended == [["New", "New Coffee 200 g 1 pcs", "New Coffee 200 g 1 pcs"]]
+
 
 def test_notify_discord_posts_formatted_table():
     posted = {}

@@ -372,10 +372,12 @@ V3 has no `partial -> DONE` path. Earlier successfully committed chunks remain r
 
 ## Operational proof record
 
-On 2026-09-18 UTC, migration `006_add_non_niq_qa_outbox.sql` was deployed to
-`magpie_reference.non_niq_qa_outbox`. Codex and OMP each completed native-attachment
-sentinel, dry-run, and non-dry invocations for `babybath shopee ID` at workload
-`500 10`.
+On 2026-09-18 UTC, migrations `006_add_non_niq_qa_outbox.sql` and
+`007_add_non_niq_identity_lock.sql` were deployed to
+`magpie_reference.non_niq_qa_outbox` and
+`magpie_reference.non_niq_qa_identity_locks`. Codex and OMP each completed the
+native-attachment sentinel, dry-run, and non-dry invocations for `babybath shopee ID`
+at workload `500 10` after the hardening changes.
 
 Every invocation emitted `NOTHING_TO_DO`: no eligible current-title QA work existed.
 Before and after the non-dry runs, v3-scoped QA, dictionary, filter, and outbox counts

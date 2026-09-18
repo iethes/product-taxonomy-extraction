@@ -21,6 +21,7 @@ from non_niq_qa_v3 import (
     first_complete_https_url,
     normalize_first_image_url,
     plan_attempt,
+    prepare_images,
     validate_decision_batch,
     verify_adapter_vision,
 )
@@ -72,6 +73,40 @@ def test_incomplete_or_non_https_image_is_rejected():
     assert first_complete_https_url("file/image.jpg https://") is None
     assert normalize_first_image_url("http://example.com/image.jpg", "Lazada") is None
 
+def test_prepare_images_rejects_html_and_accepts_decodable_png(monkeypatch, tmp_path):
+    class Response:
+        status = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return self.body
+
+    png_path = tmp_path / "valid.png"
+    qa_v3._write_label_png(png_path, "47")
+    responses = iter([
+        Response(b"<html>not an image</html>"),
+        Response(png_path.read_bytes()),
+    ])
+    monkeypatch.setattr(qa_v3.urllib.request, "urlopen", lambda *args, **kwargs: next(responses))
+    rows = [
+        {"product_id": "html", "image_raw": "https://example.com/html.png"},
+        {"product_id": "png", "image_raw": "https://example.com/valid.png"},
+    ]
+
+    images = prepare_images(rows, _context("Tokopedia"), tmp_path / "downloads")
+    assert images["html"].image_status == "unavailable"
+    assert images["html"].local_path is None
+    assert images["png"].image_status == "ready"
+    assert images["png"].local_path is not None
+
 
 def test_attachment_manifest_uses_product_order_and_neutral_names(tmp_path):
     (tmp_path / "two.png").write_bytes(b"two")
@@ -112,6 +147,40 @@ def test_listing_change_attempt_changes_when_listing_input_changes():
     )
     assert original.input_fingerprint != changed.input_fingerprint
     assert original.attempt_id != changed.attempt_id
+
+
+def test_attempt_fingerprint_changes_when_source_image_changes():
+    base = {
+        "product_id": "p-1",
+        "platform": "Tokopedia",
+        "country": "ID",
+        "dataset": "babybath",
+        "sku_name": "Acme Wash",
+        "image_raw": "https://example.com/one.jpg",
+    }
+    changed_image = dict(base, image_raw="https://example.com/two.jpg")
+
+    assert plan_attempt(base, {"kind": "initial"}).input_fingerprint != (
+        plan_attempt(changed_image, {"kind": "initial"}).input_fingerprint
+    )
+
+def test_attempt_fingerprint_changes_when_downloaded_image_bytes_change():
+    base = {
+        "product_id": "p-1",
+        "platform": "Shopee",
+        "country": "ID",
+        "dataset": "babybath",
+        "sku_name": "Acme Wash",
+        "image_raw": "https://example.com/one.jpg",
+        "image_url": "https://example.com/one.jpg",
+        "image_status": "ready",
+        "image_sha256": "a" * 64,
+    }
+    changed_bytes = dict(base, image_sha256="b" * 64)
+
+    assert plan_attempt(base, {"kind": "initial"}).input_fingerprint != (
+        plan_attempt(changed_bytes, {"kind": "initial"}).input_fingerprint
+    )
 
 
 def test_work_item_uses_normalized_title_not_incidental_description():
@@ -333,29 +402,59 @@ def test_sentinel_png_uses_large_ocr_safe_glyphs(tmp_path):
 
 def test_sentinel_uses_a_schema_without_label_values_and_resamples_duplicates(monkeypatch):
     labels = []
-    draws = iter([7, 7, 8])
+    draws = iter([0, 0, 1, 2, 3])
+
+    monkeypatch.setattr(qa_v3.secrets, "randbelow", lambda maximum: next(draws))
 
     def write_probe(path, label):
         labels.append(label)
         path.write_bytes(b"probe")
+
+    monkeypatch.setattr(qa_v3, "_write_label_png", write_probe)
 
     def runner(command, **kwargs):
         schema_path = Path(command[command.index("--output-schema") + 1])
         schema = json.loads(schema_path.read_text())
         assert schema["properties"]["labels"]["items"]["type"] == "string"
         assert all(label not in schema_path.read_text() for label in labels)
+        assert "RED" not in command[-1] and "BLUE" not in command[-1]
         return SimpleNamespace(
             returncode=0,
             stdout=json.dumps({"labels": ["wrong", "wrong"]}),
             stderr="",
         )
 
-    monkeypatch.setattr(qa_v3.secrets, "randbelow", lambda maximum: next(draws))
-    monkeypatch.setattr(qa_v3, "_write_label_png", write_probe)
     with pytest.raises(AdapterVisionError):
-        verify_adapter_vision("codex", runner)
-    assert labels == ["444444444777", "444444447444"]
-    assert set("".join(labels)) == {"4", "7"}
+        qa_v3.verify_adapter_vision("codex", runner)
+    assert labels[:2] == ["RED", "BLUE"]
+    assert set("".join(labels)) == set("REDBLUEGREENYELLOW")
+
+def test_vision_sentinel_retries_one_transient_label_mismatch(monkeypatch):
+    draws = iter([1, 0, 1, 0])
+    written = []
+    calls = []
+
+    monkeypatch.setattr(qa_v3.secrets, "randbelow", lambda maximum: next(draws))
+
+    def write_probe(path, label):
+        written.append(label)
+        path.write_bytes(b"probe")
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            labels = ["wrong", "wrong"]
+        else:
+            labels = [label.lower() for label in written[-2:]]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"labels": labels}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(qa_v3, "_write_label_png", write_probe)
+    verify_adapter_vision("codex", runner)
+    assert len(calls) == 2
 
 
 # --- deterministic planner ---
@@ -448,7 +547,6 @@ def test_worklist_sql_preserves_v2_scope_and_tokopedia_canonicalization():
     assert "Tokopedia | Shop" in sql
     assert "`project.babybath.filter_babybath`" in sql
     assert "ORDER BY priority ASC, gmv_monthly DESC" in sql
-
     assert "s.image AS image_raw" in sql
     assert "REPLACE(s.image" not in sql
     assert "sc.image_raw" in sql
@@ -495,6 +593,7 @@ def test_prior_mappings_are_batched_and_attached_product_locally():
             "prior_mapping_identity_col": "sku_type",
         },
     )
+
     prior_mappings = qa_v3.resolve_prior_mappings(RecordingClient(), context, ["first"])
     packets = qa_v3.build_product_packets(
         context,
@@ -508,6 +607,26 @@ def test_prior_mappings_are_batched_and_attached_product_locally():
         "brand": "Acme",
         "sku_type": "Acme Wash",
     }
+
+def test_readable_image_rejects_truncated_gif_jpeg_and_webp(tmp_path):
+    assert not qa_v3._is_readable_image(b"GIF89a" + b"\x01\x00\x01\x00")
+    assert not qa_v3._is_readable_image(
+        b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00"
+    )
+    assert not qa_v3._is_readable_image(
+        b"RIFF" + b"\x08\x00\x00\x00WEBPVP8 " + b"\x00\x00\x00\x00"
+    )
+    invalid_gif = (
+        b"GIF89a\x01\x00\x01\x00\x00\x00\x00"
+        b"\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x00\x00\x3b"
+    )
+    assert not qa_v3._is_readable_image(invalid_gif)
+    invalid_webp = b"RIFF" + (20).to_bytes(4, "little") + b"WEBPVP8X" + b"\x00" * 10
+    assert not qa_v3._is_readable_image(invalid_webp)
+    valid_png = tmp_path / "valid.png"
+    qa_v3._write_label_png(valid_png, "12345678")
+    assert qa_v3._is_readable_image(valid_png.read_bytes())
+    assert not qa_v3._is_readable_image(valid_png.read_bytes() + b"junk")
 
 
 def test_product_packets_are_ordered_and_candidate_refs_are_product_local(tmp_path):
@@ -539,6 +658,32 @@ def test_product_packets_are_ordered_and_candidate_refs_are_product_local(tmp_pa
     assert packets[1]["attachment_index"] is None
     assert packets[0]["image_raw"] == "https://example.com/first.jpg"
 
+
+
+def test_packet_prompt_contains_self_contained_decision_protocol():
+    context = _executor_context()
+    packet = _commit_packet(context)
+
+    prompt = qa_v3.build_packet_prompt(context, [packet])
+
+    for required in (
+        '{"decisions":[...]}',
+        "exactly one decision per packet",
+        "product_id, work_item_id, and input_fingerprint exactly",
+        "filter",
+        "map_existing",
+        "create_dict",
+        "defer",
+        "candidate_refs",
+        "writable_attributes",
+        "generated_attributes",
+        "attachment_index",
+        context.category,
+        "product image first",
+        "different-product freebie/GWP",
+        "Do not access services",
+    ):
+        assert required in prompt
 
 # --- transactional executor ---
 
@@ -718,7 +863,7 @@ def test_apply_chunk_retries_the_validated_decisions_without_adapter(monkeypatch
     assert len(calls) == 2
 
 
-def test_apply_chunk_preflights_natural_identity_before_dml():
+def test_create_dict_compares_authored_values_inside_transaction():
     context = _executor_context()
     packet = _commit_packet(context)
     packet["candidate_refs"] = set()
@@ -733,17 +878,75 @@ def test_apply_chunk_preflights_natural_identity_before_dml():
             "packsize": "200 ml",
         },
     )
+
+    sql, _ = qa_v3.build_chunk_script(context, [packet], [decision], NOW)
+
+    assert "ASSERT NOT EXISTS" in sql
+    assert "IS DISTINCT FROM" in sql
+    assert "SELECT r._v3_brand AS brand, r._v3_identity_value AS identity_value" in sql
+    assert "non_niq_qa_identity_locks" in sql
+    assert "lock_scope = 'non_niq_qa_global'" in sql
+
+def test_create_dict_preflight_does_not_duplicate_identity_aliases():
+    context = _executor_context()
+    packet = _commit_packet(context)
+    decision = _decision(
+        packet,
+        "create_dict",
+        attributes={
+            "brand": "Acme",
+            "sub_brand": "Acme",
+            "function": "Wash",
+            "packsize": "200 ml",
+        },
+    )
+    operations, _ = qa_v3._build_operations(context, [packet], [decision], NOW)
     queries = []
 
-    class ConflictClient:
+    class RecordingClient:
         def query(self, sql, job_config):
             queries.append(sql)
-            return SimpleNamespace(result=lambda: [{"brand": "Acme", "sku_type": "Acme Wash 200 ml"}])
+            return SimpleNamespace(result=lambda: [])
+    qa_v3._preflight_create_identities(RecordingClient(), context, operations)
 
-    with pytest.raises(DecisionValidationError):
-        qa_v3.apply_chunk(ConflictClient(), context, [packet], [decision], NOW)
-    assert len(queries) == 1
-    assert queries[0].startswith("WITH requested AS")
+    assert queries[0].count("d.brand AS _v3_brand") == 1
+    assert queries[0].count("d.`sku_type` AS _v3_identity_value") == 1
+
+
+def test_apply_chunk_treats_existing_exact_dict_as_replay(monkeypatch):
+    context = _executor_context()
+    packet = _commit_packet(context)
+    packet["candidate_refs"] = set()
+    packet["candidates"] = {}
+    decision = _decision(
+        packet,
+        "create_dict",
+        attributes={
+            "brand": "Acme",
+            "sub_brand": "Acme",
+            "function": "Wash",
+            "packsize": "200 ml",
+        },
+    )
+
+    class ExistingIdentityClient:
+        def query(self, sql, job_config):
+            return SimpleNamespace(result=lambda: [{
+                "_v3_brand": "Acme",
+                "_v3_identity_value": "Acme Wash 200 ml",
+                "_v3_brand": "Acme",
+                "_v3_function": "Wash",
+                "_v3_keywords": "Acme Wash 200 ml",
+                "_v3_packsize": "200 ml",
+                "_v3_sku_type": "Acme Wash 200 ml",
+                "_v3_sub_brand": "Acme",
+            }])
+
+    monkeypatch.setattr(qa_v3, "verify_chunk_commit", lambda *args: None)
+    commit = qa_v3.apply_chunk(ExistingIdentityClient(), context, [packet], [decision], NOW)
+
+    assert commit.created_dict_identities == ()
+    assert commit.outbox_events == ()
 
 
 # --- outbox recovery and queue-compatible CLI ---
@@ -793,7 +996,7 @@ def test_drain_outbox_batches_meili_events_and_marks_them_complete(monkeypatch):
     calls = []
     monkeypatch.setattr(
         qa_v3,
-        "index_documents",
+        "index_documents_strict",
         lambda documents, url, index: calls.append((documents, url, index)),
         raising=False,
     )
@@ -815,6 +1018,41 @@ def test_drain_outbox_batches_meili_events_and_marks_them_complete(monkeypatch):
     )
 
 
+
+def test_failed_strict_meili_delivery_stays_pending(monkeypatch):
+    context = _executor_context()
+    event = _pending_event(
+        "meili-failed",
+        "meili_index",
+        {
+            "meili_url": "http://meili",
+            "meili_index": "idx",
+            "document": {"product_id": "p-1", "sku_name": "One"},
+        },
+    )
+    updates = []
+    strict_calls = []
+
+    class RecordingClient:
+        def query(self, sql, job_config):
+            if sql.startswith("SELECT event_id"):
+                return SimpleNamespace(result=lambda: [event])
+            updates.append((sql, job_config.query_parameters))
+            return SimpleNamespace(result=lambda: [])
+
+    def strict_failure(*args):
+        strict_calls.append(args)
+        raise RuntimeError("Meilisearch task failed")
+
+    monkeypatch.setattr(qa_v3, "index_documents", lambda *args: None, raising=False)
+    monkeypatch.setattr(qa_v3, "index_documents_strict", strict_failure, raising=False)
+
+    with pytest.raises(RuntimeError, match="outbox delivery failed"):
+        qa_v3.drain_outbox(RecordingClient(), context, NOW)
+
+    assert strict_calls
+    assert len(updates) == 1
+    assert "status = 'pending'" in updates[0][0]
 def test_sheet_outbox_failure_stays_pending_and_fails_the_run(monkeypatch):
     context = _executor_context()
     event = _pending_event(
@@ -929,7 +1167,27 @@ def test_dry_run_never_mutates_or_delivers_outbox(monkeypatch):
         dataset="babybath", platform="shopee", country="ID", max_turns=500,
         max_rows=1, kategori="", dry_run=True,
     )
-    packet = _commit_packet(context)
+    packet = {
+        "product_id": "p-1",
+        "work_item_id": "",
+        "input_fingerprint": "",
+        "attachment_index": None,
+    }
+    attempt = plan_attempt(
+        {
+            "product_id": "p-1",
+            "sku_name": "Acme Wash",
+            "priority": 0,
+            "image_raw": None,
+            "image_url": None,
+            "image_status": "unavailable",
+            "dataset": context.dataset,
+            "platform": context.platform,
+            "country": context.country,
+        },
+        {"kind": "initial"},
+    )
+    packet.update(work_item_id=attempt.work_item_id, input_fingerprint=attempt.input_fingerprint)
     deferred = _decision(
         packet,
         "defer",

@@ -26,7 +26,7 @@ from non_niq_helper import (
     append_sheet_new_entries_strict,
     fetch_config_csv,
     fetch_forced_merchant_ids,
-    index_documents,
+    index_documents_strict,
     parse_categories,
     retrieve_candidates,
 )
@@ -145,13 +145,21 @@ def plan_attempt(row: Mapping[str, Any], qa_state: Mapping[str, Any]) -> Attempt
         "dataset": _normalize_attempt_text(row.get("dataset")),
         "current_title": current_title,
     })
+    platform = _canonical_platform(row.get("platform", row.get("ecommerce_platform")))
+    image_raw = row.get("image_raw", row.get("image"))
+    image_url = row.get("image_url")
+    if image_url is None:
+        image_url = normalize_first_image_url(image_raw, platform)
     input_fingerprint = _stable_digest({
         "work_item_id": work_item_id,
         "current_title": current_title,
         "current_category": current_category,
         "item_description": str(row.get("item_description", "")),
         "product_attributes_attrs": str(row.get("product_attributes_attrs", "")),
-        "image_url": str(row.get("image", "")),
+        "image_raw": str(image_raw or ""),
+        "image_url": str(image_url or ""),
+        "image_status": str(row.get("image_status", "")),
+        "image_sha256": str(row.get("image_sha256", "")),
     })
     if attempt_kind in {"initial", "retry"}:
         attempt_id = "%s:%s-1" % (work_item_id, attempt_kind)
@@ -222,7 +230,6 @@ def validate_decision_batch(
     decisions = raw["decisions"]
     _require(isinstance(decisions, list), "decisions must be an array")
     _require(len(decisions) == len(packets), "every packet needs exactly one decision")
-
     packets_by_id = {}
     for packet in packets:
         product_id = packet.get("product_id")
@@ -324,6 +331,8 @@ _PIXEL_DIGITS = {
     "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
     "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
     "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
 }
 
 
@@ -363,21 +372,41 @@ def _adapter_env() -> Dict[str, str]:
 
 def _write_label_png(path: Path, label: str) -> None:
     scale = 20
-    width = 24 + len(label) * scale * 6
+    width = 24 + max(len(label), 8) * scale * 6
     height = 24 + 7 * scale
     pixels = bytearray(b"\xff\xff\xff" * width * height)
-    for char_index, digit in enumerate(label):
-        glyph = _PIXEL_DIGITS[digit]
-        for row_index, row in enumerate(glyph):
-            for column_index, pixel in enumerate(row):
-                if pixel != "1":
-                    continue
-                x0 = 12 + char_index * scale * 6 + column_index * scale
-                y0 = 12 + row_index * scale
-                for y in range(y0, y0 + scale):
-                    for x in range(x0, x0 + scale):
-                        offset = (y * width + x) * 3
-                        pixels[offset:offset + 3] = b"\x00\x00\x00"
+    color = {
+        "RED": b"\xff\x00\x00",
+        "BLUE": b"\x00\x00\xff",
+        "GREEN": b"\x00\xaa\x00",
+        "YELLOW": b"\xff\xd0\x00",
+    }.get(label)
+    if color is not None:
+        pattern = secrets.token_bytes(8)
+        for y in range(12, height - 12):
+            for x in range(12, width - 12):
+                offset = (y * width + x) * 3
+                pixels[offset:offset + 3] = color
+        for block_index, marker in enumerate(pattern):
+            block_color = b"\x00\x00\x00" if marker & 1 else b"\xff\xff\xff"
+            x_start = 24 + block_index * scale * 6
+            for y in range(24, 24 + scale):
+                for x in range(x_start, x_start + scale):
+                    offset = (y * width + x) * 3
+                    pixels[offset:offset + 3] = block_color
+    else:
+        for char_index, digit in enumerate(label):
+            glyph = _PIXEL_DIGITS[digit]
+            for row_index, row in enumerate(glyph):
+                for column_index, pixel in enumerate(row):
+                    if pixel != "1":
+                        continue
+                    x0 = 12 + char_index * scale * 6 + column_index * scale
+                    y0 = 12 + row_index * scale
+                    for y in range(y0, y0 + scale):
+                        for x in range(x0, x0 + scale):
+                            offset = (y * width + x) * 3
+                            pixels[offset:offset + 3] = b"\x00\x00\x00"
 
     def chunk(name: bytes, data: bytes) -> bytes:
         return (
@@ -396,13 +425,11 @@ def _write_label_png(path: Path, label: str) -> None:
         chunk(b"IEND", b"")
     )
 
+_SENTINEL_COLORS = ("RED", "BLUE", "GREEN", "YELLOW")
+
 
 def _sentinel_label() -> str:
-    value = secrets.randbelow(1 << 12)
-    return "".join(
-        "47"[(value >> shift) & 1]
-        for shift in range(11, -1, -1)
-    )
+    return _SENTINEL_COLORS[secrets.randbelow(len(_SENTINEL_COLORS))]
 
 
 def _parse_adapter_json(text: str) -> Mapping[str, Any]:
@@ -468,6 +495,7 @@ def _write_probe_schema(path: Path) -> None:
 def verify_adapter_vision(
     adapter: str,
     run_command: Callable[..., subprocess.CompletedProcess] = _run_command,
+    _retry_mismatch: bool = True,
 ) -> None:
     """Raise AdapterVisionError unless both random image labels are read exactly."""
     if adapter not in {"codex", "omp"}:
@@ -495,7 +523,7 @@ def verify_adapter_vision(
                 local_path=path,
             ))
         prompt = (
-            "Read the visible label in each attached image in attachment order. "
+            "Read the visible color in each attached image in attachment order. "
             "Return JSON only: {\"labels\":[\"first\",\"second\"]}."
         )
         output_path = root / "result.json"
@@ -515,7 +543,15 @@ def verify_adapter_vision(
             )
         text = output_path.read_text() if output_path.exists() else result.stdout
         parsed = _parse_adapter_json(text)
-        if parsed.get("labels") != labels:
+        received = parsed.get("labels")
+        normalized_received = (
+            [label.upper() for label in received]
+            if isinstance(received, list) and all(isinstance(label, str) for label in received)
+            else received
+        )
+        if normalized_received != labels:
+            if _retry_mismatch:
+                return verify_adapter_vision(adapter, run_command, _retry_mismatch=False)
             raise AdapterVisionError(
                 "adapter label mismatch: expected=%s received=%s" % (
                     labels, parsed.get("labels"),
@@ -1204,13 +1240,16 @@ def build_product_packets(
             else "initial"
         )
         attempt_row = dict(row)
+        attachment = attachment_by_product.get(product_id)
         attempt_row.update({
             "dataset": context.dataset,
             "platform": context.platform,
             "country": context.country,
+            "image_url": image.image_url,
+            "image_status": image.image_status,
+            "image_sha256": attachment.sha256 if attachment else "",
         })
         attempt = plan_attempt(attempt_row, {"kind": attempt_kind})
-        attachment = attachment_by_product.get(product_id)
         candidate_rows = candidates.get(product_id, {})
         packets.append({
             **dict(row),
@@ -1252,6 +1291,9 @@ class ChunkCommit:
     outbox_events: Tuple[OutboxEvent, ...]
     qa_writes: Tuple[Tuple[str, str, str, str, str], ...]
     filtered_products: Tuple[Tuple[str, str], ...]
+    qa_expected: Tuple[Mapping[str, Any], ...] = ()
+    filter_expected: Tuple[Mapping[str, Any], ...] = ()
+    dict_expected: Tuple[Mapping[str, Any], ...] = ()
 
 
 class _ParameterBuilder:
@@ -1307,7 +1349,9 @@ def _build_operations(
     packets: Sequence[Mapping[str, Any]],
     decisions: Sequence[Mapping[str, Any]],
     now: datetime,
+    existing_identities: Sequence[Tuple[str, str, str]] = (),
 ) -> Tuple[List[Mapping[str, Any]], ChunkCommit]:
+    existing_identities = set(existing_identities)
     validated = validate_decision_batch({"decisions": list(decisions)}, packets)
     run_id = _stable_digest({
         "dataset": context.dataset,
@@ -1321,6 +1365,9 @@ def _build_operations(
     created_identities: List[Tuple[str, str, str]] = []
     qa_writes: List[Tuple[str, str, str, str, str]] = []
     filtered_products: List[Tuple[str, str]] = []
+    qa_expected: List[Mapping[str, Any]] = []
+    filter_expected: List[Mapping[str, Any]] = []
+    dict_expected: List[Mapping[str, Any]] = []
     outbox_events: List[OutboxEvent] = []
     seen_identities = set()
 
@@ -1346,8 +1393,10 @@ def _build_operations(
             "run_id": run_id,
         }
         if kind == "filter":
-            operations.append({**base, "kind": kind})
+            operation = {**base, "kind": kind}
+            operations.append(operation)
             filtered_products.append((str(packet["product_id"]), context.platform))
+            filter_expected.append(_filter_values(context, operation, now))
             continue
 
         if kind == "map_existing":
@@ -1357,6 +1406,8 @@ def _build_operations(
             identity = str(candidate.get(context.dict_identity_col, "")).strip()
             _require(brand and identity, "candidate row has no natural identity")
             dictionary_values = None
+            natural_identity = None
+            is_existing = False
         else:
             attributes = decision["attributes"]
             generated = compose_generated_attributes(attributes, context.dict_pattern)
@@ -1378,7 +1429,9 @@ def _build_operations(
                     raise DecisionValidationError(
                         "create_dict natural identity already exists in packet candidates",
                     )
-            created_identities.append(natural_identity)
+            is_existing = natural_identity in existing_identities
+            if not is_existing:
+                created_identities.append(natural_identity)
 
         qa_identity = identity
         attempts.append(attempt)
@@ -1392,9 +1445,17 @@ def _build_operations(
             "identity": identity,
             "qa_identity": qa_identity,
             "dictionary_values": dictionary_values,
+            "existing_identity": is_existing,
         }
         operations.append(operation)
-        if kind != "create_dict":
+        qa_expected.append(_qa_values(context, operation, now))
+        if kind == "create_dict":
+            dict_expected.append({
+                "brand": brand,
+                context.dict_identity_col: identity,
+                **(dictionary_values or {}),
+            })
+        if kind != "create_dict" or is_existing:
             continue
 
         identity_entry = {
@@ -1445,9 +1506,10 @@ def _build_operations(
         outbox_events=tuple(outbox_events),
         qa_writes=tuple(qa_writes),
         filtered_products=tuple(filtered_products),
+        qa_expected=tuple(qa_expected),
+        filter_expected=tuple(filter_expected),
+        dict_expected=tuple(dict_expected),
     )
-
-
 def _conditional_insert(
     table: str,
     values: Mapping[str, Tuple[str, str]],
@@ -1528,46 +1590,92 @@ def _qa_values(
 def _outbox_table(context: RunContext) -> str:
     return _table_reference(context.project, "magpie_reference.non_niq_qa_outbox")
 
+def _identity_lock_table(context: RunContext) -> str:
+    return _table_reference(context.project, "magpie_reference.non_niq_qa_identity_locks")
+
 
 def build_chunk_script(
     context: RunContext,
     packets: Sequence[Mapping[str, Any]],
     decisions: Sequence[Mapping[str, Any]],
     now: datetime,
+    existing_identities: Sequence[Tuple[str, str, str]] = (),
 ) -> Tuple[str, Sequence[Any]]:
     """Return one parameterized transaction script and its query parameters."""
-    operations, commit = _build_operations(context, packets, decisions, now)
+    operations, commit = _build_operations(
+        context, packets, decisions, now, existing_identities,
+    )
     if not operations:
         return "", ()
 
     builder = _ParameterBuilder()
     statements = ["BEGIN TRANSACTION;"]
     create_operations = [item for item in operations if item["kind"] == "create_dict"]
+    if create_operations:
+        statements.append(
+            "UPDATE %s SET touched_at = CURRENT_TIMESTAMP() "
+            "WHERE lock_scope = 'non_niq_qa_global';" % _identity_lock_table(context)
+        )
     dict_table = _table_reference(context.project, context.dict_table)
     if create_operations:
+        authored_columns = sorted({
+            column
+            for operation in create_operations
+            for column in operation["dictionary_values"]
+            if column != "_meta"
+        })
         requested_rows = []
         for operation in create_operations:
-            requested_rows.append("SELECT %s AS brand, %s AS identity_value" % (
-                builder.add(operation["brand"]),
-                builder.add(operation["identity"]),
-            ))
-        statements.extend([
-            "CREATE TEMP TABLE _v3_requested_dict AS\n" + "\nUNION ALL\n".join(requested_rows) + ";",
-            """CREATE TEMP TABLE _v3_existing_dict AS
-SELECT d.brand, d.`%s` AS identity_value
-FROM %s d
-JOIN _v3_requested_dict r
-  ON d.brand = r.brand AND d.`%s` = r.identity_value;""" % (
-                _identifier(context.dict_identity_col), dict_table,
+            fields = [
+                "%s AS _v3_brand" % builder.add(operation["brand"]),
+                "%s AS _v3_identity_value" % builder.add(operation["identity"]),
+            ]
+            authored = operation["dictionary_values"]
+            for column in authored_columns:
+                present = column in authored
+                value = authored.get(column)
+                fields.extend([
+                    "%s AS `_v3_value_%s`" % (builder.add(value), _identifier(column)),
+                    "%s AS `_v3_has_%s`" % (
+                        "TRUE" if present else "FALSE", _identifier(column),
+                    ),
+                ])
+            requested_rows.append("SELECT " + ", ".join(fields))
+        statements.append(
+            "CREATE TEMP TABLE _v3_requested_dict AS\n"
+            + "\nUNION ALL\n".join(requested_rows) + ";"
+        )
+        conflict_terms = []
+        for column in authored_columns:
+            conflict_terms.append(
+                "(r.`_v3_has_%s` AND d.`%s` IS DISTINCT FROM r.`_v3_value_%s`)" % (
+                    _identifier(column), _identifier(column), _identifier(column),
+                )
+            )
+        statements.append(
+            """ASSERT NOT EXISTS (
+  SELECT 1
+  FROM %s d
+  JOIN _v3_requested_dict r
+    ON d.brand = r._v3_brand
+   AND d.`%s` = r._v3_identity_value
+  WHERE %s
+) AS 'existing dictionary identity has conflicting authored attributes';""" % (
+                dict_table,
                 _identifier(context.dict_identity_col),
-            ),
+                " OR ".join(conflict_terms),
+            )
+        )
+        statements.append(
             """CREATE TEMP TABLE _v3_new_dict AS
-SELECT r.brand, r.identity_value
+SELECT r._v3_brand AS brand, r._v3_identity_value AS identity_value
 FROM _v3_requested_dict r
-LEFT JOIN _v3_existing_dict e
-  ON e.brand = r.brand AND e.identity_value = r.identity_value
-WHERE e.brand IS NULL;""",
-        ])
+LEFT JOIN %s d
+  ON d.brand = r._v3_brand AND d.`%s` = r._v3_identity_value
+WHERE d.brand IS NULL;""" % (
+                dict_table, _identifier(context.dict_identity_col),
+            )
+        )
 
     for operation in (item for item in operations if item["kind"] == "filter"):
         values = _insert_values(builder, _filter_values(context, operation, now))
@@ -1608,7 +1716,9 @@ WHERE e.brand IS NULL;""",
 
     qa_table = _table_reference(context.project, context.qa_table)
     qa_platform_column = _qa_platform_column(context)
-    for operation in (item for item in operations if item["kind"] in {"map_existing", "create_dict"}):
+    for operation in (
+        item for item in operations if item["kind"] in {"map_existing", "create_dict"}
+    ):
         values = _insert_values(builder, _qa_values(context, operation, now))
         attempt_parameter = builder.add(operation["attempt"].attempt_id)
         predicate = """NOT EXISTS (
@@ -1625,6 +1735,8 @@ WHERE e.brand IS NULL;""",
         statements.append(_conditional_insert(qa_table, values, predicate))
 
     for operation in create_operations:
+        if operation["existing_identity"]:
+            continue
         for event in commit.outbox_events:
             if event.attempt_id != operation["attempt"].attempt_id:
                 continue
@@ -1646,14 +1758,9 @@ WHERE e.brand IS NULL;""",
             statements.append(_conditional_insert(
                 _outbox_table(context),
                 values,
-                """EXISTS (
-  SELECT 1 FROM _v3_new_dict n
-  WHERE n.brand = %s AND n.identity_value = %s
-) AND NOT EXISTS (
+                """NOT EXISTS (
   SELECT 1 FROM %s o WHERE o.event_id = %s
 )""" % (
-                    builder.add(operation["brand"]),
-                    builder.add(operation["identity"]),
                     _outbox_table(context),
                     values["event_id"][1],
                 ),
@@ -1664,39 +1771,76 @@ WHERE e.brand IS NULL;""",
 
 def _preflight_create_identities(
     client, context: RunContext, operations: Sequence[Mapping[str, Any]],
-) -> None:
+) -> Tuple[Tuple[str, str, str], ...]:
     creates = [operation for operation in operations if operation["kind"] == "create_dict"]
     if not creates:
-        return
+        return ()
+    authored_columns = sorted({
+        column
+        for operation in creates
+        for column in operation["dictionary_values"]
+        if column not in {"_meta", "brand", context.dict_identity_col}
+    })
     builder = _ParameterBuilder()
     requested = "\nUNION ALL\n".join(
-        "SELECT %s AS brand, %s AS identity_value" % (
+        "SELECT %s AS _v3_brand, %s AS _v3_identity_value" % (
             builder.add(operation["brand"]),
             builder.add(operation["identity"]),
         )
         for operation in creates
     )
+    selected = ", ".join(
+        "d.`%s` AS `_v3_%s`" % (_identifier(column), _identifier(column))
+        for column in authored_columns
+    )
     query = """WITH requested AS (
 %s
 )
-SELECT d.brand, d.`%s` AS identity_value
+SELECT d.brand AS _v3_brand,
+       d.`%s` AS _v3_identity_value%s
 FROM %s d
 JOIN requested r
-  ON d.brand = r.brand AND d.`%s` = r.identity_value
+  ON d.brand = r._v3_brand AND d.`%s` = r._v3_identity_value
 """ % (
         requested,
         _identifier(context.dict_identity_col),
+        ",\n       " + selected if selected else "",
         _table_reference(context.project, context.dict_table),
         _identifier(context.dict_identity_col),
     )
-    conflicts = list(client.query(
-        query,
-        job_config=bigquery.QueryJobConfig(query_parameters=builder.parameters),
-    ).result())
-    if conflicts:
-        raise DecisionValidationError(
-            "create_dict natural identity already exists in %s" % context.dict_table,
-        )
+    rows = [
+        dict(row.items())
+        for row in client.query(
+            query,
+            job_config=bigquery.QueryJobConfig(query_parameters=builder.parameters),
+        ).result()
+    ]
+    by_identity = {
+        (str(row["_v3_brand"]), str(row["_v3_identity_value"])): row
+        for row in rows
+    }
+    exact = []
+    for operation in creates:
+        key = (operation["brand"], operation["identity"])
+        row = by_identity.get(key)
+        if row is None:
+            continue
+        authored = {
+            column: value
+            for column, value in operation["dictionary_values"].items()
+            if column != "_meta"
+        }
+        conflicts = [
+            column for column, value in authored.items()
+            if row.get("_v3_" + column) != value
+        ]
+        if conflicts:
+            raise DecisionValidationError(
+                "create_dict natural identity conflicts on %s in %s"
+                % (", ".join(conflicts), context.dict_table),
+            )
+        exact.append((operation["brand"], context.dict_identity_col, operation["identity"]))
+    return tuple(exact)
 
 
 def _is_transient(error: Exception) -> bool:
@@ -1715,11 +1859,16 @@ def apply_chunk(
     now: datetime,
 ) -> ChunkCommit:
     """Execute one validated chunk with bounded transient retries and read-back."""
-    operations, commit = _build_operations(context, packets, decisions, now)
+    operations, _ = _build_operations(context, packets, decisions, now)
     if not operations:
-        return commit
-    _preflight_create_identities(client, context, operations)
-    script, parameters = build_chunk_script(context, packets, decisions, now)
+        return ChunkCommit((), (), (), (), ())
+    existing_identities = _preflight_create_identities(client, context, operations)
+    operations, commit = _build_operations(
+        context, packets, decisions, now, existing_identities,
+    )
+    script, parameters = build_chunk_script(
+        context, packets, decisions, now, existing_identities,
+    )
     for attempt_number in range(3):
         try:
             client.query(
@@ -1745,10 +1894,41 @@ def _assert_readback(
         raise RuntimeError("missing committed %s" % label)
 
 
+
+def _assert_exact_mapping(
+    client, table: str, alias: str, values: Mapping[str, Any], label: str,
+) -> None:
+    predicates = []
+    parameters = []
+    for index, column in enumerate(sorted(values)):
+        name = "expected_%d" % index
+        predicates.append(
+            "%s.`%s` IS NOT DISTINCT FROM @%s" % (
+                alias, _identifier(column), name,
+            )
+        )
+        parameters.append(
+            bigquery.ScalarQueryParameter(
+                name, "STRING", None if values[column] is None else str(values[column]),
+            )
+        )
+    _assert_readback(
+        client,
+        "SELECT 1 FROM %s %s WHERE %s LIMIT 1" % (
+            table, alias, " AND ".join(predicates),
+        ),
+        parameters,
+        label,
+    )
 def verify_chunk_commit(client, context: RunContext, commit: ChunkCommit) -> None:
     """Read back exact committed QA, filter, dictionary, and outbox identities."""
     qa_table = _table_reference(context.project, context.qa_table)
     qa_platform_column = _qa_platform_column(context)
+    for expected in commit.qa_expected:
+        _assert_exact_mapping(
+            client, qa_table, "q", expected,
+            "exact QA row for product_id=%s" % expected.get(context.qa_pk_col),
+        )
     for product_id, platform, brand, qa_identity, attempt_id in commit.qa_writes:
         _assert_readback(
             client,
@@ -1775,6 +1955,11 @@ LIMIT 1""" % (
         )
 
     filter_table = _table_reference(context.project, context.filter_table)
+    for expected in commit.filter_expected:
+        _assert_exact_mapping(
+            client, filter_table, "f", expected,
+            "exact filter row for product_id=%s" % expected.get("product_id"),
+        )
     filter_platform_column = _filter_platform_column(context)
     for product_id, platform in commit.filtered_products:
         predicate = "f.`product_id` = @product_id"
@@ -1792,6 +1977,13 @@ LIMIT 1""" % (
         )
 
     dict_table = _table_reference(context.project, context.dict_table)
+    for expected in commit.dict_expected:
+        _assert_exact_mapping(
+            client, dict_table, "d", expected,
+            "exact dictionary row for %s/%s" % (
+                expected.get("brand"), expected.get(context.dict_identity_col),
+            ),
+        )
     for brand, identity_column, identity_value in commit.created_dict_identities:
         _assert_readback(
             client,
@@ -1809,15 +2001,197 @@ LIMIT 1""" % (
     for event in commit.outbox_events:
         _assert_readback(
             client,
-            "SELECT 1 FROM %s WHERE event_id = @event_id AND status = 'pending' LIMIT 1" % outbox_table,
-            [bigquery.ScalarQueryParameter("event_id", "STRING", event.event_id)],
+            """SELECT 1
+FROM %s
+WHERE event_id = @event_id
+  AND attempt_id = @attempt_id
+  AND event_type = @event_type
+  AND payload = @payload
+  AND status = 'pending'
+LIMIT 1""" % outbox_table,
+            [
+                bigquery.ScalarQueryParameter("event_id", "STRING", event.event_id),
+                bigquery.ScalarQueryParameter("attempt_id", "STRING", event.attempt_id),
+                bigquery.ScalarQueryParameter("event_type", "STRING", event.event_type),
+                bigquery.ScalarQueryParameter("payload", "STRING", event.payload),
+            ],
             "outbox event %s" % event.event_id,
         )
+
+def _is_readable_image(image_bytes: bytes) -> bool:
+    """Validate common image containers without adding a decoder dependency."""
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        if len(image_bytes) < 33 or image_bytes[12:16] != b"IHDR":
+            return False
+        width, height = struct.unpack(">II", image_bytes[16:24])
+        if not width or not height:
+            return False
+        index = 8
+        saw_idat = False
+        saw_iend = False
+        idat_parts = []
+        while index + 8 <= len(image_bytes):
+            length = struct.unpack(">I", image_bytes[index:index + 4])[0]
+            end = index + 12 + length
+            if end > len(image_bytes):
+                return False
+            chunk_type = image_bytes[index + 4:index + 8]
+            chunk_data = image_bytes[index + 8:index + 8 + length]
+            if chunk_type == b"IDAT":
+                saw_idat = True
+                idat_parts.append(chunk_data)
+            if chunk_type == b"IEND":
+                saw_iend = True
+                index = end
+                break
+            index = end
+        try:
+            return (
+                saw_idat and saw_iend and index == len(image_bytes)
+                and bool(zlib.decompress(b"".join(idat_parts)))
+            )
+        except zlib.error:
+            return False
+
+    if image_bytes[:6] in {b"GIF87a", b"GIF89a"}:
+        if len(image_bytes) < 13:
+            return False
+        width, height = struct.unpack("<HH", image_bytes[6:10])
+        if not width or not height:
+            return False
+        index = 13
+        packed = image_bytes[10]
+        if packed & 0x80:
+            index += 3 * (2 ** ((packed & 0x07) + 1))
+        if index > len(image_bytes):
+            return False
+        saw_image = False
+        while index < len(image_bytes):
+            block = image_bytes[index]
+            index += 1
+            if block == 0x3B:
+                return saw_image and index == len(image_bytes)
+            if block == 0x2C:
+                if index + 9 > len(image_bytes):
+                    return False
+                packed = image_bytes[index + 8]
+                index += 9
+                if packed & 0x80:
+                    index += 3 * (2 ** ((packed & 0x07) + 1))
+                if index >= len(image_bytes):
+                    return False
+                index += 1
+                saw_data = False
+                while True:
+                    if index >= len(image_bytes):
+                        return False
+                    size = image_bytes[index]
+                    index += 1
+                    if size == 0:
+                        break
+                    saw_data = True
+                    index += size
+                    if index > len(image_bytes):
+                        return False
+                if not saw_data:
+                    return False
+                saw_image = True
+                continue
+            if block == 0x21:
+                if index >= len(image_bytes):
+                    return False
+                index += 1
+            else:
+                return False
+            while True:
+                if index >= len(image_bytes):
+                    return False
+                size = image_bytes[index]
+                index += 1
+                if size == 0:
+                    break
+                index += size
+                if index > len(image_bytes):
+                    return False
+        return False
+
+    if image_bytes.startswith(b"\xff\xd8"):
+        index = 2
+        saw_frame = False
+        while index + 1 < len(image_bytes):
+            if image_bytes[index] != 0xFF:
+                index += 1
+                continue
+            marker = image_bytes[index + 1]
+            if marker == 0x00 or marker == 0xFF:
+                index += 1
+                continue
+            index += 2
+            if marker == 0xD9:
+                return saw_frame and index == len(image_bytes)
+            if marker in {0xD8} or 0xD0 <= marker <= 0xD7:
+                continue
+            if index + 2 > len(image_bytes):
+                return False
+            length = struct.unpack(">H", image_bytes[index:index + 2])[0]
+            if length < 2 or index + length > len(image_bytes):
+                return False
+            if marker == 0xDA:
+                index += length
+                while index + 1 < len(image_bytes):
+                    if image_bytes[index] != 0xFF:
+                        index += 1
+                        continue
+                    next_marker = image_bytes[index + 1]
+                    if next_marker == 0x00 or 0xD0 <= next_marker <= 0xD7:
+                        index += 2
+                        continue
+                    if next_marker == 0xD9:
+                        return saw_frame and index + 2 == len(image_bytes)
+                    break
+                return False
+            if marker in (
+                set(range(0xC0, 0xC4)) | set(range(0xC5, 0xC8)) |
+                set(range(0xC9, 0xCC)) | set(range(0xCD, 0xD0))
+            ):
+                if length < 7:
+                    return False
+                height, width = struct.unpack(">HH", image_bytes[index + 3:index + 7])
+                saw_frame = bool(width and height)
+            index += length
+        return False
+
+    if len(image_bytes) < 20 or image_bytes[:4] != b"RIFF" or image_bytes[8:12] != b"WEBP":
+        return False
+    riff_size = struct.unpack("<I", image_bytes[4:8])[0]
+    if riff_size + 8 != len(image_bytes):
+        return False
+    index = 12
+    saw_frame = False
+    while index + 8 <= len(image_bytes):
+        chunk_type = image_bytes[index:index + 4]
+        length = struct.unpack("<I", image_bytes[index + 4:index + 8])[0]
+        end = index + 8 + length + (length & 1)
+        if end > len(image_bytes):
+            return False
+        if chunk_type == b"VP8X":
+            if length < 10:
+                return False
+        elif chunk_type == b"VP8 ":
+            payload = image_bytes[index + 8:index + 8 + length]
+            saw_frame = length >= 10 and payload[3:6] == b"\x9d\x01\x2a"
+        elif chunk_type == b"VP8L":
+            payload = image_bytes[index + 8:index + 8 + length]
+            saw_frame = length >= 5 and payload[0] == 0x2f
+        index = end
+    return saw_frame and index == len(image_bytes)
+
 
 def prepare_images(
     rows: Sequence[Mapping[str, Any]], context: RunContext, directory: Path,
 ) -> Mapping[str, PreparedImage]:
-    """Download at most one normalized image per product into an isolated directory."""
+    """Download at most one normalized, readable image per product."""
+    directory.mkdir(parents=True, exist_ok=True)
     images = {}
     for position, row in enumerate(rows, 1):
         product_id = str(row["product_id"])
@@ -1830,9 +2204,12 @@ def prepare_images(
         try:
             request = urllib.request.Request(image_url, headers={"User-Agent": "non-niq-qa-v3"})
             with urllib.request.urlopen(request, timeout=30) as response:
+                status = getattr(response, "status", 200)
+                if not 200 <= status < 300:
+                    raise ValueError("HTTP status %s" % status)
                 image_bytes = response.read()
-            if not image_bytes:
-                raise ValueError("empty image response")
+            if not _is_readable_image(image_bytes):
+                raise ValueError("downloaded body is not a readable image")
             local_path.write_bytes(image_bytes)
         except Exception:
             images[product_id] = PreparedImage(product_id, image_url, "unavailable", None)
@@ -1867,17 +2244,54 @@ def build_packet_prompt(
                 for name, values in packet["allowed_categorical_values"].items()
             },
         })
-    return (
-        "Return one exact JSON decision for every packet using the supplied schema. "
-        "Use only the attached image at the packet's attachment_index for image evidence. "
-        "Do not access services, invoke tools, or propose operational actions.\n\n"
-        + json.dumps({
+    return """You are a decision-only multimodal taxonomy reviewer for the supplied category.
+Return JSON only, as {"decisions":[...]}, with exactly one decision per packet and no prose.
+
+Use only each packet's supplied fields and its attached image. Do not access services, invoke
+tools, write data, or propose operational actions. Assess category relevance from the packet
+signals and attached image, never from a filename or URL alone. When the evidence is insufficient,
+defer rather than guessing or filtering.
+
+Read the product image first for category relevance, brand, product line, and variant. Use the
+title and structured packet attributes as supporting signals; a title keyword alone is not enough
+to filter. For size, prefer an explicit title value, then the image and other supplied signals.
+For pack count, the image resolves ambiguity in title multipliers; distinguish same-product
+multipacks from a different-product freebie/GWP. Preserve exact observed wording and units, never
+invent a size or variant, and never use a generic category word as a product line when a grounded
+line is unavailable.
+Every decision must echo product_id, work_item_id, and input_fingerprint exactly; include
+confidence and an evidence array. An image-evidence item must cite only that packet's
+attachment_index. Never cite another packet's attachment. A ready image must be inspected before
+any non-defer decision. With image_status="unavailable", filter is forbidden and map_existing or
+create_dict must be unconfident.
+
+The exact object contract is:
+- all four branches require product_id, work_item_id, input_fingerprint, kind, confidence, and
+  evidence; each object rejects every other field than its branch field;
+- filter adds only reason; map_existing adds only candidate_ref; create_dict adds only attributes;
+  defer adds only reason;
+- evidence items are either {source:"image", claim, attachment_index} or {source, claim} for
+  non-image evidence. Image evidence must use an integer attachment_index.
+
+The only decision shapes are:
+- filter: kind="filter", confidence="confident", a specific reason, and matching image evidence;
+  use only when the product is confidently out of the supplied category.
+- map_existing: kind="map_existing" and a candidate_ref from that packet's candidate_refs only.
+- create_dict: kind="create_dict" and attributes containing only writable_attributes, never
+  generated_attributes. Supply every required source in dict_pattern; use an allowed categorical
+  value exactly when the packet gives a vocabulary, and never invent a value.
+- defer: kind="defer", confidence="unconfident", and a specific reason. It has no candidate_ref
+  or attributes.
+
+Category: %s
+
+PACKETS:
+""" % context.category + json.dumps({
             "dataset": context.dataset,
             "platform": context.platform,
             "country": context.country,
             "packets": prompt_packets,
         }, sort_keys=True, separators=(",", ":"), default=str)
-    )
 
 
 def _pending_outbox_events(client, context: RunContext) -> List[Mapping[str, Any]]:
@@ -1975,7 +2389,7 @@ def drain_outbox(client, context: RunContext, now: datetime) -> None:
 
     for (meili_url, meili_index), deliveries in meili_groups.items():
         try:
-            index_documents(
+            index_documents_strict(
                 [dict(document) for _, document in deliveries], meili_url, meili_index,
             )
         except Exception as error:
