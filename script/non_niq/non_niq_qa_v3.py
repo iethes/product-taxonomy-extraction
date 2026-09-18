@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Deterministic Python driver for non-NIQ QA v3."""
 
+import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
-
 from hashlib import sha256
 import json
 import os
@@ -12,19 +12,23 @@ import re
 import secrets
 import struct
 import subprocess
+import sys
 import tempfile
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+import urllib.request
 from urllib.parse import urlsplit
 import zlib
 
 from google.cloud import bigquery
-
 from non_niq_helper import (
     MEILI_URL,
     _table_columns,
+    append_sheet_new_entries_strict,
     fetch_config_csv,
     fetch_forced_merchant_ids,
+    index_documents,
     parse_categories,
+    retrieve_candidates,
 )
 
 
@@ -95,13 +99,24 @@ def build_attachment_manifest(images: Sequence[PreparedImage]) -> Tuple[Attachme
     for image in images:
         if image.image_status != "ready" or image.local_path is None:
             continue
+        attachment_index = len(attachments) + 1
         suffix = Path(urlsplit(image.image_url or "").path).suffix.lower() or ".img"
+        filename = "attachment-%04d%s" % (attachment_index, suffix)
+        image_bytes = image.local_path.read_bytes()
+        local_path = image.local_path.with_name(filename)
+        if local_path != image.local_path:
+            if local_path.exists():
+                local_path.unlink()
+            try:
+                os.link(image.local_path, local_path)
+            except OSError:
+                local_path.write_bytes(image_bytes)
         attachments.append(Attachment(
             product_id=image.product_id,
-            attachment_index=len(attachments) + 1,
-            attachment_filename="attachment-%04d%s" % (len(attachments) + 1, suffix),
-            sha256=sha256(image.local_path.read_bytes()).hexdigest(),
-            local_path=image.local_path,
+            attachment_index=attachment_index,
+            attachment_filename=filename,
+            sha256=sha256(image_bytes).hexdigest(),
+            local_path=local_path,
         ))
     return tuple(attachments)
 
@@ -299,16 +314,16 @@ def validate_decision_batch(
 
 SCHEMA_PATH = Path(__file__).with_name("non_niq_qa_v3_decision_schema.json")
 _PIXEL_DIGITS = {
-    "0": ("111", "101", "101", "101", "111"),
-    "1": ("010", "110", "010", "010", "111"),
-    "2": ("111", "001", "111", "100", "111"),
-    "3": ("111", "001", "111", "001", "111"),
-    "4": ("101", "101", "111", "001", "001"),
-    "5": ("111", "100", "111", "001", "111"),
-    "6": ("111", "100", "111", "101", "111"),
-    "7": ("111", "001", "010", "010", "010"),
-    "8": ("111", "101", "111", "101", "111"),
-    "9": ("111", "101", "111", "001", "111"),
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
+    "6": ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
 }
 
 
@@ -323,6 +338,7 @@ def build_codex_command(
         "--output-last-message", str(output_path),
         "--image",
         *[str(attachment.local_path) for attachment in attachments],
+        "--",
         prompt,
     ]
 
@@ -346,9 +362,9 @@ def _adapter_env() -> Dict[str, str]:
 
 
 def _write_label_png(path: Path, label: str) -> None:
-    scale = 12
-    width = 24 + len(label) * 48
-    height = 84
+    scale = 20
+    width = 24 + len(label) * scale * 6
+    height = 24 + 7 * scale
     pixels = bytearray(b"\xff\xff\xff" * width * height)
     for char_index, digit in enumerate(label):
         glyph = _PIXEL_DIGITS[digit]
@@ -356,7 +372,7 @@ def _write_label_png(path: Path, label: str) -> None:
             for column_index, pixel in enumerate(row):
                 if pixel != "1":
                     continue
-                x0 = 12 + char_index * 48 + column_index * scale
+                x0 = 12 + char_index * scale * 6 + column_index * scale
                 y0 = 12 + row_index * scale
                 for y in range(y0, y0 + scale):
                     for x in range(x0, x0 + scale):
@@ -378,6 +394,14 @@ def _write_label_png(path: Path, label: str) -> None:
         chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) +
         chunk(b"IDAT", zlib.compress(rows)) +
         chunk(b"IEND", b"")
+    )
+
+
+def _sentinel_label() -> str:
+    value = secrets.randbelow(1 << 12)
+    return "".join(
+        "47"[(value >> shift) & 1]
+        for shift in range(11, -1, -1)
     )
 
 
@@ -437,10 +461,10 @@ def verify_adapter_vision(
         raise AdapterVisionError("unsupported adapter: %s" % adapter)
     with tempfile.TemporaryDirectory(prefix="non-niq-v3-sentinel-") as directory:
         root = Path(directory)
-        first_label = "%08d" % secrets.randbelow(10 ** 8)
+        first_label = _sentinel_label()
         second_label = first_label
         for _ in range(8):
-            second_label = "%08d" % secrets.randbelow(10 ** 8)
+            second_label = _sentinel_label()
             if second_label != first_label:
                 break
         if second_label == first_label:
@@ -479,7 +503,11 @@ def verify_adapter_vision(
         text = output_path.read_text() if output_path.exists() else result.stdout
         parsed = _parse_adapter_json(text)
         if parsed.get("labels") != labels:
-            raise AdapterVisionError("adapter did not read both image labels exactly")
+            raise AdapterVisionError(
+                "adapter label mismatch: expected=%s received=%s" % (
+                    labels, parsed.get("labels"),
+                ),
+            )
 
 
 def invoke_adapter(
@@ -650,6 +678,7 @@ class RunContext:
     platform: str
     country: str
     category: str
+    merchant_ids: Tuple[str, ...]
     source_table: str
     qa_table: str
     dict_table: str
@@ -718,7 +747,8 @@ def build_worklist_sql(
     filter_table = _table_reference(context.project, context.filter_table)
     platform_match = _platform_match_sql(context.platform)
     source_platform = _canonical_platform_sql("s.ecommerce_platform")
-    qa_platform = _canonical_platform_sql("ecommerce_platform")
+    qa_platform_column = _qa_platform_column(context)
+    qa_platform = _canonical_platform_sql("`%s`" % _identifier(qa_platform_column))
     filter_cte = """filter_state AS (
   SELECT DISTINCT product_id FROM %s
 ),
@@ -1000,6 +1030,7 @@ def resolve_run_context(args: Any, client) -> RunContext:
         platform=platform,
         country=country,
         category=str(config["category"]),
+        merchant_ids=tuple(merchant_ids),
         source_table=source_table,
         qa_table=qa_table,
         dict_table=dict_table,
@@ -1769,3 +1800,315 @@ LIMIT 1""" % (
             [bigquery.ScalarQueryParameter("event_id", "STRING", event.event_id)],
             "outbox event %s" % event.event_id,
         )
+
+def prepare_images(
+    rows: Sequence[Mapping[str, Any]], context: RunContext, directory: Path,
+) -> Mapping[str, PreparedImage]:
+    """Download at most one normalized image per product into an isolated directory."""
+    images = {}
+    for position, row in enumerate(rows, 1):
+        product_id = str(row["product_id"])
+        image_url = normalize_first_image_url(row.get("image_raw"), context.platform)
+        if not image_url:
+            images[product_id] = PreparedImage(product_id, None, "unavailable", None)
+            continue
+        suffix = Path(urlsplit(image_url).path).suffix.lower() or ".img"
+        local_path = directory / ("image-%04d%s" % (position, suffix))
+        try:
+            request = urllib.request.Request(image_url, headers={"User-Agent": "non-niq-qa-v3"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                image_bytes = response.read()
+            if not image_bytes:
+                raise ValueError("empty image response")
+            local_path.write_bytes(image_bytes)
+        except Exception:
+            images[product_id] = PreparedImage(product_id, image_url, "unavailable", None)
+        else:
+            images[product_id] = PreparedImage(product_id, image_url, "ready", local_path)
+    return images
+
+
+def build_packet_prompt(
+    context: RunContext, packets: Sequence[Mapping[str, Any]],
+) -> str:
+    """Build an audit-only decision prompt without data-service or write authority."""
+    prompt_packets = []
+    for packet in packets:
+        prompt_packets.append({
+            "product_id": packet["product_id"],
+            "work_item_id": packet["work_item_id"],
+            "input_fingerprint": packet["input_fingerprint"],
+            "sku_name": packet.get("sku_name"),
+            "item_description": packet.get("item_description"),
+            "product_attributes_attrs": packet.get("product_attributes_attrs"),
+            "prior_mapping": packet.get("prior_mapping"),
+            "image_status": packet["image_status"],
+            "attachment_index": packet["attachment_index"],
+            "candidates": packet["candidates"],
+            "candidate_refs": sorted(packet["candidate_refs"]),
+            "writable_attributes": sorted(packet["writable_attributes"]),
+            "generated_attributes": sorted(packet["generated_attributes"]),
+            "dict_pattern": packet["dict_pattern"],
+            "allowed_categorical_values": {
+                name: sorted(values)
+                for name, values in packet["allowed_categorical_values"].items()
+            },
+        })
+    return (
+        "Return one exact JSON decision for every packet using the supplied schema. "
+        "Use only the attached image at the packet's attachment_index for image evidence. "
+        "Do not access services, invoke tools, or propose operational actions.\n\n"
+        + json.dumps({
+            "dataset": context.dataset,
+            "platform": context.platform,
+            "country": context.country,
+            "packets": prompt_packets,
+        }, sort_keys=True, separators=(",", ":"), default=str)
+    )
+
+
+def _pending_outbox_events(client, context: RunContext) -> List[Mapping[str, Any]]:
+    query = """SELECT event_id, attempt_id, decision_id, event_type, payload, attempts
+FROM %s
+WHERE status = 'pending'
+  AND dataset = @dataset
+  AND platform = @platform
+  AND country = @country
+ORDER BY created_at, event_id""" % _outbox_table(context)
+    parameters = [
+        bigquery.ScalarQueryParameter("dataset", "STRING", context.dataset),
+        bigquery.ScalarQueryParameter("platform", "STRING", context.platform),
+        bigquery.ScalarQueryParameter("country", "STRING", context.country),
+    ]
+    return [
+        dict(row.items())
+        for row in client.query(
+            query, job_config=bigquery.QueryJobConfig(query_parameters=parameters),
+        ).result()
+    ]
+
+
+def _mark_outbox_event(
+    client, context: RunContext, event_id: str, status: str, now: datetime,
+    error: Optional[str] = None,
+) -> None:
+    if status not in {"pending", "complete"}:
+        raise ValueError("unsupported outbox status: %s" % status)
+    query = """UPDATE %s
+SET status = @status,
+    attempts = attempts + 1,
+    last_error = @last_error,
+    completed_at = @completed_at
+WHERE event_id = @event_id
+  AND status = 'pending'
+  AND dataset = @dataset
+  AND platform = @platform
+  AND country = @country""" % _outbox_table(context)
+    parameters = [
+        bigquery.ScalarQueryParameter("status", "STRING", status),
+        bigquery.ScalarQueryParameter("last_error", "STRING", error),
+        bigquery.ScalarQueryParameter(
+            "completed_at", "TIMESTAMP", now if status == "complete" else None,
+        ),
+        bigquery.ScalarQueryParameter("event_id", "STRING", event_id),
+        bigquery.ScalarQueryParameter("dataset", "STRING", context.dataset),
+        bigquery.ScalarQueryParameter("platform", "STRING", context.platform),
+        bigquery.ScalarQueryParameter("country", "STRING", context.country),
+    ]
+    client.query(
+        query, job_config=bigquery.QueryJobConfig(query_parameters=parameters),
+    ).result()
+
+
+def _outbox_failure(
+    client, context: RunContext, event: Mapping[str, Any], now: datetime, error: str,
+) -> str:
+    _mark_outbox_event(client, context, str(event["event_id"]), "pending", now, error)
+    return "%s: %s" % (event["event_id"], error)
+
+
+def drain_outbox(client, context: RunContext, now: datetime) -> None:
+    """Deliver scoped pending events or raise after retaining every delivery failure."""
+    meili_groups: Dict[Tuple[str, str], List[Tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
+    sheet_groups: Dict[Tuple[str, str, str], List[Tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
+    failures = []
+    for event in _pending_outbox_events(client, context):
+        try:
+            payload = json.loads(str(event["payload"]))
+            if not isinstance(payload, Mapping):
+                raise ValueError("payload is not an object")
+            if event["event_type"] == "meili_index":
+                key = (str(payload["meili_url"]), str(payload["meili_index"]))
+                document = payload["document"]
+                if not isinstance(document, Mapping):
+                    raise ValueError("meili document is not an object")
+                meili_groups.setdefault(key, []).append((event, document))
+            elif event["event_type"] == "sheet_append":
+                key = (
+                    str(payload["project"]),
+                    str(payload["dict_table"]),
+                    str(payload["sheet_url"]),
+                )
+                entry = payload["entry"]
+                if not isinstance(entry, Mapping):
+                    raise ValueError("sheet entry is not an object")
+                sheet_groups.setdefault(key, []).append((event, entry))
+            else:
+                raise ValueError("unsupported outbox event type: %s" % event["event_type"])
+        except Exception as error:
+            failures.append(_outbox_failure(
+                client, context, event, now, "%s: %s" % (type(error).__name__, error),
+            ))
+
+    for (meili_url, meili_index), deliveries in meili_groups.items():
+        try:
+            index_documents(
+                [dict(document) for _, document in deliveries], meili_url, meili_index,
+            )
+        except Exception as error:
+            message = "%s: %s" % (type(error).__name__, error)
+            for event, _ in deliveries:
+                failures.append(_outbox_failure(client, context, event, now, message))
+        else:
+            for event, _ in deliveries:
+                _mark_outbox_event(client, context, str(event["event_id"]), "complete", now)
+
+    for (project, dict_table, sheet_url), deliveries in sheet_groups.items():
+        entries = [dict(entry) for _, entry in deliveries]
+        try:
+            outcomes = append_sheet_new_entries_strict(
+                project, dict_table, sheet_url, entries, client=client,
+            )
+        except Exception as error:
+            outcomes = {}
+            message = "%s: %s" % (type(error).__name__, error)
+            for event, _ in deliveries:
+                failures.append(_outbox_failure(client, context, event, now, message))
+            continue
+        for event, entry in deliveries:
+            key = (
+                str(entry.get("brand", "")).strip(),
+                str(entry.get("identity_col", "")).strip(),
+                str(entry.get("identity_value", "")).strip(),
+            )
+            outcome = outcomes.get(key)
+            if outcome and outcome.status in {"appended", "already_present"}:
+                _mark_outbox_event(client, context, str(event["event_id"]), "complete", now)
+            else:
+                error = getattr(outcome, "error", None) or "missing sheet append outcome"
+                failures.append(_outbox_failure(client, context, event, now, str(error)))
+
+    if failures:
+        raise RuntimeError("outbox delivery failed: " + "; ".join(failures))
+
+
+def _chunked(values: Sequence[Mapping[str, Any]], size: int) -> Sequence[Sequence[Mapping[str, Any]]]:
+    return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+def _queue_table_name(context: RunContext) -> str:
+    parts = [context.dataset, context.platform.lower()]
+    if context.country != "ID":
+        parts.append(context.country)
+    return ":".join(parts)
+
+
+def emit_result(table: str, signal: str, message: str, **fields: str) -> None:
+    """Print the queue signal followed by its machine-readable result."""
+    print("QUEUE_SIGNAL: %s" % signal)
+    print(json.dumps({
+        "timestamp": _timestamp(datetime.now(timezone.utc)),
+        "table": table,
+        "signal": signal,
+        "message": message,
+        **fields,
+    }, sort_keys=True, separators=(",", ":")))
+
+
+def run(args: Any, client=None) -> int:
+    """Run one queue-compatible v3 session."""
+    table = "%s:%s" % (args.dataset, str(args.platform).lower())
+    try:
+        client = client or bigquery.Client(project=PROJECT)
+        context = resolve_run_context(args, client)
+        table = _queue_table_name(context)
+        adapter = os.environ.get("AGENT_HARNESS", "codex")
+        if adapter not in {"codex", "omp"}:
+            raise ValueError("AGENT_HARNESS must be codex or omp for v3")
+        verify_adapter_vision(adapter)
+        if not args.dry_run:
+            drain_outbox(client, context, datetime.now(timezone.utc))
+
+        worklist_sql = build_worklist_sql(
+            context,
+            int(args.max_rows),
+            str(args.kategori or ""),
+            os.environ.get("MONTHLY_REVERIFY") == "1",
+            context.merchant_ids,
+        )
+        rows = materialize_worklist(
+            client,
+            worklist_sql,
+            build_worklist_parameters(
+                context, int(args.max_rows), str(args.kategori or ""), context.merchant_ids,
+            ),
+        )
+        if not rows:
+            emit_result(table, "NOTHING_TO_DO", "No eligible non-NIQ QA work")
+            return 0
+
+        blocked = False
+        for row_chunk in _chunked(rows, 10):
+            retrieval_lines = [
+                {"id": str(row["product_id"]), "text": str(row.get("sku_name", ""))}
+                for row in row_chunk
+            ]
+            candidate_hits = retrieve_candidates(
+                retrieval_lines, MEILI_URL, context.meili_index,
+            )
+            candidates = resolve_candidate_refs(client, context, candidate_hits)
+            prior_mappings = resolve_prior_mappings(
+                client, context, [line["id"] for line in retrieval_lines],
+            )
+            with tempfile.TemporaryDirectory(prefix="non-niq-v3-images-") as directory:
+                images = prepare_images(row_chunk, context, Path(directory))
+                packets = build_product_packets(
+                    context, row_chunk, candidates, images, prior_mappings,
+                )
+                attachments = [
+                    packet["attachment"] for packet in packets if packet["attachment"] is not None
+                ]
+                raw_decisions = invoke_adapter(
+                    adapter, build_packet_prompt(context, packets), attachments,
+                )
+                decisions = validate_decision_batch(raw_decisions, packets)
+                blocked = blocked or any(
+                    decision["kind"] == "defer" for decision in decisions
+                )
+                if not args.dry_run:
+                    apply_chunk(client, context, packets, decisions, datetime.now(timezone.utc))
+                    drain_outbox(client, context, datetime.now(timezone.utc))
+
+        signal = "BLOCKED" if blocked else "DONE"
+        message = "QA v3 session blocked on deferred products" if blocked else "QA v3 session finished"
+        emit_result(table, signal, message, rows=str(len(rows)))
+        return 0
+    except Exception as error:
+        emit_result(table, "FAILED", "%s: %s" % (type(error).__name__, error))
+        return 1
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("dataset")
+    parser.add_argument("platform")
+    parser.add_argument("country", nargs="?", default="ID")
+    parser.add_argument("max_turns", nargs="?", type=int, default=500)
+    parser.add_argument("max_rows", nargs="?", type=int, default=300)
+    parser.add_argument("kategori", nargs="?", default="")
+    parser.add_argument("--dry-run", action="store_true")
+    sys.exit(run(parser.parse_args()))
+
+
+if __name__ == "__main__":
+    main()

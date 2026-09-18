@@ -85,6 +85,10 @@ def test_attachment_manifest_uses_product_order_and_neutral_names(tmp_path):
         ("p-2", 1, "attachment-0001.png"),
         ("p-1", 2, "attachment-0002.jpg"),
     ]
+    assert [item.local_path.name for item in manifest] == [
+        "attachment-0001.png",
+        "attachment-0002.jpg",
+    ]
 
 
 def test_retry_attempt_differs_from_initial_but_replays_stably():
@@ -270,6 +274,7 @@ def test_codex_command_passes_images_in_attachment_index_order(tmp_path):
         str(first.local_path), str(second.local_path),
     ]
     assert command[command.index("--sandbox") + 1] == "read-only"
+    assert command[image_flag + 3] == "--"
     assert "sandbox_workspace_write.network_access=false" in command
 
 
@@ -296,6 +301,16 @@ def test_wrong_random_label_fails_before_product_decision():
         verify_adapter_vision("codex", wrong_runner)
 
 
+def test_sentinel_png_uses_large_ocr_safe_glyphs(tmp_path):
+    path = tmp_path / "probe.png"
+    qa_v3._write_label_png(path, "12345678")
+    image = path.read_bytes()
+    width = int.from_bytes(image[16:20], "big")
+    height = int.from_bytes(image[20:24], "big")
+    assert width >= 900
+    assert height >= 160
+
+
 def test_sentinel_uses_a_schema_without_label_values_and_resamples_duplicates(monkeypatch):
     labels = []
     draws = iter([7, 7, 8])
@@ -319,7 +334,8 @@ def test_sentinel_uses_a_schema_without_label_values_and_resamples_duplicates(mo
     monkeypatch.setattr(qa_v3, "_write_label_png", write_probe)
     with pytest.raises(AdapterVisionError):
         verify_adapter_vision("codex", runner)
-    assert labels == ["00000007", "00000008"]
+    assert labels == ["444444444777", "444444447444"]
+    assert set("".join(labels)) == {"4", "7"}
 
 
 # --- deterministic planner ---
@@ -327,6 +343,7 @@ def test_sentinel_uses_a_schema_without_label_values_and_resamples_duplicates(mo
 def _context(platform="Shopee"):
     return qa_v3.RunContext(
         project="project",
+        merchant_ids=(),
         dataset="babybath",
         platform=platform,
         country="ID",
@@ -707,3 +724,223 @@ def test_apply_chunk_preflights_natural_identity_before_dml():
         qa_v3.apply_chunk(ConflictClient(), context, [packet], [decision], NOW)
     assert len(queries) == 1
     assert queries[0].startswith("WITH requested AS")
+
+
+# --- outbox recovery and queue-compatible CLI ---
+
+def _pending_event(event_id, event_type, payload):
+    return {
+        "event_id": event_id,
+        "attempt_id": "attempt-" + event_id,
+        "decision_id": "decision-" + event_id,
+        "event_type": event_type,
+        "payload": json.dumps(payload),
+        "attempts": 0,
+    }
+
+
+def test_drain_outbox_batches_meili_events_and_marks_them_complete(monkeypatch):
+    context = _executor_context()
+    events = [
+        _pending_event(
+            "meili-1",
+            "meili_index",
+            {
+                "meili_url": "http://meili",
+                "meili_index": "idx",
+                "document": {"product_id": "p-1", "sku_name": "One"},
+            },
+        ),
+        _pending_event(
+            "meili-2",
+            "meili_index",
+            {
+                "meili_url": "http://meili",
+                "meili_index": "idx",
+                "document": {"product_id": "p-2", "sku_name": "Two"},
+            },
+        ),
+    ]
+    updates = []
+
+    class RecordingClient:
+        def query(self, sql, job_config):
+            if sql.startswith("SELECT event_id"):
+                return SimpleNamespace(result=lambda: events)
+            updates.append((sql, job_config.query_parameters))
+            return SimpleNamespace(result=lambda: [])
+
+    calls = []
+    monkeypatch.setattr(
+        qa_v3,
+        "index_documents",
+        lambda documents, url, index: calls.append((documents, url, index)),
+        raising=False,
+    )
+    qa_v3.drain_outbox(RecordingClient(), context, NOW)
+    assert calls == [
+        (
+            [
+                {"product_id": "p-1", "sku_name": "One"},
+                {"product_id": "p-2", "sku_name": "Two"},
+            ],
+            "http://meili",
+            "idx",
+        ),
+    ]
+    assert len(updates) == 2
+    assert all(
+        any(parameter.value == "complete" for parameter in parameters)
+        for _, parameters in updates
+    )
+
+
+def test_sheet_outbox_failure_stays_pending_and_fails_the_run(monkeypatch):
+    context = _executor_context()
+    event = _pending_event(
+        "sheet-1",
+        "sheet_append",
+        {
+            "project": context.project,
+            "dict_table": context.dict_table,
+            "sheet_url": context.taxonomy_url,
+            "entry": {
+                "brand": "Acme",
+                "identity_col": "sku_type",
+                "identity_value": "Acme Wash",
+            },
+        },
+    )
+    updates = []
+
+    class RecordingClient:
+        def query(self, sql, job_config):
+            if sql.startswith("SELECT event_id"):
+                return SimpleNamespace(result=lambda: [event])
+            updates.append((sql, job_config.query_parameters))
+            return SimpleNamespace(result=lambda: [])
+
+    monkeypatch.setattr(
+        qa_v3,
+        "append_sheet_new_entries_strict",
+        lambda *args, **kwargs: {
+            ("Acme", "sku_type", "Acme Wash"): SimpleNamespace(
+                status="failed", error="write failed",
+            ),
+        },
+        raising=False,
+    )
+    with pytest.raises(RuntimeError, match="outbox delivery failed"):
+        qa_v3.drain_outbox(RecordingClient(), context, NOW)
+    assert len(updates) == 1
+    assert "status = 'pending'" in updates[0][0]
+    assert "last_error" in updates[0][0]
+
+
+def test_sheet_outbox_already_present_completes(monkeypatch):
+    context = _executor_context()
+    event = _pending_event(
+        "sheet-present",
+        "sheet_append",
+        {
+            "project": context.project,
+            "dict_table": context.dict_table,
+            "sheet_url": context.taxonomy_url,
+            "entry": {
+                "brand": "Acme",
+                "identity_col": "sku_type",
+                "identity_value": "Acme Wash",
+            },
+        },
+    )
+    updates = []
+
+    class RecordingClient:
+        def query(self, sql, job_config):
+            if sql.startswith("SELECT event_id"):
+                return SimpleNamespace(result=lambda: [event])
+            updates.append(job_config.query_parameters)
+            return SimpleNamespace(result=lambda: [])
+
+    monkeypatch.setattr(
+        qa_v3,
+        "append_sheet_new_entries_strict",
+        lambda *args, **kwargs: {
+            ("Acme", "sku_type", "Acme Wash"): SimpleNamespace(
+                status="already_present", error=None,
+            ),
+        },
+        raising=False,
+    )
+    qa_v3.drain_outbox(RecordingClient(), context, NOW)
+    assert any(
+        parameter.value == "complete"
+        for parameter in updates[0]
+    )
+
+
+def test_emit_result_starts_with_queue_signal(capsys):
+    qa_v3.emit_result("babybath:shopee", "DONE", "QA v3 session finished", rows="1")
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "QUEUE_SIGNAL: DONE"
+    assert json.loads(lines[1])["signal"] == "DONE"
+
+
+def test_run_drains_crash_recovery_before_planning_without_adapter(monkeypatch):
+    context = _executor_context()
+    calls = []
+    args = SimpleNamespace(
+        dataset="babybath", platform="shopee", country="ID", max_turns=500,
+        max_rows=10, kategori="", dry_run=False,
+    )
+    monkeypatch.setattr(qa_v3, "resolve_run_context", lambda args, client: context, raising=False)
+    monkeypatch.setattr(qa_v3, "verify_adapter_vision", lambda *args: calls.append("sentinel"), raising=False)
+    monkeypatch.setattr(qa_v3, "drain_outbox", lambda *args: calls.append("drain"), raising=False)
+    monkeypatch.setattr(qa_v3, "materialize_worklist", lambda *args: calls.append("worklist") or [], raising=False)
+    monkeypatch.setattr(qa_v3, "invoke_adapter", lambda *args: pytest.fail("adapter invoked"), raising=False)
+    monkeypatch.setattr(qa_v3, "emit_result", lambda *args, **kwargs: calls.append(args[1]), raising=False)
+    assert qa_v3.run(args, client=object()) == 0
+    assert calls == ["sentinel", "drain", "worklist", "NOTHING_TO_DO"]
+
+
+def test_dry_run_never_mutates_or_delivers_outbox(monkeypatch):
+    context = _executor_context()
+    args = SimpleNamespace(
+        dataset="babybath", platform="shopee", country="ID", max_turns=500,
+        max_rows=1, kategori="", dry_run=True,
+    )
+    packet = _commit_packet(context)
+    deferred = _decision(
+        packet,
+        "defer",
+        confidence="unconfident",
+        evidence=[],
+        reason="image unavailable",
+    )
+    monkeypatch.setattr(qa_v3, "resolve_run_context", lambda args, client: context, raising=False)
+    monkeypatch.setattr(qa_v3, "verify_adapter_vision", lambda *args: None, raising=False)
+    monkeypatch.setattr(
+        qa_v3,
+        "materialize_worklist",
+        lambda *args: [{
+            "product_id": "p-1", "sku_name": "Acme Wash", "priority": 0,
+            "gmv_monthly": 12, "image_raw": None,
+        }],
+        raising=False,
+    )
+    monkeypatch.setattr(qa_v3, "retrieve_candidates", lambda *args: [{"id": "p-1", "candidates": []}], raising=False)
+    monkeypatch.setattr(qa_v3, "resolve_candidate_refs", lambda *args: {"p-1": {}}, raising=False)
+    monkeypatch.setattr(qa_v3, "resolve_prior_mappings", lambda *args: {}, raising=False)
+    monkeypatch.setattr(
+        qa_v3,
+        "prepare_images",
+        lambda *args: {"p-1": PreparedImage("p-1", None, "unavailable", None)},
+        raising=False,
+    )
+    monkeypatch.setattr(qa_v3, "invoke_adapter", lambda *args: {"decisions": [deferred]}, raising=False)
+    monkeypatch.setattr(qa_v3, "apply_chunk", lambda *args: pytest.fail("mutation invoked"), raising=False)
+    monkeypatch.setattr(qa_v3, "drain_outbox", lambda *args: pytest.fail("outbox delivery invoked"), raising=False)
+    signals = []
+    monkeypatch.setattr(qa_v3, "emit_result", lambda table, signal, message, **fields: signals.append(signal), raising=False)
+    assert qa_v3.run(args, client=object()) == 0
+    assert signals == ["BLOCKED"]
