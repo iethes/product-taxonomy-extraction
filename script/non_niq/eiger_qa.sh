@@ -364,6 +364,18 @@ STEP 2 -- For each product in the worklist, in order:
       left out of the column list entirely (NULL).
       This table is INSERT-ONLY -- never UPDATE or DELETE an existing row, even a wrong one; a
       correction is a new row with the same product_id and a newer timestamp.
+      2d.1. Mandatory durable insert log for every NEW Eiger QA taxonomy row: the QA-table INSERT
+      and its log INSERT MUST run in the SAME BigQuery transaction. The shared append-only log
+      table is \`${PROJECT}.magpie_reference.non_niq_taxonomy_insert_log\` with columns
+      (target_table STRING, created_at TIMESTAMP, row_json JSON). Set target_table to the exact
+      three-part target name \`${PROJECT}.${QA_TABLE}\`. row_json MUST be the JSON envelope
+      {"product_id":"<worklist product_id>","ecommerce_platform":"<worklist ecommerce_platform>",
+       "inserted_row":{...exact columns and values inserted into ${PROJECT}.${QA_TABLE}...}}.
+      Write one log row only when this transaction actually inserts a NEW QA taxonomy row; do not
+      log a filtered product, an unresolved product, or a zero-row/no-op write. If either the
+      QA-table INSERT or its log INSERT fails, the transaction must roll back both. Capture the
+      inserted row's timestamp once and use it consistently in the QA row and the log's created_at.
+      After COMMIT, verify both the exact QA row and its matching log row exist.
       Then, as an explicit, separate judgment (not folded into 2a-2c's reasoning), state how
       confident you are in the decision you just made for this product:
       - If this is the product's FIRST time being processed this session (no qa_confidence value

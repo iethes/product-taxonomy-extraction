@@ -338,6 +338,10 @@ grep -qF '"separator"' <<< "$prompt" || fail "Step A must describe the dict_patt
 grep -qi "sample ~10-20 existing rows" <<< "$prompt" || fail "Step A must instruct inferring the pattern by sampling existing dict rows when no config exists"
 grep -qi "skipping any source that's null/empty" <<< "$prompt" || fail "Step A must state that composition skips null/empty sources"
 grep -qF "distinguish required identity/category fields from genuinely optional" <<< "$prompt" || fail "Step B must distinguish required and optional dict attributes from live evidence"
+grep -qF "non_niq_taxonomy_insert_log" <<< "$prompt" || fail "prompt must require the shared taxonomy insert log"
+grep -qF "SAME BigQuery transaction" <<< "$prompt" || fail "prompt must require atomic dictionary/log writes"
+grep -qF '"inserted_row"' <<< "$prompt" || fail "prompt must define the inserted_row JSON envelope"
+grep -qF "zero-row conditional INSERT" <<< "$prompt" || fail "prompt must avoid logging no-op dictionary inserts"
 if grep -qi 'REPO_ROOT}/script/non_niq/dict_patterns/${dataset}' <<< "$prompt"; then
   fail "prompt must interpolate the real dataset name into the dict_patterns path, not leave a literal \${dataset} placeholder"
 fi

@@ -23,6 +23,9 @@ claude_prompt=$(build_qa_prompt mockplatform ID eiger.master_eiger_id eiger.filt
 [[ "$claude_prompt" == *'wrapper already ran one batch Meilisearch retrieval'* ]] || fail "Eiger prompt must consume wrapper-side retrieval"
 [[ "$claude_prompt" != *'non_niq_helper.py retrieve'* ]] || fail "Eiger prompt must not repeat wrapper-side retrieval"
 [[ "$claude_prompt" == *'eiger_mockplatform_ID_eiger_decisions.jsonl'* ]] || fail "Claude must write the raw-row decision ledger"
+[[ "$claude_prompt" == *'non_niq_taxonomy_insert_log'* ]] || fail "Eiger prompt must require the shared taxonomy insert log"
+[[ "$claude_prompt" == *'SAME BigQuery transaction'* ]] || fail "Eiger prompt must require atomic QA/log writes"
+[[ "$claude_prompt" == *'"inserted_row"'* ]] || fail "Eiger prompt must define the inserted_row JSON envelope"
 
 direct_result='{"status":"complete","rows_qa_confirmed":1,"rows_qa_unconfident":0,"rows_filtered":0,"rows_created_in_dict":1,"rows_unresolved":0,"findings":[],"blockers":[]}'
 [[ "$(extract_result_json "$direct_result")" == "$direct_result" ]] || fail "Codex direct JSON must parse"

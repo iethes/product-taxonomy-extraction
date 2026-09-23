@@ -53,6 +53,9 @@ grep -qF "wrapper already ran one batch Meilisearch retrieval" <<< "$prompt_clau
 if grep -q "non_niq_helper.py retrieve" <<< "$prompt_claude"; then
   fail "prompt must not repeat wrapper-side retrieval"
 fi
+echo "$prompt_claude" | grep -qF "non_niq_taxonomy_insert_log" || fail "susubayi prompt must require the shared taxonomy insert log"
+echo "$prompt_claude" | grep -qF "SAME BigQuery transaction" || fail "susubayi prompt must require atomic dictionary/log writes"
+echo "$prompt_claude" | grep -qF '"inserted_row"' || fail "susubayi prompt must define the inserted_row JSON envelope"
 echo "PASS: build_qa_prompt agent_meta_source"
 
 # --- extract_result_json: normalizes both Claude's envelope and Codex's bare result object ---
