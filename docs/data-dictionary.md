@@ -411,3 +411,22 @@ V3 inserts each event in the same BigQuery transaction as its QA, dictionary, an
 | `completed_at` | TIMESTAMP | Delivery completion time; NULL while pending. |
 
 Before planning new products, v3 recovers pending events scoped to the current dataset, platform, and country. A failed Meilisearch or Sheets delivery remains `pending`, records `last_error`, and makes the session `FAILED`; it never becomes `DONE` silently.
+
+## Reference Layer — `magpie_reference.non_niq_taxonomy_insert_log`
+
+> Granularity: one row per successful taxonomy target-table insert.
+> Built by: the four scripts in `script/non_niq/`.
+
+This permanent append-only table protects newly created Non-NIQ taxonomy rows from a
+one-way Google Sheet-to-BigQuery overwrite. It records both real `{dataset}_dict`
+dictionary rows and Eiger's fixed-taxonomy QA rows. It is recovery data, not a delivery
+outbox.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `target_table` | STRING | Full BigQuery table that received the inserted taxonomy row. |
+| `created_at` | TIMESTAMP | Time the target row and log row committed. |
+| `row_json` | JSON | `{"product_id":"...","ecommerce_platform":"...","inserted_row":{...}}`; `inserted_row` is the exact target-table row. |
+
+Target insert and log insert commit in the same BigQuery transaction. Existing
+dictionary matches, re-points, filters, and skipped retries do not create log rows.
