@@ -4,3 +4,4 @@ taxonomy_matcher_model.json
 .env
 keys/
 __pycache__/
+.worktrees/
