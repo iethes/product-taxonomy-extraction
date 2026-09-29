@@ -1,10 +1,10 @@
 {
   "_note": "menperfume (shopee/lazada/tokopedia/blibli ID) writes to the shared `cologne` dataset: cologne.cologne_dict / cologne.product_id_dict_qa / cologne.filter_cologne. cologne_dict columns are brand, sku_type_complete, user_category, keywords, keyword_typo, bundle_type, bundle_quantity -- there is NO _meta column on the dict table, and sku_type_complete is a BASE column (typed directly, brand-first: '<brand> <sub-brand/variant> <concentration> <size>'), not composed from sub_brand/variant/packsize columns like babycologne.",
   "keywords": {
-    "sources": ["brand", "sku_type_complete"],
-    "separator": " "
+    "sources": ["keyword_typo", "brand", "sku_type_complete"],
+    "separator": " ",
+    "note": "Corrected 2026-09-29: prior version omitted keyword_typo from sources even though it's documented as prepended below. keyword_typo is '' (never NULL) on the vast majority of rows, and the resulting leading space is literal (NOT trimmed) -- verified live: 7545/8606 rows (87.7%); most residual mismatches are legacy rows where keywords omits the brand token."
   },
-  "_keyword_typo": "Optional. When non-empty it is prepended: '<keyword_typo> <brand> <sku_type_complete>'. Left as '' (never NULL) on the vast majority of rows.",
   "_sku_type_complete": {
     "shape": "<brand> <line/variant> [<concentration>] <size>",
     "concentration_vocab": ["EDP", "EDT", "EDC", "Extrait De Parfum", "Body Mist", "Body Spray", "Parfum", "(omitted)"],

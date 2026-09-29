@@ -4,7 +4,8 @@
     "separator": " "
   },
   "keywords": {
-    "sources": ["type"],
-    "separator": ""
+    "sources": ["keyword_typo", "type"],
+    "separator": " ",
+    "note": "Corrected 2026-09-29: prior version omitted keyword_typo entirely. keyword_typo is empty on the vast majority of rows, and the resulting leading space before `type` is literal (NOT trimmed) -- verified live: 608/633 rows (96.1%)."
   }
 }

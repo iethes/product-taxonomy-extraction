@@ -1,10 +1,12 @@
 {
   "sku_type_complete": {
-    "sources": ["type", "single_split", "max_btu_cooling"],
-    "separator": " "
+    "sources": ["brand", "model"],
+    "separator": " ",
+    "note": "Rewritten 2026-09-29: the prior version (type/single_split/max_btu_cooling) targeted the legacy ac.ac_dict table and doesn't apply here -- ac.ac_dict_new has no `type` or `single_split` column at all. Verified live: sku_type_complete = brand + ' ' + model on 3467/3468 rows (e.g. brand='Acerpure', model='Chill WAC1' -> 'Acerpure Chill WAC1')."
   },
   "keywords": {
-    "sources": ["keyword_typo", "type", "model_adjust"],
-    "separator": " "
+    "sources": ["keyword_typo", "brand", "model"],
+    "separator": " ",
+    "note": "Verified live: 3289/3468 rows (94.8%) match keyword_typo + ' ' + brand + ' ' + model, with the leading space literal (not trimmed) when keyword_typo is empty. Remaining rows are legacy drift where keywords omits the brand (just ' ' + model) -- resolve an existing exact row first before minting a new one that diverges from this majority convention."
   }
 }

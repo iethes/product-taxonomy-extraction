@@ -1,7 +1,8 @@
 {
   "keywords": {
     "sources": ["sku_type", "keywords_typo"],
-    "separator": " "
+    "separator": " ",
+    "skip_empty_sources": true
   },
-  "notes": "Inferred from sampled telonoil_dict sibling rows on 2026-09-18. sku_type is a curated identity rather than a consistently derivable concatenation: many rows use sub_brand + 'Telon' + packsize while some legacy My Baby rows omit the literal Telon. Therefore resolve an existing exact sku_type first; for a genuinely new identity, use the image-supported curated name. keywords is sku_type followed by keywords_typo when non-empty."
+  "notes": "Inferred from sampled telonoil_dict sibling rows on 2026-09-18. sku_type is a curated identity rather than a consistently derivable concatenation: many rows use sub_brand + 'Telon' + packsize while some legacy My Baby rows omit the literal Telon. Therefore resolve an existing exact sku_type first; for a genuinely new identity, use the image-supported curated name. keywords is sku_type followed by keywords_typo when non-empty; corrected 2026-09-29 to drop the empty keywords_typo entirely (not join it with a trailing space) -- verified live: 335/345 rows (97.1%)."
 }

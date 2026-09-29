@@ -5,6 +5,8 @@
   },
   "keywords": {
     "sources": ["sku_type_complete", "keyword_typo"],
-    "separator": " "
+    "separator": " ",
+    "skip_empty_sources": true,
+    "note": "Corrected 2026-09-29: keyword_typo is empty on the vast majority of rows and must be dropped, not joined with a trailing space -- keywords equals sku_type_complete verbatim in that case. Verified live: 9984/9990 rows (99.9%)."
   }
 }
