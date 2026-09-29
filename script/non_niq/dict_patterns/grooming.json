@@ -1,0 +1,10 @@
+{
+  "keywords": {
+    "sources": ["brand", "model", "device_type"],
+    "separator": " "
+  },
+  "sku_type_complete": {
+    "sources": ["brand", "model", "device_type", "user_target", "rpm"],
+    "separator": " "
+  }
+}

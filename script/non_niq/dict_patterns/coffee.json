@@ -1,0 +1,21 @@
+{
+  "sku_type": {
+    "sources": ["brand", "sub_brand", "weight", "flavor", "pack_type"],
+    "separator": " ",
+    "format": "{brand} {sub_brand} {weight} {flavor} {pack_type:g} pcs",
+    "notes": "For new PH coffee rows, sub_brand is the specific product line without repeating brand; pack_type and banded both hold the numeric listing pack count. Preserve explicit Original/Multi Variant values when supported. Ground sub_brand, weight, flavor, and the category levels from the title, image, Shopee attributes, and closest same-form sibling rows; do not copy a merely token-similar product. Some legacy rows use a different layout and leave sub_brand/pack_type empty, so legacy NULLs are not a requirement to fill or a blocker."
+  },
+  "keywords": {
+    "sources": ["keywords_typo", "sku_type"],
+    "separator": " ",
+    "format": "{keywords_typo or ''} {sku_type}",
+    "notes": "keywords equals sku_type when keywords_typo is empty; otherwise prefix the grounded typo/alias. Do not invent a typo."
+  },
+  "non_generated_columns": {
+    "cat_lev_1": "Coffee for every in-scope row.",
+    "cat_lev_2": "Ground from observed vocabulary and the product form; common values are Beans, Powder, Capsules, RTD, and Other.",
+    "cat_lev_3": "Ground from observed vocabulary and a same-form sibling, such as Roasted Beans, Instant Pure, Instant 2 in 1, Instant 3 in 1, Capsule, Ready to Drink, or Other.",
+    "banded": "Numeric pack count; for new rows keep it equal to pack_type.",
+    "pack_type": "Numeric pack count used by the current new-row format. Legacy rows may be NULL."
+  }
+}

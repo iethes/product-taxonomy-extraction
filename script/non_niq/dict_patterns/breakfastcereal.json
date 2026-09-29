@@ -1,0 +1,15 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "flavour", "kemasan"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["keyword_typo", "sub_brand", "flavour", "kemasan"],
+    "separator": " "
+  },
+  "kemasan": {
+    "sources": ["gramasi", "units"],
+    "separator": " ",
+    "note": "append ' x {bundling} pcs' when bundle == 'Yes'"
+  }
+}

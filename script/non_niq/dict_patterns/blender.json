@@ -1,0 +1,22 @@
+{
+  "model_adjust": {
+    "sources": ["model"],
+    "separator": "",
+    "note": "model with '-' and '/' replaced by ' ' (regex substitution, not a simple concat), e.g. model='SCF862/02' -> model_adjust='SCF862 02'"
+  },
+  "type": {
+    "sources": ["brand", "model"],
+    "separator": " ",
+    "note": "e.g. 'Philips HR1559/50'"
+  },
+  "sku_type_complete": {
+    "sources": ["brand", "category", "model"],
+    "separator": " ",
+    "note": "Verified live 2026-09-24: 'Philips Mixer HR1559/50', 'Okayama Blender OK-335', 'Cosmos Hand Mixer CM-1679'. category is a dict column (Mixer, Blender, Hand Mixer, Chopper, Blender & Chopper, Food Processor...). Region suffixes (/10 /40 /50) are separate identities when siblings already have them."
+  },
+  "keywords": {
+    "sources": ["keyword_typo", "brand", "model", "model_adjust"],
+    "separator": " ",
+    "note": "keyword_typo prefixed only when non-empty; skip cleanly (no leading space) when keyword_typo is ''/NULL. Legacy rows show a leading space artifact from a null keyword_typo still consuming its separator -- new rows should not reproduce that."
+  }
+}

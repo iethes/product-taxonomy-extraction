@@ -1,0 +1,26 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "flavor", "pack_size"],
+    "separator": " ",
+    "notes": "flavor is often the Indonesian on-pack term (e.g. 'Ayam' not 'Chicken') even though the flavor column itself may be stored in English/short form -- match sibling rows' phrasing for this brand. Skip any empty/null source instead of leaving a double space or dangling separator. Verified against 1065 existing rows: ~96% exact match."
+  },
+  "keywords": {
+    "sources": ["sku_type_complete"],
+    "separator": "",
+    "notes": "Baseline is an exact copy of sku_type_complete. Only diverges when a curator manually enriches it with extra synonyms -- do not invent additions, just copy sku_type_complete unless you have a specific synonym to add."
+  },
+  "sku_type": {
+    "sources": ["sub_brand", "pack_size"],
+    "separator": " ",
+    "notes": "Same as sku_type_complete but WITHOUT the flavor token. Verified: ~99% exact match (1055/1065)."
+  },
+  "pack_size": {
+    "sources": ["gramasi", "satuan"],
+    "separator": " ",
+    "notes": "Base case is '{gramasi} {satuan}' e.g. '40 gr'. Multipacks (Alamii and similar) instead use '{gramasi} gr x {count}[ pcs]' e.g. '30 gr x 3 pcs' or '20 gr X 3' -- when the product is a multipack, match the exact sibling-row format for that brand rather than the base formula. ~32% of existing rows are multipacks using this exception, so check sibling rows for the brand before assuming the base formula."
+  },
+  "sub_brand": {
+    "sources": null,
+    "notes": "NOT a simple formula of brand+varian (only ~56% match that naive composition). It is an authored free-text product-line name, usually but not always brand-prefixed (e.g. 'Abe Food Popcorn for Kids', 'Barefood Bumboo Abon'). Ground it on sibling rows for the same brand rather than deriving it mechanically."
+  }
+}

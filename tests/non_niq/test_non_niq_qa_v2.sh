@@ -15,6 +15,62 @@ require_harness "not_a_real_harness" 2>/dev/null && fail "require_harness must r
 require_harness "codex" || fail "require_harness must accept 'codex' when its CLI is on PATH"
 echo "PASS: require_harness"
 
+# A failed bubblewrap setup must stop the run before any worklist or DML, while preserving
+# Codex's automatic approval policy.
+preflight_dir=$(mktemp -d)
+cat > "$preflight_dir/bwrap" <<'BWRAP'
+#!/usr/bin/env bash
+echo 'bwrap: setting up uid map: Permission denied' >&2
+exit 1
+BWRAP
+chmod +x "$preflight_dir/bwrap"
+PATH="$preflight_dir:$PATH" codex_sandbox_preflight >/dev/null 2>&1 && fail "broken bubblewrap must fail fast"
+cat > "$preflight_dir/bwrap" <<'BWRAP'
+#!/usr/bin/env bash
+exit 0
+BWRAP
+PATH="$preflight_dir:$PATH" codex_sandbox_preflight || fail "working bubblewrap must pass preflight"
+rm -rf "$preflight_dir"
+echo "PASS: codex_sandbox_preflight"
+
+# --- Codex capacity retry gate: retry only a provably side-effect-free startup failure ---
+capacity_test_dir=$(mktemp -d)
+capacity_stdout="$capacity_test_dir/stdout.jsonl"
+capacity_final="$capacity_test_dir/final.json"
+cat > "$capacity_stdout" <<'JSONL'
+{"type":"thread.started"}
+{"type":"turn.started"}
+{"type":"error","message":"Selected model is at capacity. Please try a different model."}
+{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}
+JSONL
+: > "$capacity_final"
+is_codex_startup_capacity_failure "$capacity_stdout" "$capacity_final" || fail "capacity-only Codex startup failure must be retryable"
+echo '{"type":"item.completed","item":{"type":"command_execution"}}' >> "$capacity_stdout"
+is_codex_startup_capacity_failure "$capacity_stdout" "$capacity_final" && fail "a Codex transcript with possible tool activity must never be retried"
+sed -i '$d' "$capacity_stdout"
+echo '{"status":"complete"}' > "$capacity_final"
+is_codex_startup_capacity_failure "$capacity_stdout" "$capacity_final" && fail "a nonempty Codex final result must never be retried"
+rm -rf "$capacity_test_dir"
+echo "PASS: is_codex_startup_capacity_failure"
+
+# --- Codex receives a private, writable clone of the host gcloud + ADC runtime ---
+gcloud_fixture=$(mktemp -d)
+gcloud_runtime=$(mktemp -d)
+mkdir -p "$gcloud_fixture/configurations"
+touch "$gcloud_fixture/credentials.db" "$gcloud_fixture/access_tokens.db" \
+  "$gcloud_fixture/configurations/config_default" "$gcloud_fixture/application_default_credentials.json"
+mapfile -t gcloud_runtime_paths < <(
+  prepare_codex_gcloud_runtime "$gcloud_runtime" "$gcloud_fixture" \
+    "$gcloud_fixture/application_default_credentials.json"
+)
+[[ "${gcloud_runtime_paths[0]}" == "$gcloud_runtime/gcloud" ]] || fail "Codex runtime must use a cloned writable CLOUDSDK_CONFIG"
+[[ "${gcloud_runtime_paths[1]}" == "$gcloud_runtime/application_default_credentials.json" ]] || fail "Codex runtime must expose a copied ADC file"
+[[ -f "$gcloud_runtime/gcloud/credentials.db" ]] || fail "Codex runtime must copy gcloud credentials"
+[[ -f "$gcloud_runtime/application_default_credentials.json" ]] || fail "Codex runtime must copy ADC credentials"
+[[ "$(stat -c '%a' "$gcloud_runtime/application_default_credentials.json")" == "600" ]] || fail "copied ADC credentials must be owner-readable only"
+rm -rf -- "$gcloud_fixture" "$gcloud_runtime"
+echo "PASS: prepare_codex_gcloud_runtime"
+
 # --- platform_match_clause (Tokopedia's own first-party 'Tokopedia | Shop' channel has NO
 # separate config Sheet row -- 'tokopedia' as a CLI arg must match BOTH BigQuery platform values) ---
 [[ "$(platform_match_clause "Tokopedia")" == "IN ('Tokopedia', 'Tokopedia | Shop')" ]] || fail "platform_match_clause must expand Tokopedia to match both 'Tokopedia' and 'Tokopedia | Shop'"
@@ -36,11 +92,9 @@ echo "PASS: default_month_query"
 
 # --- worklist_query (stakeholder-aligned current-title coverage) ---
 q=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "shopee")
-echo "$q" | grep -qF "cumulative_gmv_share" || fail "worklist_query (v2) must calculate stakeholder cumulative GMV share"
-echo "$q" | grep -qF "r.cumulative_gmv_share <= 0.9" || fail "worklist_query (v2) must scope normal coverage to the top 90% GMV"
-echo "$q" | grep -qF "PARTITION BY sc.country, sc.category, sc.ecommerce_platform, sc.month" || fail "worklist_query (v2) must calculate Tier 1 at the stakeholder query's partition grain"
-if echo "$q" | grep -qF "s.product_tier = 'Tier 1'"; then
-  fail "worklist_query (v2) must not trust stored product_tier for the normal stakeholder scope"
+echo "$q" | grep -qF "s.product_tier IN ('Tier 1')" || fail "worklist_query (v2) must use the source table's precomputed Tier 1 population"
+if echo "$q" | grep -qF "cumulative_gmv_share\|SUM(sc.gmv_monthly) OVER"; then
+  fail "worklist_query (v2) must not recalculate GMV tiers"
 fi
 echo "$q" | grep -q "cookiesbiscuit.master_cookiesbiscuit_id" || fail "worklist_query (v2) should reference the source table"
 echo "$q" | grep -q "prod_id" || fail "worklist_query (v2) should use the resolved QA primary-key column"
@@ -49,9 +103,13 @@ if echo "$q" | grep -q "ecommerce_platform = 'shopee'"; then
   fail "worklist_query (v2) must never filter on the raw lowercase platform"
 fi
 echo "$q" | grep -qF "REPLACE(s.image, '\"', '')" || fail "worklist_query (v2) must strip embedded double-quotes from image, same fix as v1"
+echo "$q" | grep -qF "sc.ecommerce_platform, sc.merchant_id" || fail "worklist_query (v2) must include merchant_id for real filter-table inserts"
+echo "$q" | grep -qF "s.ecommerce_platform," || fail "worklist_query must retain the raw source platform"
+echo "$q" | grep -qF "WHERE ecommerce_platform = 'Shopee'" || fail "worklist_query must scope QA history to the raw platform"
 echo "$q" | grep -q "qa_title_state AS" || fail "worklist_query (v2) must build an exact-title QA state"
 echo "$q" | grep -qF "REGEXP_REPLACE(TRIM(sku_name), r'\\s+', ' ') AS normalized_sku_name" || fail "worklist_query (v2) must normalize QA titles exactly like the stakeholder query"
 echo "$q" | grep -qF "qts.normalized_sku_name = REGEXP_REPLACE(TRIM(sc.sku_name), r'\\s+', ' ')" || fail "worklist_query (v2) must match QA by product_id plus whitespace-normalized current title"
+echo "$q" | grep -qF "qts.ecommerce_platform = sc.ecommerce_platform" || fail "QA title matching must keep platforms separate"
 echo "$q" | grep -qF "WHEN qts.product_id IS NULL THEN 0" || fail "priority 0 must select current titles with no matching QA row"
 if echo "$q" | grep -q "sc.qa_status"; then
   fail "worklist_query (v2) must not use the source qa_status as its normal coverage gate"
@@ -61,12 +119,12 @@ if echo "$q" | grep -q "SAFE.JSON_VALUE"; then
   fail "worklist_query (v2) must never call SAFE.JSON_VALUE -- not valid BigQuery syntax"
 fi
 echo "$q" | grep -q "ORDER BY priority ASC, gmv_monthly DESC" || fail "worklist_query (v2) must order title mismatches before unconfident retries, then by GMV"
-echo "$q" | grep -q "LIMIT 300" || fail "worklist_query (v2) must default row_limit to 300"
+echo "$q" | grep -q "LIMIT 100" || fail "worklist_query (v2) must default row_limit to 100"
 grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed exactly once"
 # product_id_dict_qa is INSERT-ONLY -- qa_state must aggregate to order-independent flags per
 # product for the retained pending-unconfident retry. A raw SELECT would fan out the LEFT JOIN;
 # a latest-row sort can silently un-terminate products because _meta timestamps are unreliable.
-echo "$q" | grep -qF "GROUP BY prod_id" || fail "qa_state must GROUP BY the resolved qa_pk_col, not select raw un-deduped rows"
+echo "$q" | grep -qF "GROUP BY 1, 2" || fail "platform-scoped qa_state must GROUP BY product and platform"
 echo "$q" | grep -qF "LOGICAL_OR(" || fail "qa_state must aggregate qa_confidence/human_review across a product's WHOLE history"
 echo "$q" | grep -qF "has_unconfident_pending" || fail "qa_state must track has_unconfident_pending as an aggregate flag"
 echo "$q" | grep -qF "has_confident" || fail "qa_state must track has_confident as an aggregate flag"
@@ -80,9 +138,28 @@ if echo "$q" | grep -qiE "ROW_NUMBER\(\).*PARTITION BY.*qa_table|ORDER BY.*times
 fi
 echo "PASS: worklist_query"
 
+# Regional QA tables call their platform column `ecommerce`. The live schema resolver passes that
+# name as worklist_query's final argument; both QA state CTEs must use it and preserve it in joins.
+q_regional=$(worklist_query "lighting.master_lighting_th" "lighting.product_id_dict_qa_regional" "product_id" "2026-08" "lazada" "" "300" "lighting.filter_lighting_id" "" "" "" "ecommerce")
+echo "$q_regional" | grep -qF "WHERE ecommerce = 'Lazada'" || fail "worklist_query must use the resolved regional QA platform column"
+if echo "$q_regional" | grep -qF "WHERE ecommerce_platform = 'Lazada'"; then
+  fail "regional worklist query must not reference missing QA ecommerce_platform"
+fi
+echo "PASS: worklist_query regional QA platform column"
+
+# --- worklist_query lighting/ID brand scope ---
+q_lighting_id=$(worklist_query "lighting.master_lighting_id" "lighting.product_id_dict_qa_regional" "product_id" "2026-08" "shopee" "" "300" "lighting.filter_lighting_id" "" "" "" "ecommerce" "lighting" "ID")
+echo "$q_lighting_id" | grep -qF "AND s.brand IN ('Cahaya', 'Surya')" || fail "lighting/ID worklists must be limited to Cahaya and Surya"
+q_lighting_th=$(worklist_query "lighting.master_lighting_th" "lighting.product_id_dict_qa_regional" "product_id" "2026-08" "shopee" "" "300" "lighting.filter_lighting_id" "" "" "" "ecommerce" "lighting" "TH")
+if echo "$q_lighting_th" | grep -qF "AND s.brand IN ('Cahaya', 'Surya')"; then
+  fail "lighting brand restriction must not apply outside Indonesia"
+fi
+echo "PASS: worklist_query lighting/ID brand scope"
+
 # --- worklist_query tokopedia platform expansion ---
 q_tokopedia=$(worklist_query "cookiesbiscuit.master_cookiesbiscuit_id" "cookiesbiscuitlemonilo.product_id_dict_qa" "prod_id" "2026-07" "tokopedia")
 echo "$q_tokopedia" | grep -qF "ecommerce_platform IN ('Tokopedia', 'Tokopedia | Shop')" || fail "worklist_query (v2) must scope the tokopedia worklist to BOTH platform values, not just plain 'Tokopedia'"
+echo "$q_tokopedia" | grep -qF "s.url AS product_url" || fail "Tokopedia worklists must retain a product URL for the missing-image fallback"
 if echo "$q_tokopedia" | grep -qF "ecommerce_platform = 'Tokopedia'"; then
   fail "worklist_query (v2) must not use a plain equality check for tokopedia -- it would silently exclude 'Tokopedia | Shop' rows"
 fi
@@ -109,15 +186,16 @@ import sys
 db = sqlite3.connect(":memory:")
 db.create_function("FORMAT_DATE", 2, lambda fmt, date: date[:7])
 db.executescript("""
-CREATE TABLE source (product_id TEXT, sku_name TEXT, image TEXT, ecommerce_platform TEXT,
-                     country TEXT, category TEXT, month TEXT, gmv_monthly REAL, merchant_id TEXT);
+CREATE TABLE source (product_id TEXT, sku_name TEXT, image TEXT, url TEXT, ecommerce_platform TEXT,
+                     country TEXT, category TEXT, month TEXT, gmv_monthly REAL, merchant_id TEXT,
+                     product_tier TEXT);
 CREATE TABLE filter (product_id TEXT);
 INSERT INTO source VALUES
- ('top', 'top', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 80, 'ordinary'),
- ('tail', 'tail', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 11, 'ordinary'),
- ('client-low', 'low', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 9, 'client'),
- ('competitor-zero', 'zero', '', 'Tokopedia | Shop', 'ID', 'Cookies Biscuit', '2026-07-01', 0, 'competitor'),
- ('client-filtered', 'filtered', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 500, 'client');
+ ('top', 'top', '', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 80, 'ordinary', 'Tier 1'),
+ ('tail', 'tail', '', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 11, 'ordinary', 'Tier 3'),
+ ('client-low', 'low', '', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 9, 'client', 'Tier 3'),
+ ('competitor-zero', 'zero', '', '', 'Tokopedia | Shop', 'ID', 'Cookies Biscuit', '2026-07-01', 0, 'competitor', 'Tier 3'),
+ ('client-filtered', 'filtered', '', '', 'Tokopedia', 'ID', 'Cookies Biscuit', '2026-07-01', 500, 'client', 'Tier 1');
 INSERT INTO filter VALUES ('client-filtered');
 """)
 def scope_ids(query):
@@ -189,63 +267,95 @@ prompt=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.master_c
   "prod_id" "sku_type_complete" "keywords_typo" "cookiesbiscuit_taxonomy_qa" "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" \
   "42" "cookiesbiscuitlemonilo.product_id_dict" "cookiesbiscuit_shopee_ID")
 
-echo "$prompt" | grep -qF "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" || fail "STEP 0 must reference the materialized worklist file path"
-echo "$prompt" | grep -qF "exactly 42 rows" || fail "STEP 0 must state the exact worklist row count"
-echo "$prompt" | grep -qi "top 90% cumulative GMV" || fail "STEP 0 must describe the post-filter Tier 1 scope"
-echo "$prompt" | grep -qi "whitespace-normalized sku_name" || fail "STEP 0 must explain the current-title QA matching rule"
-if echo "$prompt" | grep -qi "precomputed product_tier"; then
-  fail "prompt (v2) must not describe the retired stored-tier scope"
+grep -qF "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" <<< "$prompt" || fail "STEP 0 must reference the materialized worklist file path"
+grep -qF "exactly 42 rows" <<< "$prompt" || fail "STEP 0 must state the exact worklist row count"
+grep -qi "Tier 1" <<< "$prompt" || fail "STEP 0 must describe the precomputed source-tier scope"
+grep -qi "whitespace-normalized sku_name" <<< "$prompt" || fail "STEP 0 must explain the current-title QA matching rule"
+grep -qi "precomputed Tier 1 product_tier" <<< "$prompt" || fail "prompt must describe the source table's stored tier"
+grep -q "ecommerce_platform, merchant_id" <<< "$prompt" || fail "STEP 0 must carry merchant_id so filter inserts can preserve it"
+grep -q "item_description, product_attributes_attrs, listing_changed" <<< "$prompt" || fail "STEP 0 must list enrichment and reverify fields in the worklist row shape"
+grep -q "priority\. It is already scoped" <<< "$prompt" || fail "STEP 0 must list priority in the worklist row shape"
+grep -q "product_attributes_attrs" <<< "$prompt" || fail "STEP 2a must mention product_attributes_attrs as additional signal alongside item_description"
+grep -qi "Shopee-only signal and NULL on other platforms" <<< "$prompt" || fail "STEP 2a must note item_description/product_attributes_attrs are Shopee-only and NULL elsewhere"
+if grep -q "non_niq_helper.py retrieve" <<< "$prompt"; then
+  fail "prompt must not repeat wrapper-side Meilisearch retrieval"
 fi
-echo "$prompt" | grep -q "item_description, product_attributes_attrs, listing_changed" || fail "STEP 0 must list enrichment and reverify fields in the worklist row shape"
-echo "$prompt" | grep -q "priority\. It is already scoped" || fail "STEP 0 must list priority in the worklist row shape"
-echo "$prompt" | grep -q "product_attributes_attrs" || fail "STEP 2a must mention product_attributes_attrs as additional signal alongside item_description"
-echo "$prompt" | grep -qi "Shopee-only signal and NULL on other platforms" || fail "STEP 2a must note item_description/product_attributes_attrs are Shopee-only and NULL elsewhere"
-echo "$prompt" | grep -q "non_niq_helper.py retrieve" || fail "prompt must instruct batch retrieval via non_niq_helper.py's retrieve subcommand"
-echo "$prompt" | grep -q "sku_type_complete" || fail "prompt must reference the resolved dict identity column"
-echo "$prompt" | grep -q "keywords_typo" || fail "prompt must reference the resolved dict typo column"
-echo "$prompt" | grep -q "prod_id" || fail "prompt must reference the resolved QA primary-key column"
-echo "$prompt" | grep -q "never the streaming API" || fail "prompt must repeat the DML-only / no-streaming-API constraint"
-echo "$prompt" | grep -q "qa_confidence" || fail "prompt must instruct writing the qa_confidence _meta field"
-echo "$prompt" | grep -q "human_review" || fail "prompt must instruct writing the human_review _meta field"
-echo "$prompt" | grep -q "Mapping table" || fail "prompt must state the mapping table is never modified"
-if echo "$prompt" | grep -q "notify Discord\|notify-discord"; then
+grep -qF "wrapper already ran one batch Meilisearch retrieval" <<< "$prompt" || fail "prompt must consume the wrapper's candidate artifact"
+grep -q "sku_type_complete" <<< "$prompt" || fail "prompt must reference the resolved dict identity column"
+grep -q "keywords_typo" <<< "$prompt" || fail "prompt must reference the resolved dict typo column"
+grep -q "prod_id" <<< "$prompt" || fail "prompt must reference the resolved QA primary-key column"
+grep -q "never the streaming API" <<< "$prompt" || fail "prompt must repeat the DML-only / no-streaming-API constraint"
+grep -q "qa_confidence" <<< "$prompt" || fail "prompt must instruct writing the qa_confidence _meta field"
+grep -q "human_review" <<< "$prompt" || fail "prompt must instruct writing the human_review _meta field"
+grep -q "Determine one honest disposition for every worklist row" <<< "$prompt" || fail "prompt must force an explicit result for each product"
+grep -q "If automatic approval review rejects a write" <<< "$prompt" || fail "prompt must handle a reviewer rejection without repackaging the same payload"
+grep -q "chunks of at most 10 products" <<< "$prompt" || fail "prompt must cap each reviewed/write chunk at 10 products"
+grep -qF 'v2_decisions.jsonl' <<< "$prompt" || fail "prompt must require a visible per-product ledger before DML"
+grep -qF "that chunk's ledger lines in tool output BEFORE DML" <<< "$prompt" || fail "automatic reviewer must see the evidence before DML"
+grep -q "every DML statement may affect at most 10" <<< "$prompt" || fail "prompt must prohibit whole-worklist bulk DML"
+grep -q "never generate the ledger or identity selection by token rules" <<< "$prompt" || fail "prompt must reject heuristic taxonomy creation"
+grep -q "make NO QA/dict/filter write" <<< "$prompt" || fail "ambiguous identities must stay unresolved rather than be written"
+flat_prompt=$(echo "$prompt" | tr '\n' ' ' | tr -s ' ')
+echo "$flat_prompt" | grep -q "leave an optional attribute NULL" || fail "prompt must permit evidence-supported NULLs in optional dict columns"
+if grep -q "Every column on the new row must be non-null" <<< "$prompt"; then
+  fail "prompt must not require values for optional dictionary columns"
+fi
+grep -q "Both tables intentionally name their identity column sku_type_complete" <<< "$prompt" || fail "prompt must explain when QA and dict identity columns share the same name"
+if grep -q "Never write sku_type_complete to the QA table" <<< "$prompt"; then
+  fail "prompt must not prohibit the QA table's required sku_type_complete column when the dict uses the same name"
+fi
+grep -q "Mapping table" <<< "$prompt" || fail "prompt must state the mapping table is never modified"
+if grep -q "notify Discord\|notify-discord" <<< "$prompt"; then
   fail "prompt must not reference Discord notification"
 fi
 # _meta must always be a JSON string ({"source":"claude_code","timestamp":"..."}), never a bare
 # string like "claude_code" -- SAFE.PARSE_JSON on a bare string returns NULL, silently losing
 # source/timestamp on every future read of that row.
-echo "$prompt" | grep -qF '{"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}' || fail "prompt must define the baseline _meta JSON format with source+timestamp"
-echo "$prompt" | grep -qF '2026-08-16T19:19:06Z' || fail "prompt must give a concrete ISO 8601 UTC example of the _meta timestamp format"
-if echo "$prompt" | grep -qF "_meta='claude_code'"; then
+grep -qF '{"source":"claude_code","timestamp":"<now, ISO 8601 UTC>"}' <<< "$prompt" || fail "prompt must define the baseline _meta JSON format with source+timestamp"
+grep -qF '2026-08-16T19:19:06Z' <<< "$prompt" || fail "prompt must give a concrete ISO 8601 UTC example of the _meta timestamp format"
+if grep -qF "_meta='claude_code'" <<< "$prompt"; then
   fail "prompt must never instruct stamping _meta as the bare string 'claude_code' -- that is not valid JSON"
 fi
-echo "$prompt" | grep -qF "NOT valid JSON" || fail "prompt must explicitly warn that a bare string _meta value is not valid JSON"
+grep -qF "NOT valid JSON" <<< "$prompt" || fail "prompt must explicitly warn that a bare string _meta value is not valid JSON"
 # qa_status writing is owned by a separate external QA-labelling update process now -- this
 # harness must never instruct writing to it.
 if grep -qi "qa_status = 'Reviewed'\|run the qa_status UPDATE\|SET qa_status" <<< "$prompt"; then
   fail "prompt must never instruct writing to qa_status -- that's owned by an external process now"
 fi
-echo "$prompt" | grep -qF "Never write to \`qa_status\`" || fail "prompt's Hard rules must explicitly state qa_status is never written by this harness"
+grep -qF "Never write to \`qa_status\`" <<< "$prompt" || fail "prompt's Hard rules must explicitly state qa_status is never written by this harness"
+grep -qF "either \`ecommerce\` or \`ecommerce_platform\`" <<< "$prompt" || fail "filter writes must accept both live Non-NIQ platform-column variants"
+grep -qF "missing alternative platform" <<< "$prompt" || fail "a missing alternate filter platform column must never block a run"
+grep -qF "live table schema is" <<< "$prompt" || fail "prompt must declare the live filter schema authoritative"
+grep -qF "supersedes any fixed filter schema" <<< "$prompt" || fail "prompt must supersede stale fixed-schema design text"
+if grep -qF "write exactly {ecommerce, product_id, sku_name, merchant_id, _meta}" <<< "$prompt"; then fail "prompt must never restore the UHT-only filter contract"; fi
+if grep -qF "There is no \`ecommerce_platform\` column" <<< "$prompt"; then fail "prompt must never prohibit a live ecommerce_platform filter column"; fi
+grep -qF "are distinct channels; do not collapse either value" <<< "$prompt" || fail "prompt must preserve separate Tokopedia channel values in writes"
 
 # --- dict-column generation patterns (self-bootstrapping per-category config) ---
-echo "$prompt" | grep -qF "script/non_niq/dict_patterns/cookiesbiscuit.json" || fail "Step A must reference this dataset's dict_patterns config path"
-echo "$prompt" | grep -qF '"sources"' || fail "Step A must describe the dict_patterns JSON schema's sources key"
-echo "$prompt" | grep -qF '"separator"' || fail "Step A must describe the dict_patterns JSON schema's separator key"
-echo "$prompt" | grep -qi "sample ~10-20 existing rows" || fail "Step A must instruct inferring the pattern by sampling existing dict rows when no config exists"
-echo "$prompt" | grep -qi "skipping any source that's null/empty" || fail "Step A must state that composition skips null/empty sources"
-echo "$prompt" | grep -qF "non-null EXCEPT keywords_typo" || fail "Step B must state the universal NOT NULL rule naming the resolved typo column"
-if echo "$prompt" | grep -qi 'REPO_ROOT}/script/non_niq/dict_patterns/${dataset}'; then
+grep -qF "script/non_niq/dict_patterns/cookiesbiscuit.json" <<< "$prompt" || fail "Step A must reference this dataset's dict_patterns config path"
+grep -qF '"sources"' <<< "$prompt" || fail "Step A must describe the dict_patterns JSON schema's sources key"
+grep -qF '"separator"' <<< "$prompt" || fail "Step A must describe the dict_patterns JSON schema's separator key"
+grep -qi "sample ~10-20 existing rows" <<< "$prompt" || fail "Step A must instruct inferring the pattern by sampling existing dict rows when no config exists"
+grep -qi "skipping any source that's null/empty" <<< "$prompt" || fail "Step A must state that composition skips null/empty sources"
+grep -qF "distinguish required identity/category fields from genuinely optional" <<< "$prompt" || fail "Step B must distinguish required and optional dict attributes from live evidence"
+grep -qF "non_niq_taxonomy_insert_log" <<< "$prompt" || fail "prompt must require the shared taxonomy insert log"
+grep -qF "SAME BigQuery transaction" <<< "$prompt" || fail "prompt must require atomic dictionary/log writes"
+grep -qF '"inserted_row"' <<< "$prompt" || fail "prompt must define the inserted_row JSON envelope"
+grep -qF "zero-row conditional INSERT" <<< "$prompt" || fail "prompt must avoid logging no-op dictionary inserts"
+if grep -qi 'REPO_ROOT}/script/non_niq/dict_patterns/${dataset}' <<< "$prompt"; then
   fail "prompt must interpolate the real dataset name into the dict_patterns path, not leave a literal \${dataset} placeholder"
 fi
 echo "PASS: dict-column generation patterns"
 
 # --- STEP 3: batched Meilisearch write-back for newly-minted taxonomy entries ---
-echo "$prompt" | grep -qF "STEP 3 -- Meilisearch write-back" || fail "prompt must include STEP 3 for Meilisearch write-back"
-echo "$prompt" | grep -qF "non_niq_helper.py index" || fail "STEP 3 must invoke non_niq_helper.py's index subcommand"
-echo "$prompt" | grep -qF -- "--meili-index cookiesbiscuit_taxonomy_qa" || fail "STEP 3 must pass the resolved meili_index to the index command"
-echo "$prompt" | grep -qi "never index an unconfident guess" || fail "STEP 3 must explicitly exclude unconfident guesses from indexing"
-echo "$prompt" | grep -qi "zero qualifying products, skip" || fail "STEP 3 must instruct skipping the call entirely when there's nothing to index"
-echo "$prompt" | grep -qi "never one call per product" || fail "STEP 3 must state the batch-not-per-product rule, same as STEP 1"
+grep -qF "STEP 3 -- Record all newly-minted dictionary rows" <<< "$prompt" || fail "prompt must include STEP 3 artifact and Meilisearch write-back"
+grep -qF "/tmp/cookiesbiscuit_shopee_ID_v2_created_dict_rows.jsonl" <<< "$prompt" || fail "STEP 3 must create a complete dict-row artifact for Sheet write-back"
+grep -qF "must contain all" <<< "$prompt" || fail "STEP 3 artifact must include every created row"
+grep -qF "non_niq_helper.py index" <<< "$prompt" || fail "STEP 3 must invoke non_niq_helper.py's index subcommand"
+grep -qF -- "--meili-index cookiesbiscuit_taxonomy_qa" <<< "$prompt" || fail "STEP 3 must pass the resolved meili_index to the index command"
+grep -qi "never index an unconfident guess" <<< "$prompt" || fail "STEP 3 must explicitly exclude unconfident guesses from indexing"
+grep -qi "zero confident new products, skip" <<< "$prompt" || fail "STEP 3 must instruct skipping the call entirely when there's nothing to index"
+grep -qi "never one call per product" <<< "$prompt" || fail "STEP 3 must state the batch-not-per-product rule, same as STEP 1"
 echo "PASS: STEP 3 Meilisearch write-back"
 
 prompt_nodict=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.master_cookiesbiscuit_id" \
@@ -253,13 +363,22 @@ prompt_nodict=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "cookiesbiscuit.m
   "cookiesbiscuitlemonilo.filter_cookiesbiscuit" \
   "prod_id" "sku_type_complete" "keywords_typo" "cookiesbiscuit_taxonomy_qa" "/tmp/cookiesbiscuit_shopee_v2_full_worklist.jsonl" \
   "42" "-" "cookiesbiscuit_shopee_ID")
-echo "$prompt_nodict" | grep -q "2b. SKIPPED for this category" || fail "an unconfigured ('-') product_id_dict must skip step 2b"
+grep -q "2b. SKIPPED for this category" <<< "$prompt_nodict" || fail "an unconfigured ('-') product_id_dict must skip step 2b"
 if grep -qi "run the qa_status UPDATE\|SET qa_status" <<< "$prompt_nodict"; then
   fail "prompt_nodict must never instruct writing to qa_status either"
 fi
 prompt_codex=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "source" "qa" "dict" "filter" \
-  "product_id" "sku_type_complete" "keywords_typo" "index" "/tmp/worklist.jsonl" "1" "-" "codex_test" "codex")
-echo "$prompt_codex" | grep -qF '{"source":"codex","timestamp":"<now, ISO 8601 UTC>"}' || fail "Codex prompt must stamp _meta writes with source=codex"
+  "product_id" "sku_type_complete" "keywords_typo" "index" "/tmp/worklist.jsonl" "1" "-" "codex_test" "codex" "false" "/tmp/image_manifest.jsonl")
+grep -qF '{"source":"codex","timestamp":"<now, ISO 8601 UTC>"}' <<< "$prompt_codex" || fail "Codex prompt must stamp _meta writes with source=codex"
+grep -qF "dict_has_meta=false" <<< "$prompt_codex" || fail "prompt must expose the live dict _meta capability"
+grep -qF "missing optional dict _meta column is never a blocker" <<< "$prompt_codex" || fail "missing dict _meta must not block the session"
+grep -qF "attached" <<< "$prompt_codex" || fail "Codex prompt must use attached image sheets"
+grep -qF "/tmp/image_manifest.jsonl" <<< "$prompt_codex" || fail "Codex prompt must identify the image manifest"
+grep -qF "Do not call the sandboxed" <<< "$prompt_codex" || fail "Codex must not use the broken image viewer"
+prompt_dict_meta=$(build_qa_prompt "cookiesbiscuit" "shopee" "ID" "source" "qa" "dict" "filter" \
+  "product_id" "sku_type_complete" "keywords_typo" "index" "/tmp/worklist.jsonl" "1" "-" "codex_test" "codex" "true")
+echo "$prompt_dict_meta" | grep -qF "dict_has_meta=true" || fail "prompt must expose dict_has_meta=true when resolved"
+echo "$prompt_dict_meta" | grep -qF "Include the dict table's existing \`_meta\` column" || fail "dict rows must retain provenance stamping when the column exists"
 echo "PASS: build_qa_prompt"
 
 # --- extract_json_object / decide_queue_signal / format_result_summary (shared contract) ---
@@ -274,8 +393,37 @@ echo "PASS: extract_result_json"
 [[ "$(decide_queue_signal '{"result":"{\"status\":\"blocked\"}"}')" == "BLOCKED" ]] || fail "decide_queue_signal should map status=blocked to BLOCKED"
 [[ "$(decide_queue_signal '{"result":"{\"status\":\"complete\"}"}')" == "DONE" ]] || fail "decide_queue_signal should map status=complete to DONE"
 [[ "$(decide_queue_signal '{"result":"{\"status\":\"partial\"}"}')" == "DONE" ]] || fail "decide_queue_signal should map status=partial to DONE"
+[[ "$(decide_queue_signal '{"status":"partial","rows_unresolved":1}')" == "DONE" ]] || fail "unresolved products must release a partial queue task"
+[[ "$(decide_queue_signal '{"status":"complete","rows_unresolved":1}')" == "DONE" ]] || fail "unresolved products must release a complete queue task"
 [[ "$(decide_queue_signal 'garbage')" == "FAILED" ]] || fail "decide_queue_signal should map unparseable output to FAILED"
 echo "PASS: decide_queue_signal"
+
+residual_counts_cover_worklist '{"rows_qa_confirmed":1,"rows_qa_unconfident":1,"rows_filtered":0,"rows_unresolved":0}' 2 || fail "residual counts should cover the worklist"
+residual_counts_cover_worklist '{"rows_qa_confirmed":1,"rows_qa_unconfident":0,"rows_filtered":0,"rows_unresolved":0}' 2 && fail "under-counted residual work must block automatic-total merge"
+residual_counts_cover_worklist '{"rows_qa_confirmed":1,"rows_qa_unconfident":0,"rows_filtered":0,"rows_unresolved":1}' 2 || fail "unresolved residual rows still account for a completed queue batch"
+residual_counts_cover_worklist '{"rows_qa_confirmed":-1,"rows_qa_unconfident":3,"rows_filtered":0,"rows_unresolved":0}' 2 && fail "negative residual counts must block automatic-total merge"
+residual_counts_cover_worklist '{"rows_qa_confirmed":0.5,"rows_qa_unconfident":1.5,"rows_filtered":0,"rows_unresolved":0}' 2 && fail "fractional residual counts must block automatic-total merge"
+ledger_test_dir=$(mktemp -d)
+printf '%s\n' '{"product_id":"1","ecommerce_platform":"Tokopedia","sku_name":"Example 20 gr"}' > "$ledger_test_dir/worklist.jsonl"
+cat > "$ledger_test_dir/decisions.jsonl" <<'JSONL'
+{"product_id":"1","ecommerce_platform":"Tokopedia","sku_name":"Example 20 gr","image_observation":"Package shows the named product","title_evidence":"Product title confirms 20 gr","identity_rationale":"The exact live dictionary identity matches","decision":"qa_confident","intended_table_values":{"brand":"Example"}}
+JSONL
+residual_ledger_covers_worklist "$ledger_test_dir/worklist.jsonl" "$ledger_test_dir/decisions.jsonl" || fail "a grounded ledger must pass coverage validation"
+printf '%s\n' '{"product_id":"2","ecommerce_platform":"Tokopedia","sku_name":"Other"}' >> "$ledger_test_dir/decisions.jsonl"
+residual_ledger_covers_worklist "$ledger_test_dir/worklist.jsonl" "$ledger_test_dir/decisions.jsonl" && fail "an extra ledger product must fail coverage validation"
+cat > "$ledger_test_dir/worklist.jsonl" <<'JSONL'
+{"product_id":"same","ecommerce_platform":"Tokopedia","sku_name":"First"}
+{"product_id":"same","ecommerce_platform":"Tokopedia | Shop","sku_name":"Second"}
+JSONL
+cat > "$ledger_test_dir/decisions.jsonl" <<'JSONL'
+{"product_id":"same","ecommerce_platform":"Tokopedia | Shop","sku_name":"Second","image_observation":"Package shows the named product","title_evidence":"Product title confirms 20 gr","identity_rationale":"The exact live dictionary identity matches","decision":"qa_confident","intended_table_values":{"brand":"Example"}}
+{"product_id":"same","ecommerce_platform":"Tokopedia","sku_name":"First","image_observation":"Package shows the named product","title_evidence":"Product title confirms 20 gr","identity_rationale":"The exact live dictionary identity matches","decision":"qa_confident","intended_table_values":{"brand":"Example"}}
+JSONL
+residual_ledger_covers_worklist "$ledger_test_dir/worklist.jsonl" "$ledger_test_dir/decisions.jsonl" || fail "an exact raw row-identity ledger must pass"
+sed -i 's/"Tokopedia | Shop","sku_name":"Second"/"Tokopedia","sku_name":"Second"/' "$ledger_test_dir/decisions.jsonl"
+residual_ledger_covers_worklist "$ledger_test_dir/worklist.jsonl" "$ledger_test_dir/decisions.jsonl" && fail "a ledger with swapped raw row identity must fail coverage validation"
+rm -rf "$ledger_test_dir"
+echo "PASS: residual accounting and ledger coverage"
 
 garbage_envelope='garbage not json at all'
 summary=$(format_result_summary "$garbage_envelope")
@@ -306,23 +454,57 @@ grep -qF 'country="${country^^}"' <<< "$script_src" || fail "main() (v2) must up
 grep -qF 'local tmp_tag="${dataset}_${platform}_${country}"' <<< "$script_src" || fail "main() (v2) must derive a country-scoped scratch tag"
 grep -qF 'worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"' <<< "$script_src" || fail "main() (v2) must materialize the worklist to a v2-distinctly-named, country-scoped file"
 grep -qF 'echo "QUEUE_SIGNAL: NOTHING_TO_DO"' <<< "$script_src" || fail "main() (v2) must emit NOTHING_TO_DO when the worklist is empty"
+grep -qF 'non_niq_helper.py" auto-confirm' <<< "$script_src" || fail "main() must auto-confirm exact-title Meilisearch matches before agent work"
+grep -qF 'rows_auto_confirmed=$auto_confirmed' <<< "$script_src" || fail "main() must expose automatic confirmation counts"
 grep -qF 'signal=$(decide_queue_signal "$agent_output")' <<< "$script_src" || fail "main() (v2) must derive the post-run signal from the normalized agent result"
 grep -qF 'echo "QUEUE_SIGNAL: ${signal}"' <<< "$script_src" || fail "main() (v2) must emit the derived post-run signal"
 grep -qE 'claude_output=\$\(claude -p .*\) \|\| true' <<< "$script_src" || fail "main() (v2) must tolerate a non-zero Claude exit"
 grep -qF 'codex exec --cd "$REPO_ROOT" --approve-for-me' <<< "$script_src" || fail "main() (v2) must invoke Codex with the automatic-approval adapter"
+grep -qF '"${codex_image_args[@]}"' <<< "$script_src" || fail "Codex must receive image sheets as CLI attachments"
+grep -qF 'prepare_codex_image_sheets.py' <<< "$script_src" || fail "wrapper must prepare image sheets before starting Codex"
+grep -qF 'if [[ "$agent_harness" == "codex" ]] && ! codex_sandbox_preflight' <<< "$script_src" || fail "wrapper must fail fast when Codex bubblewrap is unavailable"
+grep -qF 'CODEX_QA_REASONING_EFFORT:-high' <<< "$script_src" || fail "taxonomy decisions should default to high reasoning"
 grep -qF -- '-c sandbox_workspace_write.network_access=true' <<< "$script_src" || fail "main() (v2) must enable network access for Codex's workspace-write sandbox -- bq/curl/Meilisearch all need it, and --approve-for-me alone does not grant it"
 grep -qF -- '--output-schema ' <<< "$script_src" || fail "main() (v2) must constrain Codex's final result with a JSON Schema"
 grep -qF -- '--output-last-message "$codex_final_file"' <<< "$script_src" || fail "main() (v2) must capture Codex's final message separately from stdout"
+grep -qF 'is_codex_startup_capacity_failure "$codex_stdout_file" "$codex_final_file"' <<< "$script_src" || fail "main() must retry only proven startup capacity failures"
+grep -qF 'Codex remained at capacity through all startup attempts' <<< "$script_src" || fail "capacity exhaustion must produce a structured failure instead of unparseable output"
+grep -qF 'prepare_codex_gcloud_runtime "$codex_runtime_dir"' <<< "$script_src" || fail "main() must prepare a writable authenticated gcloud runtime for Codex"
+grep -qF -- '--add-dir "$codex_runtime_dir"' <<< "$script_src" || fail "Codex must receive the temporary runtime as a writable sandbox directory"
+grep -qF 'shell_environment_policy.include_only=["PATH","HOME","TMPDIR","LANG","LC_ALL","CLOUDSDK_CONFIG","GOOGLE_APPLICATION_CREDENTIALS"]' <<< "$script_src" || fail "Codex must receive only the prepared BigQuery credential variables and required shell runtime"
+grep -qF 'RUNTIME AUTHENTICATION (already prepared)' <<< "$script_src" || fail "Codex prompt must prevent replacing its prepared credential runtime"
 grep -qF 'format_result_summary "$agent_output"' <<< "$script_src" || fail "main() (v2) must print the normalized agent summary"
 grep -qF 'echo "$agent_output"' <<< "$script_src" || fail "main() (v2) must still echo the normalized agent result"
 jq -e '.properties.status.enum == ["complete", "partial", "failed", "blocked"]' script/non_niq/codex_qa_result_schema.json >/dev/null || fail "Codex result schema must constrain the session status"
+jq -e '.required | index("rows_unresolved")' script/non_niq/codex_qa_result_schema.json >/dev/null || fail "Codex result schema must require unresolved-row accounting"
 if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discord\|notify_discord"; then
   fail "non_niq_qa_v2.sh must not reference Discord notification or load_env.sh"
 fi
 grep -qF "enrichment_table=\$(echo \"\$category_json\" | jq -r '.\"0\"')" <<< "$script_src" || fail "main() (v2) must resolve enrichment_table from the Sheet's \"0\" column, same as v1"
-grep -qF '"$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify" "$forced_merchant_ids_sql")' <<< "$script_src" || fail "main() (v2) must thread enrichment and scope options through to worklist_query"
+grep -qF '"$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify" "$forced_merchant_ids_sql" "$qa_platform_col" "$dataset" "$country")' <<< "$script_src" || fail "main() (v2) must thread enrichment, scope, dataset, country, and resolved QA platform options through to worklist_query"
+grep -qF 'NON_NIQ_QA_V2_SNAPSHOT=$(mktemp' <<< "$script_src" || fail "direct runs must execute from an immutable snapshot so concurrent edits cannot corrupt a live shell parse"
+grep -qF 'created_entries_file="/tmp/${tmp_tag}_v2_created_dict_rows.jsonl"' <<< "$script_src" || fail "Sheet write-back must consume the all-created artifact"
+if grep -qF -- '--input-file "$new_entries_file"' <<< "$script_src"; then
+  fail "Sheet write-back must not reuse the confidence-filtered Meilisearch artifact"
+fi
 grep -qF 'non_niq_helper.py" forced-merchants' <<< "$script_src" || fail "main() must fetch client/competitor merchant IDs"
 grep -qF -- '--country "$country" --category "$category" --platform "$platform_titlecase"' <<< "$script_src" || fail "merchant lookup must use the resolved country, category, and platform"
+grep -qF "dict_has_meta=\$(echo \"\$columns_json\" | jq -r '.dict_has_meta')" <<< "$script_src" || fail "main() must read the live dict _meta capability"
+grep -qF "qa_platform_col=\$(echo \"\$columns_json\" | jq -r '.qa_platform_col')" <<< "$script_src" || fail "main() must read the live QA platform column"
+grep -qF '"$worklist_count" "$product_id_dict" "$tmp_tag" "$agent_meta_source" "$dict_has_meta" "$image_manifest_file")' <<< "$script_src" || fail "main() must pass dict and image capabilities into the generated prompt"
 echo "PASS: main() wiring"
+
+# --- main() wiring: code-side backstop for 2c.1's agent-trusted insert-log contract ---
+grep -qF 'run_start=$(date -u' <<< "$script_src" \
+  || fail "main() must capture run_start before dispatching the agent, to scope the gap check"
+grep -qF 'apply_taxonomy_insert_log_backstop "$agent_output" \' <<< "$script_src" \
+  || fail "main() must run the shared insert-log backstop against this dataset's dict_table"
+if grep -qF '! agent_output=$(apply_taxonomy_insert_log_backstop' <<< "$script_src" && \
+   grep -qF 'residual_valid=false' <<< "$script_src"; then
+  :
+else
+  fail "main() must block the queue signal when the backstop finds an unlogged dictionary row"
+fi
+echo "PASS: main() insert-log backstop wiring"
 
 echo "ALL TESTS PASSED (part 2: prompt + main)"

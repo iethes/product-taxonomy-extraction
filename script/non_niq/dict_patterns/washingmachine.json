@@ -1,0 +1,21 @@
+{
+  "sku_type_complete": {
+    "sources": [
+      "brand",
+      "model"
+    ],
+    "separator": " ",
+    "note": "live dict (~2400 rows, checked 2026-09-23): sku_type_complete == '{Brand Title-Cased} {model}' e.g. 'Lg FV1410S4W1', 'Sharp ES-X9682', 'Casper Multi Variant' (LG->'Lg', AQUA->'Aqua', SHARP->'Sharp' even though the brand column keeps stored casing LG/AQUA/SHARP). loading/loading_kg are separate attribute columns, NOT part of the identity. Legacy rows carry stray spaces/odd casing ('Casper TD-P9HG1 ', 'Electrolux Ewf9023P5Wc') - write those verbatim when re-pointing, never mint a trimmed twin. Colour/region suffixes (.BK, (SK), (MG), WC vs SC) are part of the model and are distinct rows."
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete",
+      "adjusted_model"
+    ],
+    "separator": " ",
+    "note": "keywords = ' ' + sku_type_complete + ' ' + adjusted_model (leading space when keyword_typo is empty). adjusted_model is model with '-', '/', '(', ')' , '.' turned into spaces e.g. 'AWM85-316L(S)' -> 'AWM85 316L S', 'FW-95CW1409ISG-11' -> 'FW 95CW1409ISG 11'; simple models unchanged; for Multi Variant rows adjusted_model='Multi Variant'. keyword_typo is null for most rows"
+  },
+  "multi_variant": {
+    "note": "listings selling two or more distinct model codes / capacities with no single model -> '<Brand> Multi Variant' (model='Multi Variant', all attribute columns 'UNKNOWN'). Mint if the brand has none yet."
+  }
+}

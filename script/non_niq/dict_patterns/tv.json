@@ -1,0 +1,17 @@
+{
+  "adjusted_model": {
+    "sources": ["model"],
+    "separator": "",
+    "note": "model with '-' and '/' replaced by ' ' (regex substitution, not simple concat), e.g. model='4T-C55HJ6000I' -> adjusted_model='4T C55HJ6000I'. Equals model verbatim when it has no '-' or '/'."
+  },
+  "sku_type_complete": {
+    "sources": ["brand", "model"],
+    "separator": " ",
+    "note": "LIVE tv_dict_new shape (verified 2026-09-23 against sibling rows, incl. size-populated ones): '{BrandPrefix} {model}', e.g. 'Sharp 4T-C50FH320X', 'Lg 65QNED82ASA', 'Samsung UA55UE800FKXXT'. BrandPrefix copies the display casing an existing row of the SAME brand uses (LG -> 'Lg', TCL -> 'Tcl', iFFALCON -> 'Iffalcon'); the brand column keeps raw casing (LG, TCL, SHARP, iFFALCON). size/screen_type/inch are NOT part of it. Multi-size listings use '{Brand} Multi Variant' (model='Multi Variant'). Region/channel suffix in the model code (…PSA/…PSB/…FKXXT/…APSEA) is part of the identity."
+  },
+  "keywords": {
+    "sources": ["brand", "model", "adjusted_model"],
+    "separator": " ",
+    "note": "' {BrandPrefix} {model} {adjusted_model}' with a leading space (same brand-prefix casing as sku_type_complete). size/display/screen_type/resolution/keyword_typo are left NULL on sibling rows."
+  }
+}

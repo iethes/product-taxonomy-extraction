@@ -1,0 +1,12 @@
+{
+  "sku_type_complete": {
+    "sources": ["brand", "model"],
+    "separator": " ",
+    "notes": "brand + model, nothing else. Re-verified 2026-09-23: live schema (INFORMATION_SCHEMA.COLUMNS) has ONLY keywords, keyword_typo, sku_type_complete, model, adjusted_model, brand -- there is NO category or type column, and the previous version of this file was wrong to claim a literal 'Rice Cooker' category source. When no formal model code exists, model itself falls back to a descriptive phrase that may already contain the words 'Rice Cooker' (e.g. brand 'Phlinice' + model 'Rice Cooker' -> 'Phlinice Rice Cooker'; brand 'LiBa' + model 'Rice Cooker 5 L' -> 'Liba Rice Cooker 5 L') -- confirmed against 20+ live rows, none of which append a separate category token."
+  },
+  "keywords": {
+    "sources": ["brand", "model", "adjusted_model"],
+    "separator": " ",
+    "notes": "Compose brand and exact model with the search-normalized adjusted_model. For hyphenated models, adjusted_model uses spaces (for example TAC-6GS becomes TAC 6GS). When no formal model code exists, model/adjusted_model both fall back to the same bare descriptive phrase as sku_type_complete's model source (e.g. 'Rice Cooker', '1.8L Rice Cooker') -- confirmed precedent: Aoqu 1.8L Rice Cooker, Phlinice Rice Cooker Rice Cooker."
+  }
+}

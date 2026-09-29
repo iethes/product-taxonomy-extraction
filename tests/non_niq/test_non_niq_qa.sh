@@ -29,7 +29,8 @@ q=$(worklist_query "babybath.master_babybath_id_dev" "babybath.product_id_dict_q
 echo "$q" | grep -q "babybath.master_babybath_id_dev" || fail "worklist_query should reference the source table"
 echo "$q" | grep -q "babybath.product_id_dict_qa" || fail "worklist_query should reference the QA table"
 echo "$q" | grep -q "prod_id" || fail "worklist_query should use the resolved QA primary-key column, not a hardcoded one"
-echo "$q" | grep -q "cumulative_gmv_pct <= 90" || fail "worklist_query must use the 90% threshold (issue #2), not the epic's 95%"
+echo "$q" | grep -qF "s.product_tier IN ('Tier 1')" || fail "worklist_query must use source-table Tier 1"
+if echo "$q" | grep -q "cumulative_gmv_pct\|with_cumulative"; then fail "worklist_query must not recalculate GMV tiers"; fi
 # The config Sheet's ecommerce_platform is lowercase ("shopee") but the source table's own column
 # is Title-Case ("Shopee") -- confirmed live on babybath and telonoil. A lowercase WHERE filter
 # against Title-Case data matches zero rows, always -- this was a real, previously-undetected bug.
@@ -49,7 +50,8 @@ if echo "$q" | grep -q "JSON_VALUE(_meta,"; then
   fail "worklist_query must never call JSON_VALUE directly on the raw _meta string -- it must go through SAFE.PARSE_JSON first"
 fi
 echo "$q" | grep -q "ORDER BY priority ASC, gmv_monthly DESC" || fail "worklist_query must order unreviewed before unconfident, then by GMV"
-echo "$q" | grep -q "qa_status = 'Not Reviewed'" || fail "worklist_query must gate priority-0 rows to qa_status = 'Not Reviewed' per design spec"
+echo "$q" | grep -q "qa_title_state AS" || fail "worklist_query must track current QA title state"
+if echo "$q" | grep -q "qa_status = 'Not Reviewed'"; then fail "worklist_query must use title matching, not qa_status"; fi
 # Live-observed: some source image URLs carry a literal embedded double-quote (upstream
 # CSV-quoting artifact) that breaks STEP 2a's curl download unless stripped first.
 echo "$q" | grep -qF "REPLACE(s.image, '\"', '') AS image" || fail "worklist_query must strip literal double-quote characters from image -- unstripped, STEP 2a's curl download 404s on affected rows"
@@ -65,7 +67,7 @@ grep -c "AS priority" <<< "$q" | grep -qx 1 || fail "priority must be computed e
 # project_non_niq_qa_state_fanout_bug.md) and never a "latest row by timestamp" dedup either
 # (also confirmed live to silently un-terminate products when a later write lands, since
 # product_id_dict_qa has no reliable timestamp column).
-echo "$q" | grep -qF "GROUP BY prod_id" || fail "qa_state must GROUP BY the resolved qa_pk_col, not select raw un-deduped rows"
+echo "$q" | grep -qF "GROUP BY prod_id, ecommerce_platform" || fail "qa_state must GROUP BY the resolved qa_pk_col and raw platform"
 echo "$q" | grep -qF "LOGICAL_OR(" || fail "qa_state must use LOGICAL_OR to aggregate qa_confidence/human_review across a product's WHOLE history, not just one (possibly stale) row"
 echo "$q" | grep -qF "has_unconfident_pending" || fail "qa_state must track has_unconfident_pending as an aggregate flag"
 echo "$q" | grep -qF "has_confident" || fail "qa_state must track has_confident as an aggregate flag"
@@ -105,7 +107,7 @@ echo "$q_filtered" | grep -qF "LEFT JOIN filter_state fs ON fs.product_id = sc.p
 echo "$q_filtered" | grep -qF "WHEN fs.product_id IS NOT NULL THEN NULL" || fail "worklist_query must exclude (priority NULL) any product already present in the filter table"
 # The filter check must be the FIRST WHEN in the CASE -- CASE evaluates top-down, so if it came
 # after the qa_state checks a filtered product with no qa_state row could still match priority 0.
-[[ "$q_filtered" == *$'CASE\n      WHEN fs.product_id IS NOT NULL THEN NULL\n      WHEN qs.product_id IS NULL'* ]] || fail "the filter_table exclusion must be checked BEFORE the qa_state priority checks in the CASE, not after"
+[[ "$q_filtered" == *$'CASE\n      WHEN fs.product_id IS NOT NULL THEN NULL\n      WHEN qts.product_id IS NULL'* ]] || fail "the filter_table exclusion must be checked BEFORE the qa-state priority checks in the CASE"
 # Structural comma-join check, same rationale as the base worklist_query test.
 [[ "$q_filtered" == *$'),\nfilter_state AS ('* ]] || fail "filter_state must be comma-joined after qa_state -- otherwise the query is a BigQuery syntax error"
 [[ "$q_filtered" == *$'),\nprioritized AS ('* ]] || fail "prioritized must be comma-joined after filter_state -- otherwise the query is a BigQuery syntax error"
@@ -387,7 +389,7 @@ grep -qF 'Usage: $0 <DATASET> <PLATFORM> [MAX_TURNS] [MAX_ROWS]' <<< "$script_sr
 echo "PASS: main() row-limit arg wiring"
 
 # --- main() passes filter_table into worklist_query (filter-table exclusion wiring) ---
-grep -qF '"$enrichment_table" "$max_rows" "$filter_table")' <<< "$script_src" || fail "main() must pass filter_table through to worklist_query so already-filtered products are excluded from the worklist"
+grep -qF '"$enrichment_table" "$max_rows" "$filter_table" "$qa_platform_col")' <<< "$script_src" || fail "main() must pass filter_table and the resolved QA platform through to worklist_query"
 echo "PASS: main() filter_table exclusion wiring"
 
 if echo "$script_src" | grep -q "DISCORD_WEBHOOK_URL\|load_env.sh\|notify-discord\|notify_discord"; then

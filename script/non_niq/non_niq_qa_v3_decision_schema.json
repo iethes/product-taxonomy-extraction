@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Non-NIQ QA v3 adapter decisions",
+  "description": "Flat strict-compatible schema for the Codex response_format API. Branch exactness is enforced by validate_decision_batch, not here: every decision carries all keys with null for the unused branch field.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisions"],
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["packet_id", "product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "reason", "candidate_ref", "attributes"],
+        "properties": {
+          "packet_id": {"type": "string"},
+          "product_id": {"type": "string"},
+          "work_item_id": {"type": "string"},
+          "input_fingerprint": {"type": "string"},
+          "kind": {"enum": ["filter", "map_existing", "create_dict", "defer"]},
+          "confidence": {"enum": ["confident", "unconfident"]},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source", "claim", "attachment_index"],
+              "properties": {
+                "source": {"type": "string"},
+                "claim": {"type": "string"},
+                "attachment_index": {"type": ["integer", "null"]}
+              }
+            }
+          },
+          "reason": {"type": ["string", "null"]},
+          "candidate_ref": {"type": ["string", "null"]},
+          "attributes": {"type": ["object", "null"], "additionalProperties": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

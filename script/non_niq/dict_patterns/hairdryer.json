@@ -1,0 +1,21 @@
+{
+  "sku_type_complete": {
+    "sources": [
+      "brand",
+      "model",
+      "power"
+    ],
+    "separator": " ",
+    "notes": "Corrected 2026-09-24 against live rows (e.g. 'Dyson HD17 1700 W', 'Dyson HD01 Unknown'): identity = brand + model + power; power is 'Unknown' when the listing states none. 'type' = brand + model."
+  },
+  "keywords": {
+    "sources": [
+      "keyword_typo",
+      "brand",
+      "model",
+      "ajusted_model"
+    ],
+    "separator": " ",
+    "notes": "Matches live rows, including optional leading synonym/typo text. Preserve the table's authored casing for brand/model; ajusted_model is the punctuation-normalized model form."
+  }
+}

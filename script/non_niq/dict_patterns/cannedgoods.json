@@ -1,0 +1,21 @@
+{
+  "sku_type": {
+    "sources": ["brand", "cat_lev_3", "flavor", "weight", "banded"],
+    "separator": " ",
+    "format": "{brand} {cat_lev_3} {flavor} {weight} {banded:d} pcs",
+    "notes": "Inferred from representative live cannedgoods_dict_ph rows. cat_lev_3 is the product form, weight keeps the observed spaced unit format, and banded is the numeric listing pack count. Skip unsupported null/empty attributes rather than rendering literal null or dangling separators."
+  },
+  "keywords": {
+    "sources": ["sku_type"],
+    "separator": "",
+    "format": "{sku_type}",
+    "notes": "Representative live rows use keywords equal to sku_type; keywords_typo is FLOAT and null in sampled rows, so do not invent a typo value."
+  },
+  "non_generated_columns": {
+    "cat_lev_1": "Canned Goods for every in-scope row.",
+    "cat_lev_2": "Ground from observed live vocabulary for the product family.",
+    "cat_lev_3": "Ground from observed live vocabulary for the exact canned product form.",
+    "pack_type": "Legacy numeric field; sampled rows demonstrate NULL is valid.",
+    "keywords_typo": "FLOAT legacy field; sampled rows demonstrate NULL is valid."
+  }
+}

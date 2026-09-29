@@ -28,7 +28,9 @@
       "kemasan == packsize on 3376/3430 rows; both are the human-readable pack string e.g. '800 gr'.",
       "gramasi_abbott spells out multipacks as '130 gr x 2 pcs' while kemasan/packsize carry the TOTAL ('260 gr').",
       "keyword_typo is '' (never NULL) when there is no alias; it is the leading token block of keywords.",
-      "size_single/gramasi/tonase/bundling/bundle_pcs are FLOAT64; tonase = gramasi / 1e6 (metric tons)."
+      "size_single/gramasi/tonase/bundling/bundle_pcs are FLOAT64; tonase = gramasi / 1e6 (metric tons).",
+      "parent_brand falls back to brand when parent_brand is null/empty -- resolve that fallback before feeding the leaf value in, the pattern's `sources` list takes the column name literally.",
+      "susubayi_dict has ~70 flat attribute columns beyond the generated ones (segment_*, category_*, mji_* fields etc). When minting a new row, copy the full row of the closest sibling SKU (same brand+sub_brand, adjacent gramasi or adjacent stage) and only change the fields that genuinely differ (gramasi/kemasan/packsize/gramasi_abbott/size_single/tonase, and sku/sku_complete/sku_type_abbott/sku_type_complete/keywords derived from them, plus stage/usia/usia_atas/usia_bawah/subvarc_abbott/new_stage_mji when the stage differs). Never invent unrelated attribute values."
     ]
   }
 }
