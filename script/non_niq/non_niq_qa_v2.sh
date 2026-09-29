@@ -594,6 +594,19 @@ ${step2_block}
              confident. Only after verifying that row, write brand/${qa_identity_col} values
              pointing at the new entry to \`${PROJECT}.${qa_table}\`.
 
+  2c.1. Mandatory durable insert log for every NEW dictionary row: the dictionary-table INSERT
+        and its log INSERT MUST run in the SAME BigQuery transaction. The shared append-only log
+        table is \`${PROJECT}.magpie_reference.non_niq_taxonomy_insert_log\` with columns
+        (target_table STRING, created_at TIMESTAMP, row_json JSON). Set target_table to the exact
+        three-part target name \`${PROJECT}.${dict_table}\`. row_json MUST be the JSON envelope
+        {"product_id":"<worklist product_id>","ecommerce_platform":"<worklist ecommerce_platform>",
+         "inserted_row":{...exact columns and values inserted into ${PROJECT}.${dict_table}...}}.
+        Write one log row only when this transaction actually inserts a NEW dictionary row; do
+        not log an existing identity, a re-point, a filter, or a zero-row conditional INSERT.
+        If either the dictionary INSERT or its log INSERT fails, the transaction must roll back
+        both. After COMMIT, verify both the exact dictionary row and its matching log row exist.
+
+
   2d. Self-QA: as an explicit, separate judgment (not folded into 2a-2c's reasoning), state how
       confident you are in the decision you just made for this product. Print the completed ledger
       before any QA or dictionary DML. If the selected identity is false or unsupported, mark the

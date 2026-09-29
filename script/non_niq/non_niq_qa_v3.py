@@ -1310,10 +1310,18 @@ class OutboxEvent:
 
 
 @dataclass(frozen=True)
+class TaxonomyInsertLog:
+    target_table: str
+    row_json: str
+
+
+@dataclass(frozen=True)
 class ChunkCommit:
     attempts: Tuple[AttemptPlan, ...]
     created_dict_identities: Tuple[Tuple[str, str, str], ...]
     outbox_events: Tuple[OutboxEvent, ...]
+    taxonomy_insert_logs: Tuple[TaxonomyInsertLog, ...]
+
     qa_writes: Tuple[Tuple[str, str, str, str, str], ...]
     filtered_products: Tuple[Tuple[str, str], ...]
     qa_expected: Tuple[Mapping[str, Any], ...] = ()
@@ -1394,6 +1402,8 @@ def _build_operations(
     filter_expected: List[Mapping[str, Any]] = []
     dict_expected: List[Mapping[str, Any]] = []
     outbox_events: List[OutboxEvent] = []
+    taxonomy_insert_logs: List[TaxonomyInsertLog] = []
+
     seen_identities = set()
 
     for packet, decision in zip(packets, validated):
@@ -1440,6 +1450,7 @@ def _build_operations(
             attributes = decision["attributes"]
             generated = compose_generated_attributes(attributes, context.dict_pattern)
             dictionary_values = {**attributes, **generated}
+
             brand = str(dictionary_values.get("brand", "")).strip()
             identity = str(dictionary_values.get(context.dict_identity_col, "")).strip()
             _require(brand and identity, "create_dict requires brand and dictionary identity")
@@ -1458,6 +1469,10 @@ def _build_operations(
                         "create_dict natural identity already exists in packet candidates",
                     )
             is_existing = natural_identity in existing_identities
+            if not is_existing and context.dict_has_meta:
+                dictionary_values["_meta"] = _metadata(
+                    now, run_id, attempt, decision_id, confidence, human_review,
+                )
             if not is_existing:
                 created_identities.append(natural_identity)
 
@@ -1489,6 +1504,16 @@ def _build_operations(
             })
         if kind != "create_dict" or is_existing:
             continue
+        taxonomy_insert_logs.append(TaxonomyInsertLog(
+            target_table="%s.%s" % (context.project, context.dict_table),
+            row_json=json.dumps({
+                "product_id": str(packet["product_id"]),
+                "ecommerce_platform": str(
+                    packet.get("ecommerce_platform") or context.platform
+                ),
+                "inserted_row": dict(dictionary_values),
+            }, sort_keys=True, separators=(",", ":"), default=str),
+        ))
 
         identity_entry = {
             "brand": brand,
@@ -1536,6 +1561,7 @@ def _build_operations(
         attempts=tuple(attempts),
         created_dict_identities=tuple(created_identities),
         outbox_events=tuple(outbox_events),
+        taxonomy_insert_logs=tuple(taxonomy_insert_logs),
         qa_writes=tuple(qa_writes),
         filtered_products=tuple(filtered_products),
         qa_expected=tuple(qa_expected),
@@ -1621,6 +1647,9 @@ def _qa_values(
 
 def _outbox_table(context: RunContext) -> str:
     return _table_reference(context.project, "magpie_reference.non_niq_qa_outbox")
+
+def _insert_log_table(context: RunContext) -> str:
+    return _table_reference(context.project, "magpie_reference.non_niq_taxonomy_insert_log")
 
 def _identity_lock_table(context: RunContext) -> str:
     return _table_reference(context.project, "magpie_reference.non_niq_qa_identity_locks")
@@ -1726,13 +1755,15 @@ WHERE d.brand IS NULL;""" % (
             _table_reference(context.project, context.filter_table), values, predicate,
         ))
 
+    new_log_operations = (
+        (operation, log)
+        for operation, log in zip(
+            (item for item in create_operations if not item["existing_identity"]),
+            commit.taxonomy_insert_logs,
+        )
+    )
     for operation in create_operations:
         dict_values = dict(operation["dictionary_values"])
-        if context.dict_has_meta:
-            dict_values["_meta"] = _metadata(
-                now, operation["run_id"], operation["attempt"], operation["decision_id"],
-                operation["confidence"], operation["human_review"],
-            )
         if not set(dict_values).issubset(context.dict_columns):
             raise ValueError("create_dict values do not match %s schema" % context.dict_table)
         values = _insert_values(builder, dict_values)
@@ -1745,6 +1776,25 @@ WHERE d.brand IS NULL;""" % (
                 values[context.dict_identity_col][1],
             ),
         ))
+        if operation["existing_identity"]:
+            continue
+        _, log = next(new_log_operations)
+        target_parameter = builder.add(log.target_table)
+        row_parameter = builder.add(log.row_json)
+        statements.append(
+            """INSERT INTO %s (target_table, created_at, row_json)
+SELECT %s, CURRENT_TIMESTAMP(), PARSE_JSON(%s)
+WHERE EXISTS (
+  SELECT 1 FROM _v3_new_dict
+  WHERE brand = %s AND identity_value = %s
+);""" % (
+                _insert_log_table(context),
+                target_parameter,
+                row_parameter,
+                values["brand"][1],
+                values[context.dict_identity_col][1],
+            )
+        )
 
     qa_table = _table_reference(context.project, context.qa_table)
     qa_platform_column = _qa_platform_column(context)
@@ -1893,7 +1943,14 @@ def apply_chunk(
     """Execute one validated chunk with bounded transient retries and read-back."""
     operations, _ = _build_operations(context, packets, decisions, now)
     if not operations:
-        return ChunkCommit((), (), (), (), ())
+        return ChunkCommit(
+            attempts=(),
+            created_dict_identities=(),
+            outbox_events=(),
+            taxonomy_insert_logs=(),
+            qa_writes=(),
+            filtered_products=(),
+        )
     existing_identities = _preflight_create_identities(client, context, operations)
     operations, commit = _build_operations(
         context, packets, decisions, now, existing_identities,
@@ -2025,6 +2082,22 @@ LIMIT 1""" % (
                 bigquery.ScalarQueryParameter("identity", "STRING", identity_value),
             ],
             "dictionary identity %s/%s" % (brand, identity_value),
+        )
+
+    insert_log_table = _insert_log_table(context)
+    for log in commit.taxonomy_insert_logs:
+        _assert_readback(
+            client,
+            """SELECT 1
+FROM %s
+WHERE target_table = @target_table
+  AND TO_JSON_STRING(row_json) = TO_JSON_STRING(PARSE_JSON(@row_json))
+LIMIT 1""" % insert_log_table,
+            [
+                bigquery.ScalarQueryParameter("target_table", "STRING", log.target_table),
+                bigquery.ScalarQueryParameter("row_json", "STRING", log.row_json),
+            ],
+            "taxonomy insert log for %s" % log.target_table,
         )
 
     outbox_table = _outbox_table(context)

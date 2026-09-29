@@ -1,4 +1,6 @@
 import json
+from dataclasses import replace
+
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -929,11 +931,18 @@ def test_create_dict_writes_pending_outbox_in_same_transaction():
     )
     sql, parameters = qa_v3.build_chunk_script(context, [packet], [decision], NOW)
     assert "INSERT INTO `project.magpie_reference.non_niq_qa_outbox`" in sql
+    assert "INSERT INTO `project.magpie_reference.non_niq_taxonomy_insert_log`" in sql
     values = [str(parameter.value) for parameter in parameters]
     for parameter in parameters:
         parameter.to_api_repr()
     assert any('"meili_index"' in value for value in values)
     assert "sheet_append" in values
+    assert any('"product_id":"p-1"' in value for value in values)
+    assert any('"ecommerce_platform":"Shopee"' in value for value in values)
+    assert any('"inserted_row"' in value for value in values)
+    assert sql.index("INSERT INTO `project.babybath.babybath_dict`") < sql.index(
+        "INSERT INTO `project.magpie_reference.non_niq_taxonomy_insert_log`"
+    )
     assert "BEGIN TRANSACTION" in sql and "COMMIT TRANSACTION" in sql
 
 
@@ -1085,6 +1094,40 @@ def test_apply_chunk_treats_existing_exact_dict_as_replay(monkeypatch):
 
     assert commit.created_dict_identities == ()
     assert commit.outbox_events == ()
+    assert commit.taxonomy_insert_logs == ()
+
+
+def test_existing_dict_replay_does_not_expect_fresh_metadata():
+    context = replace(
+        _executor_context(),
+        dict_has_meta=True,
+        dict_columns=frozenset({
+            "brand", "sub_brand", "function", "packsize", "sku_type", "keywords", "_meta",
+        }),
+    )
+    packet = _commit_packet(context)
+    packet["candidate_refs"] = set()
+    packet["candidates"] = {}
+    decision = _decision(
+        packet,
+        "create_dict",
+        attributes={
+            "brand": "Acme",
+            "sub_brand": "Acme",
+            "function": "Wash",
+            "packsize": "200 ml",
+        },
+    )
+    _, commit = qa_v3._build_operations(
+        context,
+        [packet],
+        [decision],
+        NOW,
+        existing_identities={("Acme", "sku_type", "Acme Wash 200 ml")},
+    )
+
+    assert "_meta" not in commit.dict_expected[0]
+    assert commit.taxonomy_insert_logs == ()
 
 
 # --- outbox recovery and queue-compatible CLI ---
