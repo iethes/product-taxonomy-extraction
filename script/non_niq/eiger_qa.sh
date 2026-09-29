@@ -755,6 +755,8 @@ main() {
   local prompt agent_output=""
   prompt=$(build_qa_prompt "$platform" "$country" "$source_table" "$filter_table" "$worklist_file" \
     "$worklist_count" "$tmp_tag" "$agent_meta_source" "$image_manifest_file")
+  local run_start
+  run_start=$(date -u '+%Y-%m-%dT%H:%M:%S')
 
   if [[ "$agent_harness" == "codex" ]]; then
     local codex_final_file codex_stdout_file codex_runtime_paths codex_gcloud_config codex_adc_file
@@ -853,6 +855,25 @@ RUNTIME AUTHENTICATION (already prepared):
       .status = "blocked" |
       .blockers = ((.blockers // []) + ["Post-run validation found incomplete residual row accounting or a missing/invalid per-product decision ledger; automatic totals were not merged."])
     ' <<< "$result_json")
+  fi
+  if [[ "$residual_valid" == true ]] && \
+     [[ "$(jq -r '.rows_created_in_dict // 0' <<< "$result_json" 2>/dev/null)" != "0" ]]; then
+    # 2d.1 in the prompt is agent-trusted text, not code-enforced (unlike non_niq_qa_v3.py's
+    # builder) -- this is the code-side backstop: any QA row that appeared since run_start with no
+    # matching insert-log row means the agent skipped or failed its mandatory log write.
+    local gap_count
+    gap_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+      "$(taxonomy_insert_log_gap_query "\`${PROJECT}.${QA_TABLE}\`" "${PROJECT}.${QA_TABLE}" \
+        "$run_start" "JSON_VALUE(log.row_json, '\$.product_id') = cur.product_id")" \
+      2>/dev/null | tail -1)
+    if [[ ! "$gap_count" =~ ^[0-9]+$ ]] || [[ "$gap_count" != "0" ]]; then
+      residual_valid=false
+      log ERROR "Post-run insert-log verification found ${gap_count:-an unreadable count} of new ${QA_TABLE} row(s) with no matching non_niq_taxonomy_insert_log entry."
+      agent_output=$(jq -c '
+        .status = "blocked" |
+        .blockers = ((.blockers // []) + ["Post-run validation found a new QA-table row with no matching non_niq_taxonomy_insert_log entry; the mandatory 2d.1 same-transaction log write was skipped or failed."])
+      ' <<< "$result_json")
+    fi
   fi
   if (( auto_confirmed > 0 )) && [[ "$residual_valid" == true ]]; then
     local auto_result_json

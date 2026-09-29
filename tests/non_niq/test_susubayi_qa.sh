@@ -56,6 +56,10 @@ fi
 echo "$prompt_claude" | grep -qF "non_niq_taxonomy_insert_log" || fail "susubayi prompt must require the shared taxonomy insert log"
 echo "$prompt_claude" | grep -qF "SAME BigQuery transaction" || fail "susubayi prompt must require atomic dictionary/log writes"
 echo "$prompt_claude" | grep -qF '"inserted_row"' || fail "susubayi prompt must define the inserted_row JSON envelope"
+echo "$prompt_claude" | grep -qF "do not INSERT yet" || fail "Step A must defer the dictionary INSERT so 2c.1 logs the one true inserted row"
+if echo "$prompt_claude" | grep -qF "fix any NULL found"; then
+  fail "prompt must not instruct a post-insert UPDATE -- that would insert-then-mutate outside 2c.1's logged transaction"
+fi
 echo "PASS: build_qa_prompt agent_meta_source"
 
 # --- extract_result_json: normalizes both Claude's envelope and Codex's bare result object ---
@@ -83,5 +87,19 @@ grep -qF 'rows_auto_confirmed=$auto_confirmed' <<< "$script_src" || fail "main()
 grep -qF -- '-c sandbox_workspace_write.network_access=true' <<< "$script_src" || fail "main() must enable network access for Codex's workspace-write sandbox"
 grep -qF 'signal=$(decide_queue_signal "$agent_output")' <<< "$script_src" || fail "main() must derive the post-run signal from the normalized agent_output, not a claude-only variable"
 echo "PASS: main() wiring"
+
+# --- main() wiring: code-side backstop for 2c.1's agent-trusted insert-log contract ---
+grep -qF 'taxonomy_insert_log_gap_query "\`${PROJECT}.${dict_table}\`"' <<< "$script_src" \
+  || fail "main() must run the shared insert-log gap check against this dataset's dict_table"
+grep -qF 'run_start=$(date -u' <<< "$script_src" \
+  || fail "main() must capture run_start before dispatching the agent, to scope the gap check"
+if grep -qF 'gap_count" != "0"' <<< "$script_src" && grep -qF 'residual_valid=false' <<< "$script_src"; then
+  :
+else
+  fail "main() must block the queue signal when the gap check finds an unlogged dictionary row"
+fi
+grep -qF 'non_niq_taxonomy_insert_log entry' <<< "$script_src" \
+  || fail "the blocked result must explain the insert-log gap"
+echo "PASS: main() insert-log gap backstop wiring"
 
 echo "ALL TESTS PASSED"

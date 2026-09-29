@@ -403,21 +403,23 @@ ${step2_block}
                        ${REPO_ROOT}/script/non_niq/dict_patterns/${DATASET}.json in the schema
                        above, so the next session for this dataset reads it instead of
                        re-inferring.
-                     Then insert brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if
-                     you have common misspellings) into \`${PROJECT}.${dict_table}\`, _meta
-                     stamped '{"source":"${agent_meta_source}","timestamp":"<now, ISO 8601 UTC>"}' here
-                     (see the _meta format rule below -- NOT the bare string "${agent_meta_source}", that
-                     is not valid JSON).
+                     Prepare brand + ${dict_identity_col} + keywords (+ ${dict_typo_col} if you
+                     have common misspellings) for the complete dict row; do not INSERT yet.
+                     Include the dict table's existing \`_meta\` column and stamp it with
+                     '{"source":"${agent_meta_source}","timestamp":"<now, ISO 8601 UTC>"}' (see
+                     the _meta format rule below -- NOT the bare string "${agent_meta_source}",
+                     that is not valid JSON).
              Step B: populate the remaining attribute columns for this dict's schema, GROUNDED on
                      existing dict rows' actual vocabulary and formatting -- query
                      \`SELECT DISTINCT <column> FROM ${PROJECT}.${dict_table}\` per attribute column
                      before writing a new value, prefer an existing value over inventing one, and
                      match existing formatting exactly (e.g. "150 ml" not "150ml"). Every column
-                     on the new row must be non-null EXCEPT ${dict_typo_col} -- after inserting,
+                     on the new row must be non-null EXCEPT ${dict_typo_col}. After printing this
+                     product's complete ledger, INSERT the complete dictionary row once, then
                      verify with a \`SELECT\` for any NULL in a non-\`${dict_typo_col}\` column on
                      the just-inserted row (never trust bq's "affected rows" report as proof the
-                     row is complete), and fix any NULL found (grounded via SELECT DISTINCT, same
-                     as above) before moving on.
+                     row is complete) -- an unexpected NULL means Step B's grounding was
+                     incomplete, not something to patch after the fact.
              Then write brand/${qa_identity_col} values pointing at the new entry to
              \`${PROJECT}.${qa_table}\`.
 
@@ -845,6 +847,8 @@ main() {
   prompt=$(build_qa_prompt "$platform" "$country" "$source_table" "$qa_table" "$dict_table" \
     "$filter_table" "$qa_pk_col" "$dict_identity_col" "$dict_typo_col" "$meili_index" "$worklist_file" \
     "$worklist_count" "$product_id_dict" "$tmp_tag" "$agent_meta_source")
+  local run_start
+  run_start=$(date -u '+%Y-%m-%dT%H:%M:%S')
 
   local agent_output=""
   if [[ "$agent_harness" == "codex" ]]; then
@@ -907,6 +911,25 @@ main() {
       .status = "blocked" |
       .blockers = ((.blockers // []) + ["Post-run validation found incomplete residual row accounting; automatic totals were not merged."])
     ' <<< "$result_json")
+  fi
+  if [[ "$residual_valid" == true ]] && [[ "$(extract_rows_created "$agent_output")" != "0" ]]; then
+    # 2c.1 in the prompt is agent-trusted text, not code-enforced (unlike non_niq_qa_v3.py's
+    # builder) -- this is the code-side backstop: any dict row that appeared since run_start with
+    # no matching insert-log row means the agent skipped or failed its mandatory log write.
+    local gap_count
+    gap_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+      "$(taxonomy_insert_log_gap_query "\`${PROJECT}.${dict_table}\`" "${PROJECT}.${dict_table}" \
+        "$run_start" \
+        "JSON_VALUE(log.row_json, '\$.inserted_row.brand') = cur.brand AND JSON_VALUE(log.row_json, '\$.inserted_row.${dict_identity_col}') = cur.\`${dict_identity_col}\`")" \
+      2>/dev/null | tail -1)
+    if [[ ! "$gap_count" =~ ^[0-9]+$ ]] || [[ "$gap_count" != "0" ]]; then
+      residual_valid=false
+      log ERROR "Post-run insert-log verification found ${gap_count:-an unreadable count} of new ${dict_table} row(s) with no matching non_niq_taxonomy_insert_log entry."
+      agent_output=$(jq -c '
+        .status = "blocked" |
+        .blockers = ((.blockers // []) + ["Post-run validation found a new dictionary row with no matching non_niq_taxonomy_insert_log entry; the mandatory 2c.1 same-transaction log write was skipped or failed."])
+      ' <<< "$(extract_result_json "$agent_output")")
+    fi
   fi
   if (( auto_confirmed > 0 )) && [[ "$residual_valid" == true ]]; then
     local auto_result_json
