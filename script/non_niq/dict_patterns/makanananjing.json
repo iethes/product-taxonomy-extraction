@@ -1,0 +1,54 @@
+{
+  "_dataset_note": {
+    "sources": [],
+    "separator": "",
+    "note": "dataset 'makanananjing' (dog food) does NOT have its own dict -- it writes to the shared `sincere-hearth-273704.petfood.petfood_dict`, which is petfood-wide: 1834 Dog rows, 2867 Cat rows, 7 Multi rows (measured 2026-09-11). The dataset's QA table (`petfood.product_id_dict_qa`) and filter table (`petfood.filter_petfood_id`) are shared the same way, so a cat-food listing that shows up in makanananjing's master table is NOT filtered as irrelevant -- 1009 distinct cat products from master_makanananjing_id already carry Cat dict mappings vs only 8 products total in the filter table. petfood_dict has NO _meta column, so dict inserts cannot be _meta-stamped for this dataset."
+  },
+  "sku_type_complete": {
+    "sources": [
+      "sub_brand",
+      "variant",
+      "packsize"
+    ],
+    "separator": " ",
+    "note": "Holds exactly on 4706/4708 rows. e.g. sub_brand 'Smart Heart Canned Adult Dog' + variant 'Beef & Liver' + packsize '400 gr' -> 'Smart Heart Canned Adult Dog Beef & Liver 400 gr'. packsize is always '<n> <gr|kg>' with a space before the unit (never '400gr'); multipacks append ' x <N> pcs' ('50 gr x 20 pcs', '195 gr x 12 pcs'); dual-unit imports keep both ('1.81 kg / 4 lb'). When the listing is a pick-your-own with no single identifiable variant, variant='All Variant' (and flavour='All Variant') -- e.g. 'Petopia Canned Dog Food All Variant 380 gr'. When even the size is unknowable, packsize='All Variant' is an accepted value (4 rows), e.g. 'Pawmeals Lamb All Variant'."
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "note": "sku_type_complete plus ONE trailing space on 4279/4708 rows (the trailing space IS the convention here -- keywords = sku_type_complete exactly on 0 rows). The remaining ~430 rows append extra search tokens after that space (e.g. keywords \"Nature's Protection Mini Adult Small Breed 7.5 kg Nature Natures\"). The QA table's own `keywords` column is a verbatim copy of the matched dict row's `keywords`, and `vlookup` is a copy of `keywords` (NULL on 3752/34717 QA rows, never '')."
+  },
+  "sku_type_rc": {
+    "sources": [
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "note": "Verbatim copy of sku_type_complete on 4172/4708 rows."
+  },
+  "sub_brand_rc": {
+    "sources": [
+      "sub_brand"
+    ],
+    "separator": " ",
+    "note": "Verbatim copy of sub_brand on 4168/4708 rows."
+  },
+  "flavour": {
+    "sources": [
+      "variant"
+    ],
+    "separator": " ",
+    "note": "flavour == variant on the overwhelming majority of rows; group_varian_breakdown is 'Flavour' and group_varian is the flavour family ('Meat', 'Meat Combo', 'Seafood', 'Special', 'Weight or Shape', 'Activity', 'Milk', 'Others')."
+  },
+  "_attribute_conventions": {
+    "sources": [],
+    "separator": "",
+    "note": "animal in ('Dog','Cat','Multi'); sub_category in ('Food','Snack'); type in ('Dry','Wet'); usia is '<Adult Dog|Adult Cat|Kitten|...>' and Multi-animal rows use 'Adult Cat'; life_stage in ('Adult','Growth','Senior',...); bundle 'Yes'/'No' with bundling 'Single Pack'/'Multipack' and bundling_qty the pack count as a STRING; net_weight_in_kg mirrors packsize in kg ('0.05 kg x 20 pcs'); weight_kg is the single-unit kg as a string ('0.05'); weight_volume is total kg to 3 dp ('1.000'); unit is 'gr' or 'kg'; company/manufacture are populated on 4689/4708 rows (unbranded / store-label products use 'Home Industry' for both)."
+  },
+  "_blank_columns": {
+    "sources": [],
+    "separator": "",
+    "note": "srp (160/4708 populated), channel (181), territory (534), unnamed_31 (1) and unnamed_32 (1) are NULL on essentially every row -- leave them NULL, that is the table's own universal convention, even though the v2 harness prompt asks for every non-keyword_typo column to be non-null. keyword_typo is NULL on 4279/4708. net_weight_in_kg / weight_kg are left NULL when the pack weight is genuinely unknowable (precedent: 'Bark Cooked Dog Food Honey Duck Multi variant', which still carries weight_volume '0.000')."
+  }
+}

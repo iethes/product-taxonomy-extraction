@@ -2,11 +2,33 @@
   "sku_type": {
     "sources": ["sub_brand", "scent", "packsize"],
     "separator": " ",
-    "notes": "Compose sub_brand + scent + packsize, skipping null/empty sources. Existing rows retain 'Original' and 'Multi Variant' scent values, so do not suppress them. For a product bundle, sub_brand names the bundled products and packsize lists their sizes in the same order."
+    "note": "Literal concat, NOT trimmed: empty scent/packsize leave load-bearing double/trailing spaces (e.g. 'A2RCROS Sunscreen SPF50+ 30 gr  ', 'Expert Care Physical Sunscreen SPF 50+ PA ++++  Original 30 gr'). Verified 399/411 rows 2026-09-16; the ~12 exceptions are hand-written legacy rows."
   },
   "keywords": {
-    "sources": ["sku_type"],
-    "separator": "",
-    "notes": "Use the clean sku_type value. Some legacy rows have trailing spaces; new rows do not reproduce that artifact."
+    "sources": ["sku_type", "keywords_typo"],
+    "separator": " ",
+    "trim": true,
+    "note": "TRIM(sku_type || ' ' || keywords_typo); when keywords_typo is empty this is just TRIM(sku_type). Verified 411/412 rows 2026-09-16."
+  },
+  "_notes": {
+    "identity_column": "sku_type (dict). The QA table product_id_dict_qa uses sku_type_complete for the same string.",
+    "typo_column": "keywords_typo",
+    "no_meta_column": "babysunscreen_dict has NO _meta column - do not try to stamp it.",
+    "attribute_conventions": {
+      "category": "'Baby & Kids Sunscreen' (359 rows; 'Baby & Kid Sunscreen' is a 23-row legacy typo)",
+      "sub_category": "Lotion | Multi Variant | Spray | Stick | Cream | Cushion | Roll On",
+      "variant": "Face & Body Lotion | Body Lotion | Face Lotion | Face Cream | Multi Variant | Stick",
+      "variant_group": "Sun Protection | Sun Protection + Moisturizing | Multi Variant | Moisturizing | Calming",
+      "age_group": "Baby & Kids | Baby | Kids",
+      "pack_type": "Tube | Bottle | Multi Variant | Stick | Jar | Case | Roll On",
+      "banded": "Single Pack | 2 Packs | 3 Packs | ... (item/unit count in the listing)",
+      "bundle_type": "single | multipack ('multipack' only for N-of-the-same-SKU packs)",
+      "bundling_qty": "FLOAT - number of items in the pack",
+      "bundle_quantity": "FLOAT - N for an 'x N pcs' same-SKU multipack, else 1.0",
+      "scent / group_scent / fragrance_group": "Original | Multi Variant (all three move together)",
+      "gramasi / total_gramasi": "unit size as a bare number string; '' on Multi Variant packsizes; on A + B multi-item rows analysts put only the FIRST component's number",
+      "function / function_additional / ingredient / ingredient_additional": "'Not Available' when unknown - never NULL",
+      "company": "usually '' (empty string), only a few rows carry a real legal entity"
+    }
   }
 }

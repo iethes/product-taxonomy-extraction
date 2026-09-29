@@ -1,0 +1,17 @@
+{
+  "packsize": {
+    "sources": ["gramasi", "satuan"],
+    "separator": " ",
+    "note": "Multipack rows carry a multiplier suffix: '{gramasi} {satuan} x {N} pcs' (e.g. '45 ml x 3 pcs'). A few legacy rows use the '{N} x {gramasi} {satuan}' form instead; prefer the 'x N pcs' form for new rows (23/19/16 rows vs 1-2). When gramasi is 'Multi Variant' the packsize is just 'Multi Variant'."
+  },
+  "sku_type_complete": {
+    "sources": ["sub_brand", "scent", "packsize"],
+    "separator": " ",
+    "note": "1574/1576 existing rows match exactly. sub_brand already begins with the brand, e.g. brand='Adidas' -> sub_brand='Adidas Fresh Endurance' -> sku_type_complete='Adidas Fresh Endurance Unscented 150 ml'."
+  },
+  "keywords": {
+    "sources": ["sku_type_complete", "keyword_typo"],
+    "separator": " ",
+    "note": "keywords = sku_type_complete when keyword_typo is empty (1551/1576 rows); otherwise sku_type_complete + ' ' + keyword_typo."
+  }
+}

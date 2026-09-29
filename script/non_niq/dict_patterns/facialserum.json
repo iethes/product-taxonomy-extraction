@@ -1,16 +1,25 @@
 {
+  "packsize": {
+    "sources": [
+      "gramasi",
+      "satuan"
+    ],
+    "separator": " ",
+    "note": "When gramasi is a numeric size, packsize = '<gramasi> <satuan>' (e.g. '30 ml'). When gramasi is a non-numeric literal such as 'Multi Variant' or 'Set', packsize equals gramasi verbatim and satuan is set to 'Multi Variant' / 'Set' respectively. For bundle_type='multipack', packsize = '<gramasi> <satuan> x <int(bundle_quantity)> pcs' (e.g. '15 ml x 2 pcs')."
+  },
   "sku_type_complete": {
     "sources": [
       "sub_brand",
       "packsize"
     ],
-    "separator": " "
+    "separator": " ",
+    "note": "sub_brand already carries the brand prefix (e.g. 'Skintific 5X Ceramide Serum'), so brand is NOT concatenated again."
   },
   "keywords": {
     "sources": [
-      "sub_brand",
-      "packsize"
+      "sku_type_complete"
     ],
-    "separator": " "
+    "separator": " ",
+    "note": "keywords is a verbatim copy of sku_type_complete in 98.8% of existing rows."
   }
 }

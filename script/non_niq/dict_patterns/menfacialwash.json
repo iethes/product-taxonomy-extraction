@@ -1,0 +1,31 @@
+{
+  "_note": "menfacialwash (master_menfacialwash_id) shares facialfoam's taxonomy tables: dict=facialfoam.facialfoam_dict, qa=facialfoam.product_id_dict_qa, filter=facialfoam.filter_facialfoam_id. Pattern inferred 2026-09-09 from 4333 live facialfoam_dict rows and is identical to dict_patterns/facialfoam.json; keep the two in sync. facialfoam_dict has NO _meta column and bundle_quantity is INT64 (write bare 1, not '1').",
+  "packsize": {
+    "sources": ["gramasi", "satuan"],
+    "separator": " ",
+    "note": "packsize = '<gramasi> <satuan>' (e.g. '100 ml', '50 gr'). Multipacks stay bundle_type='single' and encode the count in packsize only, as '<size> <unit> x <N> pcs' (e.g. '100 gr x 2 pcs'), with gramasi/satuan holding the PER-UNIT size. Multi-item paket/bundle listings use the literal 'Set'; several-scent listings use 'Multi Variant'; several-size listings use 'Multi Size'. 29 rows legitimately have packsize='' (open-ended multi-variant identities such as 'Garnier Face Wash Multi Variant Facial Wash')."
+  },
+  "sku": {
+    "sources": ["sub_brand", "categories"],
+    "separator": " ",
+    "note": "sub_brand already carries the brand prefix (e.g. 'Pond's Men Brightening & Dark Spot', 'Kahf Skin Energizing & Brightening'), so brand is NOT concatenated again. categories is the noun on the pack: 'Facial Wash' (3361) or 'Facial Foam' (826). For packsize='Set' rows in brands whose analysts drop the noun (Clorismen), sku = sub_brand alone even though categories is populated."
+  },
+  "sku_type_complete": {
+    "sources": ["sku", "packsize"],
+    "separator": " ",
+    "note": "Equivalently sub_brand + ' ' + categories + ' ' + packsize, skipping any empty source (never emit a literal 'null' or a dangling separator)."
+  },
+  "keywords": {
+    "sources": ["sku_type_complete"],
+    "separator": " ",
+    "note": "keywords is a verbatim copy of sku_type_complete on ~99% of rows."
+  },
+  "_attribute_vocab": {
+    "variant": "All Skin Type | Acne Skin Type | Oily Skin Type | Sensitive Skin Type | Dry Skin Type",
+    "user_category": "Women | Men | Kids  (men's grooming SKUs use 'Men')",
+    "categories": "Facial Wash | Facial Foam | Set",
+    "bundle_type": "always 'single'",
+    "bundle_quantity": "always 1 (INT64 - write unquoted)",
+    "empty_convention": "'' (empty string), never NULL, including keyword_typo"
+  }
+}

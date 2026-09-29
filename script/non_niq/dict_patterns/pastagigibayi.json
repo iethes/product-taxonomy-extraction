@@ -1,10 +1,39 @@
 {
   "sku_type": {
-    "sources": ["sub_brand", "flavor", "packsize"],
-    "separator": " "
+    "sources": [
+      "sub_brand",
+      "flavor",
+      "packsize"
+    ],
+    "separator": " ",
+    "skip_empty_sources": false,
+    "note": "pastagigibayi's dict identity column is sku_type (there is NO sku_type_complete column on this table; the QA table's sku_type_complete is populated from this value). sub_brand already carries the brand prefix (e.g. 'Kodomo Toothpaste & Toothbrush 2in1 Zig Zag'), so brand is NOT concatenated again. Exact raw CONCAT with a single-space separator holds on 295/297 production rows; empty sources are NOT skipped, so an empty packsize leaves a trailing space (e.g. 'Big Headed Bird Toothpaste Multi Variant ') and a sub_brand that itself ends in a space leaves a literal double space (e.g. 'Jordan Oral Care Kids Toothpaste  Multi Variant 188 gr'). Reproduce those spaces verbatim - downstream joins are exact-string."
   },
   "keywords": {
-    "sources": ["sku_type", "keywords_typo"],
-    "separator": " "
+    "sources": [
+      "sku_type",
+      "keywords_typo"
+    ],
+    "separator": " ",
+    "skip_empty_sources": true,
+    "note": "keywords = TRIM(sku_type || ' ' || keywords_typo). Holds on 296/297 rows. keywords_typo is '' (empty string), NEVER NULL, on 180/297 rows; when it is empty, keywords is a verbatim copy of sku_type with no trailing space."
+  },
+  "packsize": {
+    "sources": [],
+    "separator": " ",
+    "note": "Not generated, but strongly conventionalised: '<number> <unit>' with a space, unit lowercase ('45 gr', '50 ml', '42.5 gr'). For bundle_type='multipack' the suffix ' x <n> pcs' is appended ('45 gr x 3 pcs'). Mixed-form bundles join components with ' + ' ('50 gr + 20 ml', '36 gr + 30 pcs'). A pick-your-own/unknown size uses the literal 'Multi Variant'."
+  },
+  "_schema_notes": {
+    "no_meta_column": "pastagigibayi_dict has NO _meta column - the harness's '_meta stamped on the new dict row' step cannot be performed here. All 16 columns: keywords, keywords_typo, sku_type, sub_brand, brand, category, sub_category, variant, flavor, flavor_group, age_group, packsize, bundle_type, packaging, company, ingredients.",
+    "fixed_columns": "category='Baby Toothpaste' (296/297), sub_category='Baby Toothpaste' (297/297), variant='Toothpaste' (297/297).",
+    "vocabularies": {
+      "flavor_group": ["Fruity", "Multi Variant", "Original", "Gourmand", "Fruity Berries", "Mint"],
+      "age_group": ["Kids", "Baby", "Baby & Kids"],
+      "bundle_type": ["single", "multipack"],
+      "packaging": ["Tube", "Bottle", "Pum"],
+      "ingredients": "Literal 'Not Available' when unknown (dominant convention)."
+    },
+    "filter_table": "filter_pastagigibayi has NO `reason` column. Columns: product_id, sku_name, ecommerce_platform, category, sub_category, product_type, merchant_id, url, _meta.",
+    "qa_table": "product_id_dict_qa PK is prod_id; identity column is sku_type_complete; also has keywords, brand, sku_name, ecommerce_platform, url, _meta."
   }
 }

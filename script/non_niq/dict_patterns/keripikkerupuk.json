@@ -2,11 +2,12 @@
   "sku_type_complete": {
     "sources": ["sub_brand", "variant", "total_size"],
     "separator": " ",
-    "notes": "skip variant when null/empty or equal to 'Original' (case-insensitive); skip any null/empty source; total_size is 'SIZE UNITS' e.g. '250 gr' or '1 kg'"
+    "suffix": " x {size_multiplier} pcs",
+    "notes": "Join the non-empty sources with a single space, then append ' x {size_multiplier} pcs' when size_multiplier is not '' or '1'. Verified against 2243 live rows (2026-09-14): 'Original' is KEPT in the identity (434 rows) - do NOT skip it. sub_brand already carries the brand as a prefix (e.g. brand 'A3' -> sub_brand 'A3 Kerupuk Kentang'). total_size is 'SIZE UNITS' e.g. '250 gr', '1 kg', '5 liter', '16 pcs'. ~8% of legacy rows deviate (stray double/trailing spaces from an older generator that joined empty sources too); match the surrounding family when extending one."
   },
   "keywords": {
-    "sources": ["sub_brand", "variant", "total_size"],
-    "separator": " ",
-    "notes": "same composition as sku_type_complete; skip variant when null/empty or equal to 'Original'; skip any null/empty source"
+    "sources": ["sku_type_complete"],
+    "separator": "",
+    "notes": "keywords is an exact copy of sku_type_complete (2341/2341 rows match, none null)."
   }
 }

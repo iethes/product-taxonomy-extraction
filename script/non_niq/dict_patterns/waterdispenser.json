@@ -1,0 +1,48 @@
+{
+  "_notes": [
+    "SCOPE: sincere-hearth-273704.waterdispenser.waterdispenser_dict (549 rows, verified 2026-09-16).",
+    "Columns: keywords, keyword_typo, sku_type_complete, brand, type, category, model_no,",
+    "product_price. There is NO _meta column on this dict -- do not try to stamp one.",
+    "type = brand + ' ' + model_no (533/549 exact; the mismatches are rows whose model_no carries a",
+    "load-bearing leading/trailing space, e.g. model_no 'HWD-C500E ' -> sku_type_complete",
+    "keywords = TRIM(sku_type_complete + ' ' + keyword_typo), verified 548/549. keyword_typo holds model aliases, e.g. 'CWD 7601' on the Cosmos CWD7601 row -> keywords 'Cosmos CWD7601 Bottom Loading CWD 7601'.",
+    "keyword_typo: '' on 504/549, never NULL. product_price: '' on 335/549, otherwise a thousands-separated string like '1,289,000.00'. Use '' for both on a new row.",
+    "sku_type_complete = type + ' ' + category (548/549; the single exception, sku_type_complete",
+    "'DEP-858VT' on the Denpoo DDB 39 row, is a data error -- do not imitate it).",
+    "keywords = sku_type_complete, optionally followed by extra alias/typo tokens separated by a",
+    "single space (503/549 are exactly equal; the rest append model aliases, e.g. 'Denpoo DDB-920",
+    "Bottom Loading DDB-920 DDB 920').",
+    "keyword_typo: '' on 504/549, never NULL. product_price: '' on 335/549, otherwise a",
+    "thousands-separated string like '1,289,000.00'. Use '' for both on a new row.",
+    "category vocabulary (use an existing value, never invent): 'Bottom Loading' 247, 'Top Loading'",
+    "130, 'Water Dispenser' 79, 'Table Top' 75, 'Top Bottom Load' 17, 'Portable' 1. 'Water",
+    "Dispenser' is the catch-all used for non-gallon-cabinet forms -- gallon pumps, termos/drink-jar",
+    "dispensers, water boilers. The unbranded catch-all row is 'No Brand Water Dispenser Water",
+    "Dispenser' (brand 'No Brand'), which carries 312 QA rows.",
+    "QA TABLE (product_id_dict_qa) conventions, distinct from the dict: PK is prod_id; identity",
+    "column is sku_type_complete; keywords = sku_type_complete; vlookup = sku_type_complete + ' '",
+    "QA TABLE (product_id_dict_qa) conventions, distinct from the dict: PK is prod_id; identity column is sku_type_complete; keywords = the DICT ROW's keywords value (not sku_type_complete -- they differ whenever the dict row carries alias tokens, e.g. 'Cosmos CWD7601 Bottom Loading CWD 7601'); vlookup = NULL on the modal row (3194 NULL vs 2383 using sku_type_complete + ' ') -- write NULL."
+  ],
+  "type": {
+    "sources": [
+      "brand",
+      "model_no"
+    ],
+    "separator": " "
+  },
+  "sku_type_complete": {
+    "sources": [
+      "type",
+      "category"
+    ],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete",
+      "keyword_typo"
+    ],
+    "separator": " ",
+    "transform": "TRIM (keyword_typo is '' on 504/549, so keywords usually equals sku_type_complete; verified 548/549)"
+  }
+}

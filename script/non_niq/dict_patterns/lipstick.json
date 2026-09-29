@@ -1,10 +1,28 @@
 {
+  "packsize": {
+    "sources": ["gramasi", "satuan"],
+    "separator": " ",
+    "note": "packsize = '<gramasi> <satuan>' (e.g. '3.5 gr', '4.6 gr', '5 ml') for bundle_type='single' (11929/12445 rows). For bundle_type='multipack' (496 rows) packsize = '<gramasi> <satuan> x <N> pcs' (e.g. '3.5 gr x 5 pcs', '2.7 gr x 2 pcs') where gramasi/satuan stay PER-UNIT and N == bundle_quantity. 20 legacy sparse rows carry '' for packsize/bundle_type."
+  },
   "sku_type_complete": {
     "sources": ["sub_brand", "warna", "packsize"],
-    "separator": " "
+    "separator": " ",
+    "note": "sku_type_complete = TRIM(CONCAT(sub_brand,' ',warna,' ',packsize)) on 12407/12445 rows (99.7%) -- a mechanical concat, apply it literally. sub_brand ALREADY carries the brand prefix (brand='3CE', sub_brand='3CE Blur Water Tint'), so brand is never concatenated again. warna is the shade ('Bake Beige', '02 Savvy Red', numeric '1'..'6'); use the literal 'Multi Variant' (759 rows) when the listing covers several shades, and 'Original' (289 rows) for products that genuinely have no shade axis (lip serum/balm/treatment) -- 'Original' IS concatenated into stc, it is not dropped. Do not collapse the double space produced when warna is ''."
   },
   "keywords": {
-    "sources": ["sub_brand", "warna", "packsize"],
-    "separator": " "
-  }
+    "sources": ["sku_type_complete"],
+    "separator": " ",
+    "note": "Verbatim copy of sku_type_complete on 10097/12445 rows; the remainder append extra colloquial search tokens. Default to an exact copy."
+  },
+  "bundle_quantity": {
+    "sources": [],
+    "note": "FLOAT64. 1.0 for bundle_type='single', N for multipack. Only 20 legacy rows are NULL -- always write a value."
+  },
+  "_constants": {
+    "variant": "Liquid Lipstick (4519) | Lipstick (4332) | Lip Tint (1563) | Lip Treatment (859) | Lip Gloss (756) | Lip Cream (247) | Lip Liner (123) | Lip Serum | Lip Oil | Lip Balm | Lip Blush | Henna Bibir. NOT a constant -- read the product form off the pack. 'Liquid Lipstick' is the label for liquid/lip-cream matte formulas sold as 'lip cream'; 'Lipstick' is the bullet stick.",
+    "bundle_type": "single (11929) | multipack (496). No other values.",
+    "satuan": "gr (9269) | ml (3063). Read it off the pack, do not default."
+  },
+  "_no_meta_column": "lip_dict has NO _meta column (columns are exactly: keywords, keywords_typo, sku_type_complete, sub_brand, brand, packsize, gramasi, satuan, bundle_quantity, bundle_type, variant, warna). Do not attempt to write _meta on a dict row -- the harness prompt asks for it, but the INSERT will fail.",
+  "_null_convention": "Effectively zero NULLs -- missing values are the empty string '', never NULL (keywords_typo is '' on 10097 rows, NULL on 0). Write '' rather than NULL on every new row; bundle_quantity is the one numeric column, write 1.0/N."
 }

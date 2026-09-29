@@ -1,0 +1,31 @@
+{
+  "sku_type_complete": {
+    "sources": [
+      "brand",
+      "form",
+      "variant_name",
+      "packsize"
+    ],
+    "separator": " ",
+    "note": "NOT composed from other stored dict columns -- shampoo_dict has no column holding the form/variant tokens. Composed by hand as '<brand> <Shampoo|Conditioner|...> <Variant Name> <size> <unit>' e.g. 'Sunsilk Shampoo Black & Shine 900 ml'. Unit is lowercase ' ml' (space before, never '900ml'). Multipacks append ' x <N> pcs' (254 rows 'x 2 pcs', 130 'x 3 pcs', 50 'x 12 pcs'); shampoo+conditioner bundles instead enumerate both sizes, e.g. 'Tsubaki Premium Moist & Repair Shampoo + Conditioner 450 ml + 450 ml'. Indonesian variant wording is used where the brand's own dict family uses it (Pantene 'Anti Ketombe', Dove 'Perawatan Rambut Rontok', Sunsilk 'Halus & Lembut') -- always match the brand's existing dict family rather than translating fresh."
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "note": "Re-measured live 2026-09-15 (2433 rows): keywords = CONCAT(sku_type_complete, ' ') -- ONE TRAILING SPACE -- on 2426/2433 rows. A verbatim copy with no trailing space holds on only 4 rows, so the earlier 'verbatim copy on 2424/2427' note was wrong. Write the trailing space."
+  },
+  "sub_brand": {
+    "sources": [
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "note": "sku_type_complete minus the trailing size/pack suffix, e.g. stc 'Zinc Shampoo Hijab Active Perawatan Rambut Rontok 340 ml x 2 pcs' -> sub_brand 'Zinc Shampoo Hijab Active Perawatan Rambut Rontok'. Populated on 1600/2427 rows; the remaining 827 leave it ''. Holds exactly (after TRIM) on 1384/1600 populated rows; existing rows often carry a trailing space, which is not load-bearing."
+  },
+  "_blank_columns": {
+    "sources": [],
+    "separator": "",
+    "note": "CORRECTED 2026-09-15 (measured on all 2433 rows): the blank attribute columns are NULL, never the empty string -- COUNTIF(col='') = 0 for every one of scent/group_scent/variant/packsize/keyword_typo, while COUNTIF(col IS NULL) = 2221/2376/2376/2413/2431. sub_brand is NULL on 827. 827 rows have sub_brand+scent+variant+packsize all NULL -- that is the modern convention, so a new row normally populates ONLY brand + sku_type_complete + keywords + sub_brand. gramasi, bundling, bundling_qty, packtype and company are STRING (not FLOAT64, an earlier note was wrong) and NULL on 2433/2433 -- always leave them NULL. shampoo_dict has NO _meta column, so dict inserts cannot be _meta-stamped for this category; the harness's 'every column non-null except keyword_typo' rule cannot be satisfied here and must not be forced."
+  }
+}
