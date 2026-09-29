@@ -494,4 +494,17 @@ grep -qF "qa_platform_col=\$(echo \"\$columns_json\" | jq -r '.qa_platform_col')
 grep -qF '"$worklist_count" "$product_id_dict" "$tmp_tag" "$agent_meta_source" "$dict_has_meta" "$image_manifest_file")' <<< "$script_src" || fail "main() must pass dict and image capabilities into the generated prompt"
 echo "PASS: main() wiring"
 
+# --- main() wiring: code-side backstop for 2c.1's agent-trusted insert-log contract ---
+grep -qF 'run_start=$(date -u' <<< "$script_src" \
+  || fail "main() must capture run_start before dispatching the agent, to scope the gap check"
+grep -qF 'apply_taxonomy_insert_log_backstop "$agent_output" \' <<< "$script_src" \
+  || fail "main() must run the shared insert-log backstop against this dataset's dict_table"
+if grep -qF '! agent_output=$(apply_taxonomy_insert_log_backstop' <<< "$script_src" && \
+   grep -qF 'residual_valid=false' <<< "$script_src"; then
+  :
+else
+  fail "main() must block the queue signal when the backstop finds an unlogged dictionary row"
+fi
+echo "PASS: main() insert-log backstop wiring"
+
 echo "ALL TESTS PASSED (part 2: prompt + main)"

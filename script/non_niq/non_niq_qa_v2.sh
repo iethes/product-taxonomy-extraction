@@ -1197,6 +1197,8 @@ main() {
   prompt=$(build_qa_prompt "$dataset" "$platform" "$country" "$source_table" "$qa_table" "$dict_table" \
     "$filter_table" "$qa_pk_col" "$dict_identity_col" "$dict_typo_col" "$meili_index" "$worklist_file" \
     "$worklist_count" "$product_id_dict" "$tmp_tag" "$agent_meta_source" "$dict_has_meta" "$image_manifest_file")
+  local run_start
+  run_start=$(date -u '+%Y-%m-%dT%H:%M:%S')
 
   local agent_output=""
   if [[ "$agent_harness" == "codex" ]]; then
@@ -1360,6 +1362,18 @@ RUNTIME AUTHENTICATION (already prepared):
         | .status = "blocked"
         | .blockers = ((.blockers // []) + ["Post-run validation found incomplete residual row accounting or a missing/invalid per-product decision ledger; automatic totals were not merged."]))
     ' <<< "$agent_output")
+  fi
+  if [[ "$residual_valid" == true ]] && [[ "$(extract_rows_created "$agent_output")" != "0" ]]; then
+    # 2c.1 in the prompt is agent-trusted text, not code-enforced (unlike non_niq_qa_v3.py's
+    # builder) -- apply_taxonomy_insert_log_backstop is the code-side backstop: any dict row that
+    # appeared since run_start with no matching insert-log row means the agent skipped or failed
+    # its mandatory log write.
+    if ! agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \
+      "\`${PROJECT}.${dict_table}\`" "${PROJECT}.${dict_table}" "$run_start" \
+      "JSON_VALUE(log.row_json, '\$.inserted_row.brand') = cur.brand AND JSON_VALUE(log.row_json, '\$.inserted_row.${dict_identity_col}') = cur.\`${dict_identity_col}\`" \
+      "$dict_table"); then
+      residual_valid=false
+    fi
   fi
   if (( auto_confirmed > 0 )) && [[ "$residual_valid" == true ]]; then
     local auto_result_json

@@ -76,6 +76,43 @@ WHERE (${scope_predicate})
 SQL
 }
 
+# apply_taxonomy_insert_log_backstop <agent_output> <target_table_ref> <target_table_plain> <run_start> <log_match_predicate> <label>
+#
+# The one shared implementation of the code-side backstop for the "same BigQuery transaction"
+# insert-log contract (2c.1/2d.1) that eiger_qa.sh, susubayi_qa.sh, non_niq_qa_v2.sh, and its
+# merchant/waterheater variants ask their agent to honor as prompt text only -- runs
+# taxonomy_insert_log_gap_query, and on a nonzero (or unreadable, fail-closed) count merges a
+# blocked status onto <agent_output>.
+#
+# Merges via `. * (...)`, never by discarding the original envelope: for the Claude harness the
+# real result fields live inside a stringified `.result`, and extract_result_json() short-circuits
+# on any top-level `.status` key, so replacing agent_output with a flat object here would silently
+# break every downstream extract_result_json()/extract_rows_created() call on the very run where
+# the backstop actually fired. Relies on the caller's own extract_result_json() being defined
+# (every script that sources this file defines its own copy).
+#
+# Prints the (possibly blocked) agent_output to stdout; callers set residual_valid=false only when
+# this returns 1.
+apply_taxonomy_insert_log_backstop() {
+  local agent_output="$1" target_table_ref="$2" target_table_plain="$3" run_start="$4"
+  local log_match_predicate="$5" label="$6"
+  local gap_count
+  gap_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
+    "$(taxonomy_insert_log_gap_query "$target_table_ref" "$target_table_plain" "$run_start" "$log_match_predicate")" \
+    2>/dev/null | tail -1)
+  if [[ "$gap_count" =~ ^[0-9]+$ ]] && [[ "$gap_count" == "0" ]]; then
+    echo "$agent_output"
+    return 0
+  fi
+  log ERROR "Post-run insert-log verification found ${gap_count:-an unreadable count} of new ${label} row(s) with no matching non_niq_taxonomy_insert_log entry."
+  jq -c --argjson result "$(extract_result_json "$agent_output")" '
+    . * ($result
+      | .status = "blocked"
+      | .blockers = ((.blockers // []) + ["Post-run validation found a new taxonomy row with no matching non_niq_taxonomy_insert_log entry; the mandatory same-transaction log write was skipped or failed."]))
+  ' <<< "$agent_output"
+  return 1
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   case "${1:-}" in
     --self-test)
@@ -95,6 +132,27 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         || { echo "FAIL: gap query missing plain target_table match"; exit 1; }
       echo "$gap_sql" | grep -qF "JSON_VALUE(log.row_json, '\$.product_id') = cur.product_id" \
         || { echo "FAIL: gap query missing caller's log_match_predicate"; exit 1; }
+      extract_result_json() { echo "$1"; }
+      mock_bin=$(mktemp -d)
+      cat > "$mock_bin/bq" <<'MOCK'
+#!/usr/bin/env bash
+printf 'f0_\n%s\n' "${MOCK_GAP_COUNT:-0}"
+MOCK
+      chmod +x "$mock_bin/bq"
+      PATH="$mock_bin:$PATH"
+      if ! clean_output=$(MOCK_GAP_COUNT=0 apply_taxonomy_insert_log_backstop \
+        '{"status":"complete"}' '`proj.eiger.qa`' 'proj.eiger.qa' '2026-01-01T00:00:00Z' 'TRUE' 'eiger.qa'); then
+        echo "FAIL: backstop must return 0 (success) when gap_count is 0"; exit 1
+      fi
+      [[ "$clean_output" == '{"status":"complete"}' ]] \
+        || { echo "FAIL: backstop must pass agent_output through unchanged when gap_count is 0 -> $clean_output"; exit 1; }
+      if blocked_output=$(MOCK_GAP_COUNT=1 apply_taxonomy_insert_log_backstop \
+        '{"status":"complete","rows_qa_confirmed":1}' '`proj.eiger.qa`' 'proj.eiger.qa' '2026-01-01T00:00:00Z' 'TRUE' 'eiger.qa'); then
+        echo "FAIL: backstop must return nonzero when gap_count is nonzero"; exit 1
+      fi
+      echo "$blocked_output" | jq -e '.status == "blocked" and .rows_qa_confirmed == 1' >/dev/null \
+        || { echo "FAIL: backstop must merge blocked status onto agent_output while preserving its other fields -> $blocked_output"; exit 1; }
+      rm -rf "$mock_bin"
       echo "self-test OK: common.sh"
       ;;
     *)

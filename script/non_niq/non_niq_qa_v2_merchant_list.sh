@@ -606,6 +606,18 @@ ${step2_block}
              confident. Only after verifying that row, write brand/${qa_identity_col} values
              pointing at the new entry to \`${PROJECT}.${qa_table}\`.
 
+  2c.1. Mandatory durable insert log for every NEW dictionary row: the dictionary-table INSERT
+        and its log INSERT MUST run in the SAME BigQuery transaction. The shared append-only log
+        table is \`${PROJECT}.magpie_reference.non_niq_taxonomy_insert_log\` with columns
+        (target_table STRING, created_at TIMESTAMP, row_json JSON). Set target_table to the exact
+        three-part target name \`${PROJECT}.${dict_table}\`. row_json MUST be the JSON envelope
+        {"product_id":"<worklist product_id>","ecommerce_platform":"<worklist ecommerce_platform>",
+         "inserted_row":{...exact columns and values inserted into ${PROJECT}.${dict_table}...}}.
+        Write one log row only when this transaction actually inserts a NEW dictionary row; do
+        not log an existing identity, a re-point, a filter, or a zero-row conditional INSERT.
+        If either the dictionary INSERT or its log INSERT fails, the transaction must roll back
+        both. After COMMIT, verify both the exact dictionary row and its matching log row exist.
+
   2d. Self-QA: as an explicit, separate judgment (not folded into 2a-2c's reasoning), state how
       confident you are in the decision you just made for this product. Print the completed ledger
       before any QA or dictionary DML. If the selected identity is false or unsupported, mark the
@@ -1209,6 +1221,8 @@ PY
   prompt=$(build_qa_prompt "$dataset" "$platform" "$country" "$source_table" "$qa_table" "$dict_table" \
     "$filter_table" "$qa_pk_col" "$dict_identity_col" "$dict_typo_col" "$meili_index" "$worklist_file" \
     "$worklist_count" "$product_id_dict" "$tmp_tag" "$agent_meta_source" "$dict_has_meta" "$image_manifest_file")
+  local run_start
+  run_start=$(date -u '+%Y-%m-%dT%H:%M:%S')
 
   local agent_output=""
   if [[ "$agent_harness" == "codex" ]]; then
@@ -1372,6 +1386,18 @@ RUNTIME AUTHENTICATION (already prepared):
         | .status = "blocked"
         | .blockers = ((.blockers // []) + ["Post-run validation found incomplete residual row accounting or a missing/invalid per-product decision ledger; automatic totals were not merged."]))
     ' <<< "$agent_output")
+  fi
+  if [[ "$residual_valid" == true ]] && [[ "$(extract_rows_created "$agent_output")" != "0" ]]; then
+    # 2c.1 in the prompt is agent-trusted text, not code-enforced (unlike non_niq_qa_v3.py's
+    # builder) -- apply_taxonomy_insert_log_backstop is the code-side backstop: any dict row that
+    # appeared since run_start with no matching insert-log row means the agent skipped or failed
+    # its mandatory log write.
+    if ! agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \
+      "\`${PROJECT}.${dict_table}\`" "${PROJECT}.${dict_table}" "$run_start" \
+      "JSON_VALUE(log.row_json, '\$.inserted_row.brand') = cur.brand AND JSON_VALUE(log.row_json, '\$.inserted_row.${dict_identity_col}') = cur.\`${dict_identity_col}\`" \
+      "$dict_table"); then
+      residual_valid=false
+    fi
   fi
   if (( auto_confirmed > 0 )) && [[ "$residual_valid" == true ]]; then
     local auto_result_json
