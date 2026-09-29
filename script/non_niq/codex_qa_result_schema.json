@@ -9,6 +9,7 @@
     "rows_qa_unconfident",
     "rows_filtered",
     "rows_created_in_dict",
+    "rows_unresolved",
     "findings",
     "blockers"
   ],
@@ -30,6 +31,10 @@
       "minimum": 0
     },
     "rows_created_in_dict": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rows_unresolved": {
       "type": "integer",
       "minimum": 0
     },

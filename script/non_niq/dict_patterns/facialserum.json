@@ -1,0 +1,16 @@
+{
+  "sku_type_complete": {
+    "sources": [
+      "sub_brand",
+      "packsize"
+    ],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": [
+      "sub_brand",
+      "packsize"
+    ],
+    "separator": " "
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "sku_type_complete": {
+    "sources": ["type", "single_split", "max_btu_cooling"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["keyword_typo", "type", "model_adjust"],
+    "separator": " "
+  }
+}

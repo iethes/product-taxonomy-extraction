@@ -14,7 +14,7 @@ import struct
 import subprocess
 import sys
 import tempfile
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 import urllib.request
 from urllib.parse import urlsplit
 import zlib
@@ -29,6 +29,8 @@ from non_niq_helper import (
     index_documents_strict,
     parse_categories,
     retrieve_candidates,
+    confirm_casefold_matches,
+    worklist_row_key,
 )
 
 
@@ -68,6 +70,10 @@ class DecisionValidationError(ValueError):
 def _stable_digest(value: Mapping[str, Any]) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return sha256(encoded.encode("utf-8")).hexdigest()
+
+def _packet_id(row: Mapping[str, Any]) -> str:
+    """Return an opaque adapter identifier for one raw worklist row."""
+    return _stable_digest({"worklist_row_key": worklist_row_key(row)})
 
 
 def first_complete_https_url(image_raw: Optional[str]) -> Optional[str]:
@@ -138,14 +144,16 @@ def plan_attempt(row: Mapping[str, Any], qa_state: Mapping[str, Any]) -> Attempt
 
     current_title = _normalize_attempt_text(row.get("sku_name"))
     current_category = _normalize_attempt_text(row.get("kategori"))
+    platform = _normalize_attempt_text(
+        row.get("ecommerce_platform") or row.get("platform")
+    )
     work_item_id = _stable_digest({
         "product_id": str(row.get("product_id", "")),
-        "platform": _canonical_platform(row.get("platform", row.get("ecommerce_platform"))),
+        "platform": platform,
         "country": _normalize_attempt_text(row.get("country")),
         "dataset": _normalize_attempt_text(row.get("dataset")),
         "current_title": current_title,
     })
-    platform = _canonical_platform(row.get("platform", row.get("ecommerce_platform")))
     image_raw = row.get("image_raw", row.get("image"))
     image_url = row.get("image_url")
     if image_url is None:
@@ -218,7 +226,8 @@ def _has_own_image_evidence(
             )
             has_own_image = True
         else:
-            _require(set(item) == {"source", "claim"}, "text evidence has unexpected fields")
+            _require(set(item) == {"source", "claim", "attachment_index"}, "text evidence has unexpected fields")
+            _require(item.get("attachment_index") is None, "text evidence must use null attachment_index")
     return has_own_image
 
 
@@ -232,35 +241,41 @@ def validate_decision_batch(
     _require(len(decisions) == len(packets), "every packet needs exactly one decision")
     packets_by_id = {}
     for packet in packets:
-        product_id = packet.get("product_id")
-        _require(isinstance(product_id, str) and product_id, "packet product_id is required")
-        _require(product_id not in packets_by_id, "duplicate packet product_id")
-        packets_by_id[product_id] = packet
-
+        packet_id = packet.get("packet_id")
+        _require(isinstance(packet_id, str) and packet_id, "packet_id is required")
+        _require(packet_id not in packets_by_id, "duplicate packet_id")
+        packets_by_id[packet_id] = packet
     decisions_by_id = {}
-    common_fields = {
-        "product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence",
+    required_fields = {
+        "packet_id", "product_id", "work_item_id", "input_fingerprint", "kind",
+        "confidence", "evidence", "reason", "candidate_ref", "attributes",
     }
-    allowed_fields = {
-        "filter": common_fields | {"reason"},
-        "map_existing": common_fields | {"candidate_ref"},
-        "create_dict": common_fields | {"attributes"},
-        "defer": common_fields | {"reason"},
+    branch_field = {
+        "filter": "reason",
+        "map_existing": "candidate_ref",
+        "create_dict": "attributes",
+        "defer": "reason",
     }
     for decision in decisions:
         _require(isinstance(decision, Mapping), "decision must be an object")
-        product_id = decision.get("product_id")
-        _require(product_id in packets_by_id, "decision product_id is not in this packet")
-        _require(product_id not in decisions_by_id, "duplicate decision product_id")
-        packet = packets_by_id[product_id]
+        packet_id = decision.get("packet_id")
+        _require(packet_id in packets_by_id, "decision packet_id is not in this batch")
+        _require(packet_id not in decisions_by_id, "duplicate decision packet_id")
+        packet = packets_by_id[packet_id]
+        _require(decision.get("product_id") == packet.get("product_id"), "product_id does not match its packet")
         for field in ("work_item_id", "input_fingerprint"):
             _require(
                 decision.get(field) == packet.get(field),
                 "%s does not match its packet" % field,
             )
         kind = decision.get("kind")
-        _require(kind in allowed_fields, "unsupported decision kind")
-        _require(set(decision) == allowed_fields[kind], "decision has missing or unexpected fields")
+        _require(kind in branch_field, "unsupported decision kind")
+        _require(set(decision) == required_fields, "decision has missing or unexpected fields")
+        for field in ("reason", "candidate_ref", "attributes"):
+            if field == branch_field[kind]:
+                _require(decision.get(field) is not None, "%s is required for %s" % (field, kind))
+            else:
+                _require(decision.get(field) is None, "%s must be null for %s" % (field, kind))
         confidence = decision.get("confidence")
         _require(confidence in {"confident", "unconfident"}, "unsupported confidence")
         evidence = decision.get("evidence")
@@ -314,9 +329,9 @@ def validate_decision_batch(
 
         if not image_ready and kind in {"map_existing", "create_dict"}:
             _require(confidence == "unconfident", "unavailable image cannot produce a confident decision")
-        decisions_by_id[product_id] = decision
+        decisions_by_id[packet_id] = decision
 
-    return [decisions_by_id[packet["product_id"]] for packet in packets]
+    return [decisions_by_id[packet["packet_id"]] for packet in packets]
 
 
 SCHEMA_PATH = Path(__file__).with_name("non_niq_qa_v3_decision_schema.json")
@@ -760,10 +775,6 @@ def _platform_match_sql(platform: str) -> str:
     return "= @platform"
 
 
-def _canonical_platform_sql(column: str) -> str:
-    return "CASE WHEN %s = 'Tokopedia | Shop' THEN 'Tokopedia' ELSE %s END" % (
-        column, column,
-    )
 
 
 def build_worklist_parameters(
@@ -795,9 +806,11 @@ def build_worklist_sql(
     qa = _table_reference(context.project, context.qa_table)
     filter_table = _table_reference(context.project, context.filter_table)
     platform_match = _platform_match_sql(context.platform)
-    source_platform = _canonical_platform_sql("s.ecommerce_platform")
+    # Keep Tokopedia and Tokopedia | Shop distinct. The config's single "tokopedia"
+    # entry selects both raw source values, but QA state must never cross-suppress them.
+    source_platform = "s.ecommerce_platform"
     qa_platform_column = _qa_platform_column(context)
-    qa_platform = _canonical_platform_sql("`%s`" % _identifier(qa_platform_column))
+    qa_platform = "`%s`" % _identifier(qa_platform_column)
     filter_cte = """filter_state AS (
   SELECT DISTINCT product_id FROM %s
 ),
@@ -827,10 +840,9 @@ def build_worklist_sql(
         enrichment_join = "LEFT JOIN enrichment_dedup e ON CAST(e.item_itemid AS STRING) = s.product_id"
         enrichment_select = "e.item_description, e.product_attributes_attrs"
     kategori_clause = "AND s.kategori = @kategori" if kategori else ""
-    merchant_clause = (
-        "(r.cumulative_gmv_share <= 0.9 OR r.merchant_id IN UNNEST(@merchant_ids))"
-        if merchant_ids else "r.cumulative_gmv_share <= 0.9"
-    )
+    merchant_clause = "s.product_tier IN ('Tier 1')"
+    if merchant_ids:
+        merchant_clause = "(%s OR s.merchant_id IN UNNEST(@merchant_ids))" % merchant_clause
     reverify_cte = ""
     reverify_join = ""
     scoped_kategori = ""
@@ -839,14 +851,14 @@ def build_worklist_sql(
     if monthly_reverify:
         scoped_kategori = ", s.kategori AS current_kategori"
         reverify_cte = """prior_snapshot AS (
-  SELECT product_id, sku_name AS prior_sku_name, kategori AS prior_kategori
+  SELECT product_id, ecommerce_platform, sku_name AS prior_sku_name, kategori AS prior_kategori
   FROM %s
   WHERE ecommerce_platform %s
     AND FORMAT_DATE('%%Y-%%m', month) < @month
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY month DESC) = 1
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id, ecommerce_platform ORDER BY month DESC) = 1
 ),
 """ % (source, platform_match)
-        reverify_join = "LEFT JOIN prior_snapshot ps ON ps.product_id = sc.product_id"
+        reverify_join = "LEFT JOIN prior_snapshot ps ON ps.product_id = sc.product_id AND ps.ecommerce_platform = sc.ecommerce_platform"
         reverify_expr = (
             "(ps.product_id IS NOT NULL AND "
             "(ps.prior_sku_name IS DISTINCT FROM sc.sku_name OR "
@@ -863,30 +875,21 @@ def build_worklist_sql(
   %s
   WHERE FORMAT_DATE('%%Y-%%m', s.month) = @month
     AND s.ecommerce_platform %s
+    AND %s
     %s
 ),
-ranked AS (
-  SELECT sc.*,
-    SUM(sc.gmv_monthly) OVER (
-      PARTITION BY sc.country, sc.category, sc.ecommerce_platform, sc.month
-      ORDER BY sc.gmv_monthly DESC, sc.product_id ASC
-      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-    ) / NULLIF(SUM(sc.gmv_monthly) OVER (
-      PARTITION BY sc.country, sc.category, sc.ecommerce_platform, sc.month
-    ), 0) AS cumulative_gmv_share
+stakeholder_scope AS (
+  SELECT sc.*
   FROM scoped sc
   %s
   %s
-),
-stakeholder_scope AS (
-  SELECT * FROM ranked r
-  WHERE %s
 ),
 qa_title_state AS (
   SELECT DISTINCT %s AS product_id,
     %s AS ecommerce_platform,
     REGEXP_REPLACE(TRIM(sku_name), r'\\s+', ' ') AS normalized_sku_name
   FROM %s
+  WHERE %s %s
 ),
 qa_state AS (
   SELECT
@@ -897,6 +900,7 @@ qa_state AS (
     LOGICAL_OR(JSON_VALUE(SAFE.PARSE_JSON(_meta), '$.qa_confidence') = 'confident') AS has_confident,
     LOGICAL_OR(JSON_VALUE(SAFE.PARSE_JSON(_meta), '$.human_review') = 'true') AS has_terminal
   FROM %s
+  WHERE %s %s
   GROUP BY 1, 2
 ),
 %sprioritized AS (
@@ -925,9 +929,9 @@ ORDER BY priority ASC, gmv_monthly DESC
 LIMIT @row_limit
 """ % (
         enrichment_cte, filter_cte, "", source_platform, enrichment_select, scoped_kategori,
-        source, enrichment_join, platform_match, kategori_clause, filter_join, filter_where,
-        merchant_clause, _identifier(context.qa_pk_col), qa_platform, qa,
-        _identifier(context.qa_pk_col), qa_platform, qa, reverify_cte,
+        source, enrichment_join, platform_match, merchant_clause, kategori_clause, filter_join, filter_where,
+        _identifier(context.qa_pk_col), qa_platform, qa, qa_platform, platform_match,
+        _identifier(context.qa_pk_col), qa_platform, qa, qa_platform, platform_match, reverify_cte,
         reverify_expr, reverify_prior, reverify_expr, reverify_join,
     )
 
@@ -1116,16 +1120,16 @@ def resolve_candidate_refs(
     requested = []
     product_hits = {}
     for result in hits:
-        product_id = str(result.get("id", ""))
-        product_hits[product_id] = []
+        row_key = worklist_row_key(result)
+        product_hits[row_key] = []
         for hit in result.get("candidates", []):
             brand = str(hit.get("brand", "")).strip()
             identity = str(hit.get(context.dict_identity_col, hit.get("sku_type_complete", "")).strip())
             if brand and identity:
-                product_hits[product_id].append((brand, identity))
+                product_hits[row_key].append((brand, identity))
                 requested.append((brand, identity))
     if not requested:
-        return {product_id: {} for product_id in product_hits}
+        return {row_key: {} for row_key in product_hits}
     pairs = sorted(set(requested))
     query = """WITH requested AS (
   SELECT brand, identity_value
@@ -1159,16 +1163,35 @@ JOIN requested r
         for row in rows
     }
     output = {}
-    for product_id, candidate_pairs in product_hits.items():
-        output[product_id] = {}
+    for row_key, candidate_pairs in product_hits.items():
+        output[row_key] = {}
         for pair in candidate_pairs:
             row = resolved.get(pair)
             if row is not None:
                 reference = "dict:" + _stable_digest({
                     "brand": pair[0], "identity": pair[1],
                 })[:16]
-                output[product_id][reference] = row
+                output[row_key][reference] = row
     return output
+
+
+def auto_confirm_worklist(
+    client, context: RunContext, rows: Sequence[Mapping[str, Any]],
+    candidate_hits: Sequence[Mapping[str, Any]],
+) -> Set[Tuple[str, str, str]]:
+    """Confirm live dictionary candidates that exactly casefold-match the source title."""
+    return confirm_casefold_matches(
+        client,
+        context.project,
+        context.qa_table,
+        context.qa_pk_col,
+        _qa_platform_column(context),
+        rows,
+        candidate_hits,
+        qa_identity_col=context.qa_identity_col,
+        dict_table=context.dict_table,
+        dict_identity_col=context.dict_identity_col,
+    )
 
 
 def resolve_prior_mappings(
@@ -1205,11 +1228,10 @@ WHERE `%s` IN UNNEST(@product_ids)
 def build_product_packets(
     context: RunContext,
     rows: Sequence[Mapping[str, Any]],
-    candidates: Mapping[str, Mapping[str, Mapping[str, Any]]],
-    images: Mapping[str, PreparedImage],
+    candidates: Mapping[Tuple[str, str, str], Mapping[str, Mapping[str, Any]]],
+    images: Mapping[Tuple[str, str, str], PreparedImage],
     prior_mappings: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> List[Mapping[str, Any]]:
-
     """Combine ordered planning outputs into packet dictionaries bound to local attachments."""
     ordered_rows = sorted(
         rows,
@@ -1217,12 +1239,12 @@ def build_product_packets(
     )
     ordered_images = [
         images.get(
-            str(row["product_id"]),
-            PreparedImage(str(row["product_id"]), None, "unavailable", None),
+            worklist_row_key(row),
+            PreparedImage(_packet_id(row), None, "unavailable", None),
         )
         for row in ordered_rows
     ]
-    attachment_by_product = {
+    attachment_by_packet = {
         attachment.product_id: attachment
         for attachment in build_attachment_manifest(ordered_images)
     }
@@ -1234,25 +1256,28 @@ def build_product_packets(
 
     for row, image in zip(ordered_rows, ordered_images):
         product_id = str(row["product_id"])
+        row_key = worklist_row_key(row)
+        packet_id = _packet_id(row)
         attempt_kind = (
             "listing_change" if row.get("listing_changed")
             else "retry" if int(row.get("priority", 0)) == 1
             else "initial"
         )
         attempt_row = dict(row)
-        attachment = attachment_by_product.get(product_id)
+        attachment = attachment_by_packet.get(image.product_id)
         attempt_row.update({
             "dataset": context.dataset,
-            "platform": context.platform,
+            "platform": str(row.get("ecommerce_platform") or context.platform),
             "country": context.country,
             "image_url": image.image_url,
             "image_status": image.image_status,
             "image_sha256": attachment.sha256 if attachment else "",
         })
         attempt = plan_attempt(attempt_row, {"kind": attempt_kind})
-        candidate_rows = candidates.get(product_id, {})
+        candidate_rows = candidates.get(row_key, {})
         packets.append({
             **dict(row),
+            "packet_id": packet_id,
             "product_id": product_id,
             "work_item_id": attempt.work_item_id,
             "input_fingerprint": attempt.input_fingerprint,
@@ -1395,7 +1420,10 @@ def _build_operations(
         if kind == "filter":
             operation = {**base, "kind": kind}
             operations.append(operation)
-            filtered_products.append((str(packet["product_id"]), context.platform))
+            filtered_products.append((
+                str(packet["product_id"]),
+                str(packet.get("ecommerce_platform") or context.platform),
+            ))
             filter_expected.append(_filter_values(context, operation, now))
             continue
 
@@ -1436,7 +1464,11 @@ def _build_operations(
         qa_identity = identity
         attempts.append(attempt)
         qa_writes.append((
-            str(packet["product_id"]), context.platform, brand, qa_identity, attempt.attempt_id,
+            str(packet["product_id"]),
+            str(packet.get("ecommerce_platform") or context.platform),
+            brand,
+            qa_identity,
+            attempt.attempt_id,
         ))
         operation = {
             **base,
@@ -1539,7 +1571,7 @@ def _filter_values(
     values = {"product_id": str(packet["product_id"])}
     platform_column = _filter_platform_column(context)
     if platform_column:
-        values[platform_column] = context.platform
+        values[platform_column] = str(packet.get("ecommerce_platform") or context.platform)
     for column, packet_column in (
         ("sku_name", "sku_name"),
         ("merchant_id", "merchant_id"),
@@ -1567,7 +1599,7 @@ def _qa_values(
     platform_column = _qa_platform_column(context)
     required = {
         context.qa_pk_col: str(packet["product_id"]),
-        platform_column: context.platform,
+        platform_column: str(packet.get("ecommerce_platform") or context.platform),
         "brand": operation["brand"],
         context.qa_identity_col: operation["qa_identity"],
         "_meta": _metadata(
@@ -1686,7 +1718,7 @@ WHERE d.brand IS NULL;""" % (
         platform_column = _filter_platform_column(context)
         if platform_column:
             predicate += " AND %s = %s" % (
-                _canonical_platform_sql("f.`%s`" % _identifier(platform_column)),
+                "f.`%s`" % _identifier(platform_column),
                 values[platform_column][1],
             )
         predicate += ")"
@@ -1728,7 +1760,7 @@ WHERE d.brand IS NULL;""" % (
     AND JSON_VALUE(SAFE.PARSE_JSON(_meta), '$.attempt_id') = %s
 )""" % (
             qa_table, _identifier(context.qa_pk_col), values[context.qa_pk_col][1],
-            _canonical_platform_sql("q.`%s`" % _identifier(qa_platform_column)),
+            "q.`%s`" % _identifier(qa_platform_column),
             values[qa_platform_column][1],
             attempt_parameter,
         )
@@ -1941,7 +1973,7 @@ WHERE q.`%s` = @product_id
   AND JSON_VALUE(SAFE.PARSE_JSON(_meta), '$.attempt_id') = @attempt_id
 LIMIT 1""" % (
                 qa_table, _identifier(context.qa_pk_col),
-                _canonical_platform_sql("q.`%s`" % _identifier(qa_platform_column)),
+                "q.`%s`" % _identifier(qa_platform_column),
                 _identifier(context.qa_identity_col),
             ),
             [
@@ -1965,9 +1997,7 @@ LIMIT 1""" % (
         predicate = "f.`product_id` = @product_id"
         parameters = [bigquery.ScalarQueryParameter("product_id", "STRING", product_id)]
         if filter_platform_column:
-            predicate += " AND %s = @platform" % _canonical_platform_sql(
-                "f.`%s`" % _identifier(filter_platform_column),
-            )
+            predicate += " AND f.`%s` = @platform" % _identifier(filter_platform_column)
             parameters.append(bigquery.ScalarQueryParameter("platform", "STRING", platform))
         _assert_readback(
             client,
@@ -2189,15 +2219,16 @@ def _is_readable_image(image_bytes: bytes) -> bool:
 
 def prepare_images(
     rows: Sequence[Mapping[str, Any]], context: RunContext, directory: Path,
-) -> Mapping[str, PreparedImage]:
-    """Download at most one normalized, readable image per product."""
+) -> Mapping[Tuple[str, str, str], PreparedImage]:
+    """Download at most one normalized, readable image per raw worklist row."""
     directory.mkdir(parents=True, exist_ok=True)
     images = {}
     for position, row in enumerate(rows, 1):
-        product_id = str(row["product_id"])
+        row_key = worklist_row_key(row)
+        packet_id = _packet_id(row)
         image_url = normalize_first_image_url(row.get("image_raw"), context.platform)
         if not image_url:
-            images[product_id] = PreparedImage(product_id, None, "unavailable", None)
+            images[row_key] = PreparedImage(packet_id, None, "unavailable", None)
             continue
         suffix = Path(urlsplit(image_url).path).suffix.lower() or ".img"
         local_path = directory / ("image-%04d%s" % (position, suffix))
@@ -2212,9 +2243,9 @@ def prepare_images(
                 raise ValueError("downloaded body is not a readable image")
             local_path.write_bytes(image_bytes)
         except Exception:
-            images[product_id] = PreparedImage(product_id, image_url, "unavailable", None)
+            images[row_key] = PreparedImage(packet_id, image_url, "unavailable", None)
         else:
-            images[product_id] = PreparedImage(product_id, image_url, "ready", local_path)
+            images[row_key] = PreparedImage(packet_id, image_url, "ready", local_path)
     return images
 
 
@@ -2225,7 +2256,9 @@ def build_packet_prompt(
     prompt_packets = []
     for packet in packets:
         prompt_packets.append({
+            "packet_id": packet["packet_id"],
             "product_id": packet["product_id"],
+            "ecommerce_platform": packet.get("ecommerce_platform"),
             "work_item_id": packet["work_item_id"],
             "input_fingerprint": packet["input_fingerprint"],
             "sku_name": packet.get("sku_name"),
@@ -2259,19 +2292,19 @@ For pack count, the image resolves ambiguity in title multipliers; distinguish s
 multipacks from a different-product freebie/GWP. Preserve exact observed wording and units, never
 invent a size or variant, and never use a generic category word as a product line when a grounded
 line is unavailable.
-Every decision must echo product_id, work_item_id, and input_fingerprint exactly; include
-confidence and an evidence array. An image-evidence item must cite only that packet's
+Every decision must echo packet_id, product_id, work_item_id, and input_fingerprint exactly;
+include confidence and an evidence array. An image-evidence item must cite only that packet's
 attachment_index. Never cite another packet's attachment. A ready image must be inspected before
 any non-defer decision. With image_status="unavailable", filter is forbidden and map_existing or
 create_dict must be unconfident.
 
 The exact object contract is:
-- all four branches require product_id, work_item_id, input_fingerprint, kind, confidence, and
-  evidence; each object rejects every other field than its branch field;
-- filter adds only reason; map_existing adds only candidate_ref; create_dict adds only attributes;
-  defer adds only reason;
-- evidence items are either {source:"image", claim, attachment_index} or {source, claim} for
-  non-image evidence. Image evidence must use an integer attachment_index.
+- every decision contains exactly these keys: packet_id, product_id, work_item_id,
+  input_fingerprint, kind, confidence, evidence, reason, candidate_ref, attributes;
+- the branch field holds a value and the other two branch fields are null: filter and defer
+  use reason; map_existing uses candidate_ref; create_dict uses attributes;
+- evidence items always carry source, claim, and attachment_index: image evidence uses that
+  packet's integer attachment_index, non-image evidence uses attachment_index null.
 
 The only decision shapes are:
 - filter: kind="filter", confidence="confident", a specific reason, and matching image evidence;
@@ -2460,9 +2493,6 @@ def run(args: Any, client=None) -> int:
         context = resolve_run_context(args, client)
         table = _queue_table_name(context)
         adapter = os.environ.get("AGENT_HARNESS", "codex")
-        if adapter not in {"codex", "omp"}:
-            raise ValueError("AGENT_HARNESS must be codex or omp for v3")
-        verify_adapter_vision(adapter)
         if not args.dry_run:
             drain_outbox(client, context, datetime.now(timezone.utc))
 
@@ -2485,18 +2515,52 @@ def run(args: Any, client=None) -> int:
             return 0
 
         blocked = False
+        auto_confirmed = set()
+        auto_confirmed_rows = 0
+        adapter_verified = False
         for row_chunk in _chunked(rows, 10):
             retrieval_lines = [
-                {"id": str(row["product_id"]), "text": str(row.get("sku_name", ""))}
+                {
+                    "id": str(row["product_id"]),
+                    "product_id": str(row["product_id"]),
+                    "ecommerce_platform": str(row.get("ecommerce_platform", "")),
+                    "text": str(row.get("sku_name", "")),
+                }
                 for row in row_chunk
             ]
             candidate_hits = retrieve_candidates(
                 retrieval_lines, MEILI_URL, context.meili_index,
             )
+            confirmed_in_chunk = set()
+            if not args.dry_run:
+                confirmed_in_chunk = auto_confirm_worklist(
+                    client, context, row_chunk, candidate_hits,
+                )
+                auto_confirmed.update(confirmed_in_chunk)
+                auto_confirmed_rows += sum(
+                    worklist_row_key(row) in confirmed_in_chunk for row in row_chunk
+                )
+            row_chunk = [
+                row for row in row_chunk
+                if worklist_row_key(row) not in auto_confirmed
+            ]
+            if not row_chunk:
+                continue
+            pending_keys = {worklist_row_key(row) for row in row_chunk}
+            pending_ids = {key[0] for key in pending_keys}
+            candidate_hits = [
+                hit for hit in candidate_hits
+                if worklist_row_key(hit) in pending_keys
+            ]
             candidates = resolve_candidate_refs(client, context, candidate_hits)
             prior_mappings = resolve_prior_mappings(
-                client, context, [line["id"] for line in retrieval_lines],
+                client, context, [line["id"] for line in retrieval_lines if line["id"] in pending_ids],
             )
+            if not adapter_verified:
+                if adapter not in {"codex", "omp"}:
+                    raise ValueError("AGENT_HARNESS must be codex or omp for v3")
+                verify_adapter_vision(adapter)
+                adapter_verified = True
             with tempfile.TemporaryDirectory(prefix="non-niq-v3-images-") as directory:
                 images = prepare_images(row_chunk, context, Path(directory))
                 packets = build_product_packets(
@@ -2518,7 +2582,10 @@ def run(args: Any, client=None) -> int:
 
         signal = "BLOCKED" if blocked else "DONE"
         message = "QA v3 session blocked on deferred products" if blocked else "QA v3 session finished"
-        emit_result(table, signal, message, rows=str(len(rows)))
+        emit_result(
+            table, signal, message, rows=str(len(rows)),
+            rows_auto_confirmed=str(auto_confirmed_rows),
+        )
         return 0
     except Exception as error:
         emit_result(table, "FAILED", "%s: %s" % (type(error).__name__, error))

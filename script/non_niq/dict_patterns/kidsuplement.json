@@ -1,0 +1,13 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "flavor", "pack_size"],
+    "separator": " ",
+    "format": "{sub_brand} {flavor} {pack_size}"
+  },
+  "keywords": {
+    "sources": ["sku_type_complete", "keywords_typo"],
+    "separator": " ",
+    "format": "{sku_type_complete} {keywords_typo or ''}"
+  },
+  "notes": "Inferred from ~25 sampled kidsuplement_dict rows (2026-09-17); keywords equals sku_type_complete verbatim in every sampled row since keywords_typo was empty on all of them. pack_size is itself 'gramasi satuan' (e.g. '70 ml') or 'gramasi satuan x N pcs' for multipacks, or literally 'Multi Variant' when gramasi is unknown/variant-agnostic. variant_ta sometimes differs from variant (variant_ta is the taxonomy-aligned version, e.g. variant='' but variant_ta='Immune Booster') -- match existing vocabulary via SELECT DISTINCT, do not invent new variant_ta values."
+}

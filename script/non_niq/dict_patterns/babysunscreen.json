@@ -1,0 +1,12 @@
+{
+  "sku_type": {
+    "sources": ["sub_brand", "scent", "packsize"],
+    "separator": " ",
+    "notes": "Compose sub_brand + scent + packsize, skipping null/empty sources. Existing rows retain 'Original' and 'Multi Variant' scent values, so do not suppress them. For a product bundle, sub_brand names the bundled products and packsize lists their sizes in the same order."
+  },
+  "keywords": {
+    "sources": ["sku_type"],
+    "separator": "",
+    "notes": "Use the clean sku_type value. Some legacy rows have trailing spaces; new rows do not reproduce that artifact."
+  }
+}

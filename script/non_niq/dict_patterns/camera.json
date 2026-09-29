@@ -1,0 +1,17 @@
+{
+  "model": {
+    "sources": ["brand", "ajusted_model"],
+    "separator": " ",
+    "notes": "Usually model = brand + ' ' + ajusted_model (e.g. brand='Akaso', ajusted_model='Brave 7' -> model='Akaso Brave 7'), but a few legacy rows (e.g. brand='Acroder', ajusted_model='') have model set to just the raw name with no brand prefix. Prefer the brand+ajusted_model form for new rows."
+  },
+  "sku_type_complete": {
+    "sources": ["model", "pixel", "screensize"],
+    "separator": " ",
+    "notes": "template = f'{model} {pixel} {screensize}'.rstrip() -- join with single spaces, skip nothing (an empty middle field still consumes its space, producing a visible double space, e.g. 'Caddx Ratel V2 Starlight  1.8 Inch' when pixel is empty), only trim trailing whitespace."
+  },
+  "keywords": {
+    "sources": ["brand", "model", "pixel", "resolution"],
+    "separator": " ",
+    "notes": "template = f'{brand} {model}  {pixel} {resolution}'.rstrip() -- NOTE the literal double space between model and pixel in every observed row (constant in the legacy data, not sourced from another column); resolution is often the literal empty '()' rather than blank. Only trim trailing whitespace."
+  }
+}

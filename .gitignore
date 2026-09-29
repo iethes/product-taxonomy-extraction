@@ -5,3 +5,6 @@ taxonomy_matcher_model.json
 keys/
 __pycache__/
 .worktrees/
+.codex_tmp/
+data/
+claude_codex_meta_analysis_*.csv

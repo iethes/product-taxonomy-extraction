@@ -1,5 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Non-NIQ QA v3 adapter decisions",
+  "description": "Flat strict-compatible schema for the Codex response_format API. Branch exactness is enforced by validate_decision_batch, not here: every decision carries all keys with null for the unused branch field.",
   "type": "object",
   "additionalProperties": false,
   "required": ["decisions"],
@@ -7,92 +9,33 @@
     "decisions": {
       "type": "array",
       "items": {
-        "oneOf": [
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "reason"],
-            "properties": {
-              "product_id": {"type": "string"},
-              "work_item_id": {"type": "string"},
-              "input_fingerprint": {"type": "string"},
-              "kind": {"const": "filter"},
-              "confidence": {"const": "confident"},
-              "reason": {"type": "string", "minLength": 1},
-              "evidence": {"$ref": "#/$defs/evidence"}
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["packet_id", "product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "reason", "candidate_ref", "attributes"],
+        "properties": {
+          "packet_id": {"type": "string"},
+          "product_id": {"type": "string"},
+          "work_item_id": {"type": "string"},
+          "input_fingerprint": {"type": "string"},
+          "kind": {"enum": ["filter", "map_existing", "create_dict", "defer"]},
+          "confidence": {"enum": ["confident", "unconfident"]},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source", "claim", "attachment_index"],
+              "properties": {
+                "source": {"type": "string"},
+                "claim": {"type": "string"},
+                "attachment_index": {"type": ["integer", "null"]}
+              }
             }
           },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "candidate_ref"],
-            "properties": {
-              "product_id": {"type": "string"},
-              "work_item_id": {"type": "string"},
-              "input_fingerprint": {"type": "string"},
-              "kind": {"const": "map_existing"},
-              "confidence": {"enum": ["confident", "unconfident"]},
-              "candidate_ref": {"type": "string", "minLength": 1},
-              "evidence": {"$ref": "#/$defs/evidence"}
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "attributes"],
-            "properties": {
-              "product_id": {"type": "string"},
-              "work_item_id": {"type": "string"},
-              "input_fingerprint": {"type": "string"},
-              "kind": {"const": "create_dict"},
-              "confidence": {"enum": ["confident", "unconfident"]},
-              "attributes": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}},
-              "evidence": {"$ref": "#/$defs/evidence"}
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["product_id", "work_item_id", "input_fingerprint", "kind", "confidence", "evidence", "reason"],
-            "properties": {
-              "product_id": {"type": "string"},
-              "work_item_id": {"type": "string"},
-              "input_fingerprint": {"type": "string"},
-              "kind": {"const": "defer"},
-              "confidence": {"const": "unconfident"},
-              "reason": {"type": "string", "minLength": 1},
-              "evidence": {"$ref": "#/$defs/evidence"}
-            }
-          }
-        ]
-      }
-    }
-  },
-  "$defs": {
-    "evidence": {
-      "type": "array",
-      "items": {
-        "oneOf": [
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["source", "claim"],
-            "properties": {
-              "source": {"type": "string", "not": {"const": "image"}},
-              "claim": {"type": "string", "minLength": 1}
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["source", "claim", "attachment_index"],
-            "properties": {
-              "source": {"const": "image"},
-              "claim": {"type": "string", "minLength": 1},
-              "attachment_index": {"type": "integer", "minimum": 1}
-            }
-          }
-        ]
+          "reason": {"type": ["string", "null"]},
+          "candidate_ref": {"type": ["string", "null"]},
+          "attributes": {"type": ["object", "null"], "additionalProperties": {"type": "string"}}
+        }
       }
     }
   }

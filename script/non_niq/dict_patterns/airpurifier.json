@@ -1,0 +1,21 @@
+{
+  "ajusted_model": {
+    "sources": ["model"],
+    "separator": "",
+    "note": "model with '-' replaced by ' ' (regex hyphen-to-space, not a simple concat)"
+  },
+  "type": {
+    "sources": ["brand", "model"],
+    "separator": " "
+  },
+  "sku_type_complete": {
+    "sources": ["brand", "model", "coverage"],
+    "separator": " ",
+    "note": "coverage appended only when non-empty; skip cleanly when coverage is ''/NULL"
+  },
+  "keywords": {
+    "sources": ["keyword_typo", "brand", "model", "ajusted_model"],
+    "separator": " ",
+    "note": "keyword_typo prefixed only when non-empty; skip cleanly when keyword_typo is ''/NULL"
+  }
+}

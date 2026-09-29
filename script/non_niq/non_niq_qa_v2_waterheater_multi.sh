@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# TEMPORARY copy of non_niq_qa_v2.sh, scoped to waterheater "Multi" listings only: worklist is
+# further restricted to product_ids that master_waterheater_regional_new labels
+# sku_type_complete LIKE '%multi%' with daily_gmv > 0 AND product_tier = 'Tier 1' in the same month.
+# Delete once the multi-variant backlog is done. Usage: same as non_niq_qa_v2.sh, dataset must be
+# "waterheater":  script/non_niq/non_niq_qa_v2_waterheater_multi.sh waterheater shopee SG
+
 # A QA run can stay alive for hours while another terminal/agent edits this shared checkout.
 # Bash reads an executing script incrementally, so replacing the file mid-run can make the old
 # process resume at a shifted byte offset and report a late syntax error after its DML completed.
@@ -229,6 +235,13 @@ worklist_query() {
 "
   fi
 
+  # Temporary waterheater "multi" scope (see header). Regional table joins on product_id + month.
+  local multi_clause="    AND s.product_id IN (
+      SELECT r.product_id FROM \`${PROJECT}.waterheater.master_waterheater_regional_new\` r
+      WHERE r.month = s.month AND LOWER(r.sku_type_complete) LIKE '%multi%'
+        AND r.daily_gmv > 0 AND r.product_tier = 'Tier 1')
+"
+
   # master_table_prod already assigns Tier 1 from the top-90%-GMV calculation. Do not
   # recalculate it here: a combined Tokopedia / Tokopedia | Shop GMV window would incorrectly
   # alter the two raw platform populations.
@@ -272,7 +285,7 @@ WITH ${enrichment_cte_and_join}${filter_cte}scoped AS (
   WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}'
     AND s.ecommerce_platform $(platform_match_clause "$platform_titlecase")
     AND ${stakeholder_scope_clause}
-${kategori_clause}${brand_clause}),
+${kategori_clause}${brand_clause}${multi_clause}),
 stakeholder_scope AS (
   SELECT sc.*
   FROM scoped sc
@@ -945,6 +958,10 @@ main() {
   fi
   local dataset="$1" platform="$2" country="${3:-ID}" max_turns="${4:-500}" max_rows="${5:-100}" kategori="${6:-}"
   country="${country^^}"
+  if [[ "$dataset" != "waterheater" ]]; then
+    echo "$0 is a temporary waterheater-only copy; use non_niq_qa_v2.sh for '${dataset}'." >&2
+    exit 1
+  fi
   local monthly_reverify="${MONTHLY_REVERIFY:-}"
   [[ -n "$monthly_reverify" ]] && log INFO "MONTHLY_REVERIFY enabled -- worklist will force re-review of product_ids whose sku_name/kategori changed since their prior month's row."
 

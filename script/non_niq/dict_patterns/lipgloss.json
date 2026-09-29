@@ -1,0 +1,18 @@
+{
+  "sku_type_complete": {
+    "sources": [
+      "sub_brand",
+      "warna",
+      "packsize"
+    ],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": [
+      "sub_brand",
+      "warna",
+      "packsize"
+    ],
+    "separator": " "
+  }
+}

@@ -15,6 +15,7 @@ set -euo pipefail
 # Requires QUEUE_DATABASE_URL (see script/load_env.sh / .env.example).
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/queue_common.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex_sandbox_preflight.sh"
 
 QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
 
@@ -57,6 +58,10 @@ main() {
   source "$(dirname "$0")/../load_env.sh"
   QUEUE_TABLE="${QUEUE_SCHEMA:-public}.task_queue"
   : "${QUEUE_DATABASE_URL:?QUEUE_DATABASE_URL must be set (via .env or the environment)}"
+  if [[ "${AGENT_HARNESS:-claude}" == "codex" ]] && ! codex_sandbox_preflight; then
+    echo "Non-NIQ queue worker stopped before claiming a task; repair the Codex sandbox, then restart the worker." >&2
+    return 1
+  fi
   WORKER_ID="non-niq-$(hostname)-$$"
   queue_main_loop "non_niq_qa" "$WORKER_ID" run_task
 }

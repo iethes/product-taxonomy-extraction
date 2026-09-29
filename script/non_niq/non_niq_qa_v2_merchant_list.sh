@@ -33,7 +33,16 @@ if [[ -n "${NON_NIQ_QA_V2_SNAPSHOT:-}" ]]; then
   trap cleanup_non_niq_qa_v2_runtime EXIT
 fi
 
-# Usage: script/non_niq/non_niq_qa_v2.sh <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS] [KATEGORI]
+# COPY of non_niq_qa_v2.sh with a different worklist scope: instead of Tier 1 + force-include
+# merchants for the latest month, the worklist is every product_id (latest qualifying row) on
+# master_table_prod with month >= MIN_MONTH, qa_status = 'Not Reviewed', sold_monthly > 0 and
+# merchant_id in the merchant list that MERCHANT_CSV holds for <DATASET> (columns: dataset,
+# merchant_id, ...). Filter-table exclusion and the QA-title/retry check still apply. The dataset
+# must have an active config Sheet row AND at least one merchant in the CSV, else this fails fast.
+#       MERCHANT_CSV=data/2026-09-28_req_labelling_cookiesbiscuit.csv MIN_MONTH=2026-01-01  (defaults)
+# Scratch files use a `_merchants` tag suffix so this never collides with a regular v2 run.
+#
+# Usage: script/non_niq/non_niq_qa_v2_merchant_list.sh <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS] [KATEGORI]
 # e.g.  script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee
 #       script/non_niq/non_niq_qa_v2.sh lighting shopee TH
 #       script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee ID 500 400
@@ -229,13 +238,14 @@ worklist_query() {
 "
   fi
 
-  # master_table_prod already assigns Tier 1 from the top-90%-GMV calculation. Do not
-  # recalculate it here: a combined Tokopedia / Tokopedia | Shop GMV window would incorrectly
-  # alter the two raw platform populations.
-  local stakeholder_scope_clause="s.product_tier IN ('Tier 1')"
-  if [[ -n "$forced_merchant_ids_sql" ]]; then
-    stakeholder_scope_clause="(${stakeholder_scope_clause} OR s.merchant_id IN (${forced_merchant_ids_sql}))"
+  # Merchant-list scope (replaces the Tier 1 / force-include scope): slot 11 now carries the CSV's
+  # quoted merchant_id list. Fail loudly rather than silently emit `IN ()` / an unscoped query.
+  if [[ -z "$forced_merchant_ids_sql" ]]; then
+    echo "worklist_query: empty merchant_id list" >&2
+    return 1
   fi
+  local min_month="${MIN_MONTH:-2026-01-01}"
+  [[ "$min_month" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "MIN_MONTH must be YYYY-MM-DD" >&2; return 1; }
 
   # listing_changed remains an optional safety review for categories that explicitly opt in. The
   # normal title-mismatch path below already catches title changes relative to QA history.
@@ -269,10 +279,14 @@ WITH ${enrichment_cte_and_join}${filter_cte}scoped AS (
          ${enrichment_select}${scoped_kategori_select}
   FROM \`${PROJECT}.${source_table}\` s
   ${enrichment_join}
-  WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}'
+  WHERE s.month >= '${min_month}'
+    AND s.qa_status = 'Not Reviewed'
+    AND s.sold_monthly > 0
+    AND s.merchant_id IN (${forced_merchant_ids_sql})
     AND s.ecommerce_platform $(platform_match_clause "$platform_titlecase")
-    AND ${stakeholder_scope_clause}
-${kategori_clause}${brand_clause}),
+${kategori_clause}${brand_clause}  -- one row per product: its most recent qualifying month
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY s.product_id, s.ecommerce_platform ORDER BY s.month DESC) = 1
+),
 stakeholder_scope AS (
   SELECT sc.*
   FROM scoped sc
@@ -423,12 +437,11 @@ build_qa_prompt() {
 Non-NIQ Agentic QA session (v2 -- current-title worklist) for dataset=${dataset},
 platform=${platform}, country=${country}. See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the
 decision tree, confidence loop, and _meta conventions this still implements -- read it in full
-before starting. The normal worklist filters confirmed out-of-scope products, then uses the source
-table's precomputed Tier 1 product_tier values (the top-90%-GMV population). It includes
-any current sku_name that has no matching QA row for the same product_id, raw ecommerce_platform,
-and whitespace-normalized title. Client OS Only and Competitor OS merchants are included regardless
-of tier or GMV, including zero-GMV products, but filter exclusions and the same QA checks still
-apply. Pending-unconfident retries remain an explicit operational exception to that normal scope.
+before starting. This worklist is scoped to a requested merchant list: products on the source table
+(month >= ${MIN_MONTH:-2026-01-01}) with qa_status 'Not Reviewed', sold_monthly > 0 and a merchant_id from that
+list, minus confirmed out-of-scope (filter-table) products. It includes any current sku_name that has
+no matching QA row for the same product_id, raw ecommerce_platform, and whitespace-normalized title.
+Pending-unconfident retries remain an explicit operational exception to that normal scope.
 
 Resolved for this run: source_table=${PROJECT}.${source_table} (master_table_prod, NOT the _dev
 table -- confirmed a separate table with its own qa_status column), qa_table=${PROJECT}.${qa_table},
@@ -447,8 +460,7 @@ BigQuery to re-fetch it, and do NOT trust any other row count than ${worklist_co
 (in slices if it's too large for one Read) rather than querying BigQuery for it. Each line has:
 product_id, sku_name, image, gmv_monthly, ecommerce_platform, merchant_id,
 item_description, product_attributes_attrs, listing_changed, prior_sku_name, prior_kategori,
-priority. It is already scoped to the post-filter source-table Tier 1 population
-plus products from whitelisted Client OS Only and Competitor OS merchants regardless of GMV,
+priority. It is already scoped to the requested merchant list (see above), post-filter,
 with a product considered reviewed only when its current whitespace-normalized sku_name matches a
 QA row for the same product_id and raw ecommerce_platform. It is prioritized (current-title mismatches before
 agent-flagged-unconfident retries, both by gmv_monthly descending) -- process it in that order. If you cannot account for all
@@ -1012,17 +1024,30 @@ main() {
   fi
   log INFO "Latest month resolved: ${month}"
 
-  # Match the reference Sheet's category label, not the dataset name. The helper handles
-  # Tokopedia | Shop aliases. Lookup failures retain the existing non-fatal behavior.
-  local platform_titlecase="${platform^}" category
-  category=$(echo "$category_json" | jq -r '.category')
-  log INFO "Checking merchant-allowlist Sheet (country=${country}, category=${category}, platform=${platform_titlecase})..."
-  local forced_merchant_ids_json forced_merchant_ids_sql forced_merchant_count
-  forced_merchant_ids_json=$("$PYTHON_BIN" "$(dirname "$SCRIPT_SOURCE")/non_niq_helper.py" forced-merchants \
-    --country "$country" --category "$category" --platform "$platform_titlecase") || forced_merchant_ids_json="[]"
-  forced_merchant_ids_sql=$(echo "$forced_merchant_ids_json" | jq -r '[.[] | @json] | join(",")') || forced_merchant_ids_sql=""
-  forced_merchant_count=$(echo "$forced_merchant_ids_json" | jq 'length') || forced_merchant_count=0
-  log INFO "Force-include merchants resolved: ${forced_merchant_count}"
+  # The dataset is already confirmed present in the config Sheet (category_json above). Now its
+  # merchant list from the CSV; utf-8-sig because the file carries a BOM, and csv (not cut/awk)
+  # because merchant_name can contain commas. Unlike the old allowlist lookup, a missing/empty
+  # list is fatal: without it the worklist would have no scope.
+  local merchant_csv="${MERCHANT_CSV:-${REPO_ROOT}/data/2026-09-28_req_labelling_cookiesbiscuit.csv}"
+  local forced_merchant_ids_sql forced_merchant_count
+  if ! forced_merchant_ids_sql=$("$PYTHON_BIN" - "$merchant_csv" "$dataset" <<'PY'
+import csv, sys
+path, dataset = sys.argv[1:3]
+with open(path, newline="", encoding="utf-8-sig") as f:
+    ids = sorted({r["merchant_id"].strip() for r in csv.DictReader(f)
+                  if r["dataset"].strip() == dataset and r["merchant_id"].strip()})
+if not all(i.isdigit() for i in ids):  # ids are interpolated into SQL as string literals
+    sys.exit("non-numeric merchant_id in %s for %s" % (path, dataset))
+print(",".join("'%s'" % i for i in ids))
+PY
+  ) || [[ -z "$forced_merchant_ids_sql" ]]; then
+    echo "No usable merchant_ids for dataset=${dataset} in ${merchant_csv}" >&2
+    echo "QUEUE_SIGNAL: FAILED"
+    emit_result "${dataset}:${platform}" "FAILED" "No merchant_ids for dataset in ${merchant_csv}"
+    exit 1
+  fi
+  forced_merchant_count=$(tr -cd ',' <<< "$forced_merchant_ids_sql" | wc -c)
+  log INFO "Merchant list from ${merchant_csv}: $((forced_merchant_count + 1)) merchant_ids for ${dataset}"
 
   local meili_index="${dataset}_taxonomy_qa"
 
@@ -1033,7 +1058,7 @@ main() {
   # a real run saw its worklist file's row count change mid-read (300 -> empty -> 215) from a
   # sibling shard's concurrent `bq query ... > "$worklist_file"` write. Sanitized because kategori
   # is free-text from the Sheet (e.g. "Connected Light" has a space).
-  local tmp_tag="${dataset}_${platform}_${country}"
+  local tmp_tag="${dataset}_${platform}_${country}_merchants"
   if [[ -n "$kategori" ]]; then
     tmp_tag="${tmp_tag}_$(echo "$kategori" | tr -cs 'A-Za-z0-9' '_' | sed 's/^_//;s/_$//')"
   fi
@@ -1051,7 +1076,7 @@ main() {
   # status: partial without unresolved rows -> QUEUE_SIGNAL: DONE; unresolved rows need review.
   # --max_rows=1000000 is NOT optional -- bq query silently
   # defaults to --max_rows=100 otherwise (v1 confirmed this live).
-  log INFO "Querying BigQuery to materialize the worklist (post-filter Tier 1 + merchant whitelist, limit=${max_rows})..."
+  log INFO "Querying BigQuery to materialize the worklist (merchant-list scope, post-filter, limit=${max_rows})..."
   local worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"
   local worklist_json="/tmp/${tmp_tag}_v2_full_worklist.json"
   if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=json --max_rows=1000000 \
@@ -1078,10 +1103,10 @@ main() {
   worklist_count=$(wc -l < "$worklist_file" | tr -d ' ')
 
   if [[ "$worklist_count" == "0" ]]; then
-    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, post-filter Tier 1 + merchant whitelist) -- nothing to do."
+    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2 merchant-list, post-filter) -- nothing to do."
     rm -f "$worklist_file"
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
-    emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope post-filter Tier 1 + merchant whitelist worklist for ${dataset}/${platform}/${country}/${month}"
+    emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope merchant-list worklist for ${dataset}/${platform}/${country}/${month}"
     exit 0
   fi
 

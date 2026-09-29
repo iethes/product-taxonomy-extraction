@@ -1,0 +1,12 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "variant", "total_size"],
+    "separator": " ",
+    "notes": "sub_brand already includes the brand prefix in this dict (for example, 'Ailisha Cookie Coated Chocolate'); skip any null or empty source. Existing rows retain 'Original' in variant, so do not suppress it."
+  },
+  "keywords": {
+    "sources": ["sub_brand", "variant", "total_size"],
+    "separator": " ",
+    "notes": "Same composition as sku_type_complete. Some legacy rows have a trailing space; new rows use the clean composed value."
+  }
+}

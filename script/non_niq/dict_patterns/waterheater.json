@@ -1,0 +1,5 @@
+{
+  "keywords": {"sources": ["keyword_typo", "sku_type_complete", "ajusted_model"], "separator": "", "note": "keyword_typo NULL -> empty string, then always one space before sku_type_complete, no separator before ajusted_model. e.g. ' Rezo CORAL 42PCORAL 42P'"},
+  "sku_type_complete": {"sources": ["brand", "model"], "separator": " "},
+  "ajusted_model": {"sources": ["model"], "note": "model with non-alphanumeric characters (-, (, ), /) replaced by single spaces; 'system' is Instan (instant/tankless) or Tank (storage)"}
+}

@@ -1,0 +1,16 @@
+{
+  "adjusted_model": {
+    "sources": ["model"],
+    "separator": "",
+    "note": "model with '-' and '/' replaced by ' ' (regex substitution, not a simple concat), e.g. model='MC-SB30JW049' -> 'MC SB30JW049', model='NT 38/1' -> 'NT 38 1'. When model has neither, adjusted_model == model."
+  },
+  "sku_type_complete": {
+    "sources": ["brand", "model"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["brand", "model"],
+    "separator": " ",
+    "note": "Equals sku_type_complete on ~99.9% of live rows (brand + ' ' + model). keyword_typo is a separate free-text column, '' when there are no known misspellings; not prefixed into keywords. Unknown power/capacity/function/vacuum_type are stored as '' (empty string), not NULL; wired is 'Cordless' on nearly every row regardless of real cord type (legacy)."
+  }
+}

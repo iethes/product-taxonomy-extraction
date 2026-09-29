@@ -29,6 +29,7 @@ from non_niq_qa_v3 import (
 
 def _packet(product_id="p-1", attachment_index=1, image_status="ready"):
     return {
+        "packet_id": "packet-" + product_id,
         "product_id": product_id,
         "work_item_id": "work-" + product_id,
         "input_fingerprint": "fingerprint-" + product_id,
@@ -42,6 +43,7 @@ def _packet(product_id="p-1", attachment_index=1, image_status="ready"):
 
 def _decision(packet, kind, **fields):
     decision = {
+        "packet_id": packet["packet_id"],
         "product_id": packet["product_id"],
         "work_item_id": packet["work_item_id"],
         "input_fingerprint": packet["input_fingerprint"],
@@ -52,6 +54,9 @@ def _decision(packet, kind, **fields):
             "claim": "package text matches",
             "attachment_index": packet["attachment_index"],
         }],
+        "reason": None,
+        "candidate_ref": None,
+        "attributes": None,
     }
     decision.update(fields)
     return decision
@@ -100,12 +105,11 @@ def test_prepare_images_rejects_html_and_accepts_decodable_png(monkeypatch, tmp_
         {"product_id": "html", "image_raw": "https://example.com/html.png"},
         {"product_id": "png", "image_raw": "https://example.com/valid.png"},
     ]
-
     images = prepare_images(rows, _context("Tokopedia"), tmp_path / "downloads")
-    assert images["html"].image_status == "unavailable"
-    assert images["html"].local_path is None
-    assert images["png"].image_status == "ready"
-    assert images["png"].local_path is not None
+    assert images[("html", "", "")].image_status == "unavailable"
+    assert images[("html", "", "")].local_path is None
+    assert images[("png", "", "")].image_status == "ready"
+    assert images[("png", "", "")].local_path is not None
 
 
 def test_attachment_manifest_uses_product_order_and_neutral_names(tmp_path):
@@ -236,7 +240,7 @@ def test_rejects_foreign_image_evidence_after_own_attachment_evidence():
 def test_confident_filter_requires_own_image_evidence():
     packet = _packet()
     decision = _decision(packet, "filter", reason="outside category")
-    decision["evidence"] = [{"source": "title", "claim": "wrong category"}]
+    decision["evidence"] = [{"source": "title", "claim": "wrong category", "attachment_index": None}]
     with pytest.raises(DecisionValidationError):
         validate_decision_batch({"decisions": [decision]}, [packet])
 
@@ -533,7 +537,7 @@ def test_table_reference_accepts_live_numeric_enrichment_table_name():
         "babybath.0_pipeline_babybath_shopee_id",
     ) == "`sincere-hearth-273704.babybath.0_pipeline_babybath_shopee_id`"
 
-def test_worklist_sql_preserves_v2_scope_and_tokopedia_canonicalization():
+def test_worklist_sql_uses_source_tiers_and_keeps_tokopedia_channels_separate():
     sql = qa_v3.build_worklist_sql(
         _context("Tokopedia"),
         max_rows=10,
@@ -541,15 +545,37 @@ def test_worklist_sql_preserves_v2_scope_and_tokopedia_canonicalization():
         monthly_reverify=False,
         merchant_ids=(),
     )
-    assert "r.cumulative_gmv_share <= 0.9" in sql
+    assert "s.product_tier IN ('Tier 1')" in sql
+    assert "cumulative_gmv_share" not in sql
     assert "JSON_VALUE(SAFE.PARSE_JSON(_meta)" in sql
     assert "qa_status" not in sql.lower()
     assert "Tokopedia | Shop" in sql
+    assert "CASE WHEN s.ecommerce_platform = 'Tokopedia | Shop'" not in sql
     assert "`project.babybath.filter_babybath`" in sql
     assert "ORDER BY priority ASC, gmv_monthly DESC" in sql
     assert "s.image AS image_raw" in sql
     assert "REPLACE(s.image" not in sql
     assert "sc.image_raw" in sql
+
+def test_worklist_sql_scopes_qa_state_by_platform_column():
+    sql = qa_v3.build_worklist_sql(
+        _context("Shopee"),
+        max_rows=10,
+        kategori="",
+        monthly_reverify=False,
+        merchant_ids=(),
+    )
+    assert "WHERE `ecommerce_platform` = @platform" in sql
+    assert "WHERE = @platform" not in sql
+    tokopedia_sql = qa_v3.build_worklist_sql(
+        _context("Tokopedia"),
+        max_rows=10,
+        kategori="",
+        monthly_reverify=False,
+        merchant_ids=(),
+    )
+    assert "WHERE `ecommerce_platform` IN ('Tokopedia', 'Tokopedia | Shop')" in tokopedia_sql
+    assert "WHERE IN (" not in tokopedia_sql
 
 
 def test_missing_dict_pattern_fails_before_retrieval(tmp_path):
@@ -567,9 +593,113 @@ def test_candidate_pair_parameter_serializes_for_bigquery():
     refs = qa_v3.resolve_candidate_refs(
         RecordingClient(),
         _context(),
-        [{"id": "p-1", "candidates": [{"brand": "Acme", "sku_type": "Acme Wash"}]}],
+        [{
+            "id": "p-1", "product_id": "p-1", "ecommerce_platform": "Shopee",
+            "query_sku_name": "Acme Wash",
+            "candidates": [{"brand": "Acme", "sku_type": "Acme Wash"}],
+        }],
     )
-    assert refs == {"p-1": {}}
+    assert refs == {("p-1", "Shopee", "Acme Wash"): {}}
+
+def test_candidate_refs_and_packets_keep_raw_worklist_rows_separate(tmp_path):
+    class Row:
+        def __init__(self, values):
+            self.values = values
+
+        def items(self):
+            return self.values.items()
+
+    class Client:
+        def query(self, sql, job_config):
+            return SimpleNamespace(result=lambda: [
+                Row({"brand": "Acme", "sku_type": "First"}),
+                Row({"brand": "Acme", "sku_type": "Second"}),
+            ])
+
+    rows = [
+        {
+            "product_id": "same", "ecommerce_platform": "Tokopedia",
+            "sku_name": "Shared", "priority": 0, "gmv_monthly": 10,
+        },
+        {
+            "product_id": "same", "ecommerce_platform": "Tokopedia | Shop",
+            "sku_name": "Shared", "priority": 0, "gmv_monthly": 9,
+        },
+    ]
+    hits = [
+        {
+            "id": "same", "product_id": "same", "ecommerce_platform": "Tokopedia",
+            "query_sku_name": "Shared",
+            "candidates": [{"brand": "Acme", "sku_type": "First"}],
+        },
+        {
+            "id": "same", "product_id": "same", "ecommerce_platform": "Tokopedia | Shop",
+            "query_sku_name": "Shared",
+            "candidates": [{"brand": "Acme", "sku_type": "Second"}],
+        },
+    ]
+    refs = qa_v3.resolve_candidate_refs(Client(), _context("Tokopedia"), hits)
+    assert set(refs) == {
+        ("same", "Tokopedia", "Shared"),
+        ("same", "Tokopedia | Shop", "Shared"),
+    }
+    images = {
+        ("same", "Tokopedia", "Shared"): PreparedImage(
+            qa_v3._packet_id(rows[0]), None, "unavailable", None,
+        ),
+        ("same", "Tokopedia | Shop", "Shared"): PreparedImage(
+            qa_v3._packet_id(rows[1]), None, "unavailable", None,
+        ),
+    }
+    packets = qa_v3.build_product_packets(_context("Tokopedia"), rows, refs, images)
+    assert [packet["candidate_refs"] for packet in packets] == [
+        set(refs[("same", "Tokopedia", "Shared")]),
+        set(refs[("same", "Tokopedia | Shop", "Shared")]),
+    ]
+    assert len({packet["packet_id"] for packet in packets}) == 2
+    assert len({packet["work_item_id"] for packet in packets}) == 2
+    decisions = [
+        {
+            "packet_id": packet["packet_id"],
+            "product_id": packet["product_id"],
+            "work_item_id": packet["work_item_id"],
+            "input_fingerprint": packet["input_fingerprint"],
+            "kind": "map_existing",
+            "confidence": "unconfident",
+            "evidence": [],
+            "reason": None,
+            "candidate_ref": next(iter(packet["candidate_refs"])),
+            "attributes": None,
+        }
+        for packet in packets
+    ]
+
+    assert validate_decision_batch({"decisions": decisions}, packets) == decisions
+
+
+def test_decision_schema_uses_only_codex_response_format_keywords():
+    path = Path(__file__).parent.parent.parent / "script" / "non_niq" / "non_niq_qa_v3_decision_schema.json"
+    schema = json.loads(path.read_text())
+    banned = {
+        "oneOf", "anyOf", "allOf", "const", "$ref", "$defs", "not", "if", "then",
+        "else", "minimum", "maximum", "minLength", "maxLength", "minItems",
+        "maxItems", "minProperties", "maxProperties", "pattern", "format",
+    }
+
+    def check(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" and "properties" in node:
+                assert set(node["properties"]) == set(node.get("required", [])), (
+                    "strict-compatible objects must require every property"
+                )
+            for key, value in node.items():
+                assert key not in banned, "schema uses Codex-rejected keyword %s" % key
+                check(value)
+        elif isinstance(node, list):
+            for value in node:
+                check(value)
+
+    check(schema)
 
 
 
@@ -593,13 +723,13 @@ def test_prior_mappings_are_batched_and_attached_product_locally():
             "prior_mapping_identity_col": "sku_type",
         },
     )
-
     prior_mappings = qa_v3.resolve_prior_mappings(RecordingClient(), context, ["first"])
+    row = {"product_id": "first", "sku_name": "First", "priority": 0, "gmv_monthly": 10}
     packets = qa_v3.build_product_packets(
         context,
-        [{"product_id": "first", "sku_name": "First", "priority": 0, "gmv_monthly": 10}],
-        {"first": {}},
-        {"first": PreparedImage("first", None, "unavailable", None)},
+        [row],
+        {("first", "", "First"): {}},
+        {("first", "", "First"): PreparedImage(qa_v3._packet_id(row), None, "unavailable", None)},
         prior_mappings,
     )
     assert packets[0]["prior_mapping"] == {
@@ -643,12 +773,16 @@ def test_product_packets_are_ordered_and_candidate_refs_are_product_local(tmp_pa
         },
     ]
     candidates = {
-        "first": {"dict:first": {"brand": "Acme"}},
-        "later": {"dict:later": {"brand": "Later"}},
+        ("first", "", "First"): {"dict:first": {"brand": "Acme"}},
+        ("later", "", "Later"): {"dict:later": {"brand": "Later"}},
     }
     images = {
-        "first": PreparedImage("first", "https://example.com/one.png", "ready", image_path),
-        "later": PreparedImage("later", None, "unavailable", None),
+        ("first", "", "First"): PreparedImage(
+            qa_v3._packet_id(rows[1]), "https://example.com/one.png", "ready", image_path,
+        ),
+        ("later", "", "Later"): PreparedImage(
+            qa_v3._packet_id(rows[0]), None, "unavailable", None,
+        ),
     }
     packets = qa_v3.build_product_packets(_context(), rows, candidates, images)
     assert [packet["product_id"] for packet in packets] == ["first", "later"]
@@ -669,7 +803,7 @@ def test_packet_prompt_contains_self_contained_decision_protocol():
     for required in (
         '{"decisions":[...]}',
         "exactly one decision per packet",
-        "product_id, work_item_id, and input_fingerprint exactly",
+        "packet_id, product_id, work_item_id, and input_fingerprint exactly",
         "filter",
         "map_existing",
         "create_dict",
@@ -716,10 +850,14 @@ def _commit_packet(context, attempt_kind="initial"):
         {"kind": attempt_kind},
     )
     return {
+        "packet_id": qa_v3._packet_id({
+            "product_id": "p-1",
+            "ecommerce_platform": context.platform,
+            "sku_name": "Acme Wash",
+        }),
         "product_id": "p-1",
         "ecommerce_platform": context.platform,
         "sku_name": "Acme Wash",
-        "image_raw": "https://example.com/product.jpg",
         "url": "https://example.com/product",
         "merchant_id": "merchant-1",
         "gmv_monthly": 12,
@@ -1152,14 +1290,84 @@ def test_run_drains_crash_recovery_before_planning_without_adapter(monkeypatch):
         max_rows=10, kategori="", dry_run=False,
     )
     monkeypatch.setattr(qa_v3, "resolve_run_context", lambda args, client: context, raising=False)
-    monkeypatch.setattr(qa_v3, "verify_adapter_vision", lambda *args: calls.append("sentinel"), raising=False)
+    monkeypatch.setattr(qa_v3, "verify_adapter_vision", lambda *args: pytest.fail("adapter invoked"), raising=False)
     monkeypatch.setattr(qa_v3, "drain_outbox", lambda *args: calls.append("drain"), raising=False)
     monkeypatch.setattr(qa_v3, "materialize_worklist", lambda *args: calls.append("worklist") or [], raising=False)
-    monkeypatch.setattr(qa_v3, "invoke_adapter", lambda *args: pytest.fail("adapter invoked"), raising=False)
     monkeypatch.setattr(qa_v3, "emit_result", lambda *args, **kwargs: calls.append(args[1]), raising=False)
     assert qa_v3.run(args, client=object()) == 0
-    assert calls == ["sentinel", "drain", "worklist", "NOTHING_TO_DO"]
+    assert calls == ["drain", "worklist", "NOTHING_TO_DO"]
 
+
+
+def test_run_skips_adapter_for_casefold_auto_confirmation(monkeypatch):
+    context = _executor_context()
+    calls = []
+    args = SimpleNamespace(
+        dataset="babybath", platform="shopee", country="ID", max_turns=500,
+        max_rows=1, kategori="", dry_run=False,
+    )
+    row = {
+        "product_id": "p-1",
+        "sku_name": "ACME Wash",
+        "ecommerce_platform": "Shopee",
+        "priority": 0,
+        "gmv_monthly": 12,
+        "image_raw": "https://example.com/product.jpg",
+    }
+    monkeypatch.setattr(qa_v3, "resolve_run_context", lambda args, client: context, raising=False)
+    monkeypatch.setattr(qa_v3, "verify_adapter_vision", lambda *args: pytest.fail("adapter invoked"), raising=False)
+    monkeypatch.setattr(qa_v3, "drain_outbox", lambda *args: calls.append("drain"), raising=False)
+    monkeypatch.setattr(qa_v3, "materialize_worklist", lambda *args: calls.append("worklist") or [row], raising=False)
+    monkeypatch.setattr(
+        qa_v3,
+        "retrieve_candidates",
+        lambda *args: calls.append("retrieve") or [{
+            "id": "p-1",
+            "candidates": [{
+                "product_id": "old-1",
+                "sku_name": "Acme Wash",
+                "brand": "Acme",
+                "sku_type_complete": "Acme Wash",
+            }],
+        }],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        qa_v3,
+        "auto_confirm_worklist",
+        lambda *args: calls.append("auto") or {("p-1", "Shopee", "ACME Wash")},
+        raising=False,
+    )
+    monkeypatch.setattr(qa_v3, "emit_result", lambda *args, **kwargs: calls.append(args[1]), raising=False)
+
+    assert qa_v3.run(args, client=object()) == 0
+    assert calls == ["drain", "worklist", "retrieve", "auto", "DONE"]
+
+
+def test_auto_confirm_uses_resolved_regional_qa_platform_column(monkeypatch):
+    context = qa_v3.RunContext(**{
+        **_executor_context().__dict__,
+        "qa_columns": frozenset({
+            "product_id", "ecommerce", "sku_name", "brand", "sku_type", "_meta",
+        }),
+        "qa_identity_col": "sku_type",
+    })
+    captured = {}
+
+    def confirm(*args, **kwargs):
+        captured["qa_platform_col"] = args[4]
+        captured["qa_identity_col"] = kwargs["qa_identity_col"]
+        return set()
+
+    monkeypatch.setattr(qa_v3, "confirm_casefold_matches", confirm)
+    assert qa_v3.auto_confirm_worklist(
+        object(),
+        context,
+        [{"product_id": "p-1", "ecommerce_platform": "Lazada", "sku_name": "Acme Wash"}],
+        [],
+    ) == set()
+    assert captured["qa_platform_col"] == "ecommerce"
+    assert captured["qa_identity_col"] == "sku_type"
 
 def test_dry_run_never_mutates_or_delivers_outbox(monkeypatch):
     context = _executor_context()
@@ -1168,6 +1376,10 @@ def test_dry_run_never_mutates_or_delivers_outbox(monkeypatch):
         max_rows=1, kategori="", dry_run=True,
     )
     packet = {
+        "packet_id": qa_v3._packet_id({
+            "product_id": "p-1",
+            "sku_name": "Acme Wash",
+        }),
         "product_id": "p-1",
         "work_item_id": "",
         "input_fingerprint": "",

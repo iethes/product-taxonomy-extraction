@@ -1,0 +1,12 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "packsize"],
+    "separator": " ",
+    "notes": "Compose the authored product line/sub-brand and formatted pack size, skipping null/empty sources. Representative live rows show scent and variant are descriptive attributes rather than separate identity components unless already embedded in sub_brand."
+  },
+  "keywords": {
+    "sources": ["sku_type_complete"],
+    "separator": "",
+    "notes": "Use the clean sku_type_complete value. Some legacy rows have a trailing space; new rows do not reproduce that artifact."
+  }
+}

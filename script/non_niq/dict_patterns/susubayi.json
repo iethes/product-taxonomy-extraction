@@ -1,0 +1,29 @@
+{
+  "sku": {
+    "sources": ["sub_brand", "gramasi"],
+    "separator": " ",
+    "format": "{sub_brand} {gramasi} gr"
+  },
+  "sku_complete": {
+    "sources": ["sku", "rasa"],
+    "separator": " ",
+    "format": "{sku} {rasa}"
+  },
+  "sku_type_complete": {
+    "sources": ["sku_complete"],
+    "separator": "",
+    "format": "same as sku_complete for non-bundle SKUs"
+  },
+  "sku_type_abbott": {
+    "sources": ["sku_type_complete"],
+    "separator": "",
+    "format": "same as sku_type_complete, except bundled packs use gramasi_abbott (e.g. '400 gr x 2 pcs') in place of gramasi"
+  },
+  "keywords": {
+    "sources": ["keyword_typo", "sku_type_complete", "parent_brand_or_brand", "usia"],
+    "separator": " ",
+    "format": "{keyword_typo or ''} {sku_type_complete} {parent_brand (falls back to brand)} {usia}",
+    "note": "leading space is literal when keyword_typo is empty; keyword_typo itself (e.g. '900 GRAM') is a rare all-caps weight variant, usually null"
+  },
+  "notes": "susubayi_dict has ~70 flat attribute columns beyond the generated ones (segment_*, category_*, mji_* fields etc). When minting a new row, copy the full row of the closest sibling SKU (same brand+sub_brand, adjacent gramasi or adjacent stage) and only change the fields that genuinely differ (gramasi/kemasan/packsize/gramasi_abbott/size_single/tonase, and sku/sku_complete/sku_type_abbott/sku_type_complete/keywords derived from them, plus stage/usia/usia_atas/usia_bawah/subvarc_abbott/new_stage_mji when the stage differs). Never invent unrelated attribute values."
+}

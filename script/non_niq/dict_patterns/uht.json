@@ -1,0 +1,10 @@
+{
+  "sku_type": {
+    "sources": ["sub_brand", "rasa", "kemasan"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["sku_type", "keyword_typo"],
+    "separator": " "
+  }
+}

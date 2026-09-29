@@ -1,0 +1,14 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "size"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["sub_brand", "size"],
+    "separator": " "
+  },
+  "final_size": {
+    "sources": ["size"],
+    "separator": ""
+  }
+}

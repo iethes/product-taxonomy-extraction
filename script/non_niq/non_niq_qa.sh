@@ -28,11 +28,19 @@ default_month_query() {
   # had 2026-08). An unscoped MAX(month) resolves to whichever platform is freshest, then
   # worklist_query's WHERE month=that AND platform=Blibli matches zero rows -- "nothing to do" even
   # though Blibli genuinely has hundreds of unreviewed products sitting in ITS actual latest month.
-  echo "SELECT FORMAT_DATE('%Y-%m', MAX(month)) FROM \`${PROJECT}.${source_table}\` WHERE ecommerce_platform = '${platform_titlecase}'"
+  echo "SELECT FORMAT_DATE('%Y-%m', MAX(month)) FROM \`${PROJECT}.${source_table}\` WHERE ecommerce_platform $(platform_match_clause "$platform_titlecase")"
 }
 
-# Scope per issue #2: latest month, top 90% cumulative GMV per ecommerce_platform (NOT the epic's
-# general 95% -- QA uses a different threshold on purpose). Priority: rows with no QA-table entry
+platform_match_clause() {
+  local platform_titlecase="$1"
+  if [[ "$platform_titlecase" == "Tokopedia" ]]; then
+    echo "IN ('Tokopedia', 'Tokopedia | Shop')"
+  else
+    echo "= '${platform_titlecase}'"
+  fi
+}
+
+# Scope: latest month and the source table's precomputed Tier 1 population. Priority: rows with no QA-table entry
 # yet come first (priority 0), then rows the agent already marked unconfident but hasn't yet
 # capped out on retry (priority 1) -- human_review=true rows are excluded entirely, they're
 # terminal. This guarantee ONLY holds because qa_state (below) aggregates a product's WHOLE
@@ -59,6 +67,7 @@ worklist_query() {
   # unprocessed rows simply reappear (still priority 0) on the next queue-worker iteration.
   local row_limit="${7:-300}"
   local filter_table="${8:-}"
+  local qa_platform_col="${9:-ecommerce_platform}"
   local platform_titlecase="${platform^}"
   # item_description/product_attributes_attrs enrichment is Shopee-only by data availability, not
   # a scoping choice: confirmed live that non-Shopee 0_pipeline_* tables (e.g. Blibli) have an
@@ -129,17 +138,18 @@ WITH ${enrichment_cte_and_join}base AS (
          s.gmv_monthly, ${enrichment_select}
   FROM \`${PROJECT}.${source_table}\` s
   ${enrichment_join}
-  WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}' AND s.ecommerce_platform = '${platform_titlecase}'
-),
-with_cumulative AS (
-  SELECT *,
-    ROUND(100.0 * SUM(CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END)
-            OVER (ORDER BY gmv_monthly DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-          / NULLIF(SUM(CASE WHEN flag_GWP THEN 0 ELSE gmv_monthly END) OVER (), 0), 2) AS cumulative_gmv_pct
-  FROM base
+  WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}'
+    AND s.ecommerce_platform $(platform_match_clause "$platform_titlecase")
+    AND s.product_tier IN ('Tier 1')
 ),
 scoped AS (
-  SELECT * FROM with_cumulative WHERE cumulative_gmv_pct <= 90
+  SELECT * FROM base
+),
+qa_title_state AS (
+  SELECT DISTINCT ${qa_pk_col} AS product_id, ${qa_platform_col} AS ecommerce_platform,
+    REGEXP_REPLACE(TRIM(sku_name), r'\s+', ' ') AS normalized_sku_name
+  FROM \`${PROJECT}.${qa_table}\`
+  WHERE ${qa_platform_col} $(platform_match_clause "$platform_titlecase")
 ),
 qa_state AS (
   -- product_id_dict_qa is INSERT-ONLY -- a product can have many historical rows, not one. A raw
@@ -155,24 +165,31 @@ qa_state AS (
   -- terminal, EVER had a still-pending unconfident row -- gate priority 1 on pending-and-never-
   -- resolved, not on whichever row happens to sort last.
   SELECT
-    ${qa_pk_col} AS product_id,
+    ${qa_pk_col} AS product_id, ${qa_platform_col} AS ecommerce_platform,
     LOGICAL_OR(JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.qa_confidence') = 'unconfident'
                AND COALESCE(JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.human_review'), 'false') != 'true') AS has_unconfident_pending,
     LOGICAL_OR(JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.qa_confidence') = 'confident') AS has_confident,
     LOGICAL_OR(JSON_VALUE(SAFE.PARSE_JSON(_meta), '\$.human_review') = 'true') AS has_terminal
   FROM \`${PROJECT}.${qa_table}\`
-  GROUP BY ${qa_pk_col}
+  WHERE ${qa_platform_col} $(platform_match_clause "$platform_titlecase")
+  GROUP BY ${qa_pk_col}, ${qa_platform_col}
 ),
 ${filter_cte}prioritized AS (
   SELECT sc.product_id, sc.sku_name, sc.image, sc.gmv_monthly, sc.ecommerce_platform,
          sc.item_description, sc.product_attributes_attrs,
     CASE
-      ${filter_priority_check}WHEN qs.product_id IS NULL AND sc.qa_status = 'Not Reviewed' THEN 0
+      ${filter_priority_check}WHEN qts.product_id IS NULL THEN 0
       WHEN qs.has_unconfident_pending AND NOT qs.has_confident AND NOT qs.has_terminal THEN 1
       ELSE NULL
     END AS priority
   FROM scoped sc
-  LEFT JOIN qa_state qs ON qs.product_id = sc.product_id
+  LEFT JOIN qa_title_state qts
+    ON qts.product_id = sc.product_id
+   AND qts.ecommerce_platform = sc.ecommerce_platform
+   AND qts.normalized_sku_name = REGEXP_REPLACE(TRIM(sc.sku_name), r'\s+', ' ')
+  LEFT JOIN qa_state qs
+    ON qs.product_id = sc.product_id
+   AND qs.ecommerce_platform = sc.ecommerce_platform
   ${filter_join}
 )
 SELECT * FROM prioritized
@@ -209,10 +226,23 @@ build_qa_prompt() {
   # live resolution (the Windmill-deployed non_niq_embed.py's sync_category reads it directly for
   # the same reason -- see docs/windmill-non-niq-embed-prompt.md). Only the {dataset}_dict table's
   # identity column varies (sku_type vs sku_type_complete), which is what $dict_identity_col
-  # resolves. Never use $dict_identity_col for a QA-table write: on
-  # babybath/babycreamlotion/babysunscreen/telonoil it resolves to `sku_type`, a column the QA
-  # table does not have.
+  # resolves. When it resolves to `sku_type`, never use it for a QA-table write because the QA
+  # table does not have that column. When it resolves to `sku_type_complete`, both tables
+  # intentionally use the same physical column name.
   local qa_identity_col="sku_type_complete"
+
+  local identity_column_instruction
+  if [[ "$dict_identity_col" == "$qa_identity_col" ]]; then
+    identity_column_instruction="- Both tables intentionally name their identity column ${qa_identity_col}. Write
+  ${qa_identity_col} to the QA table in every QA-table write, and use that same column name when
+  reading/matching against or minting a row in the {dataset}_dict table. The identical column name
+  is expected; the target table determines its role."
+  else
+    identity_column_instruction="- The QA table's identity column is ${qa_identity_col}. It is the same on every category and is
+  what you write in every QA-table write below. Never write ${dict_identity_col} to the QA table.
+- ${dict_identity_col} is the {dataset}_dict table's identity column, resolved live for this
+  category. Use it ONLY when reading/matching against, or minting a new row in, the dict table."
+  fi
 
   # Decision-tree step 2 exists only for the 4 categories with a populated product_id_dict
   # mapping table (susubayi, multivitamin, telonoil, kidsuplement); the Sheet has '-' for the
@@ -244,10 +274,7 @@ product_id_dict (prior mapping table, read-only)=${product_id_dict},
 meilisearch_index=${meili_index} (at ${MEILI_URL}).
 
 Identity columns -- do not mix these up:
-- The QA table's identity column is ${qa_identity_col}. It is the same on every category and is
-  what you write in every QA-table write below. Never write ${dict_identity_col} to the QA table.
-- ${dict_identity_col} is the {dataset}_dict table's identity column, resolved live for this
-  category. Use it ONLY when reading/matching against, or minting a new row in, the dict table.
+${identity_column_instruction}
 
 STEP 0 -- The full worklist has ALREADY been materialized for you at
 ${worklist_file}, exactly ${worklist_count} rows, one JSON object per line (JSONL) -- do NOT query
@@ -255,7 +282,7 @@ BigQuery to re-fetch it, and do NOT trust any other row count than ${worklist_co
 (in slices if it's too large for one Read) rather than querying BigQuery for it. Each line has the
 same column shape the worklist query produces: product_id, sku_name, image, gmv_monthly,
 ecommerce_platform, item_description, product_attributes_attrs, priority. It is already scoped to
-top 90% cumulative GMV per platform and prioritized (unreviewed rows before agent-flagged-
+the source table's Tier 1 population and prioritized (unreviewed rows before agent-flagged-
 unconfident retry rows, both by gmv_monthly descending) -- process it in that order. If you cannot
 account for all ${worklist_count} rows by the end of your turn budget, explicitly report
 status: partial (or status: blocked if you cannot proceed at all) -- never silently process a
@@ -534,10 +561,11 @@ main() {
 
   # Plain CLI args, not string-interpolated into a python -c source -- a table name can never
   # break out of anything, it's just an argv element.
-  local columns_json qa_pk_col dict_identity_col dict_typo_col
+  local columns_json qa_pk_col qa_platform_col dict_identity_col dict_typo_col
   columns_json=$("$PYTHON_BIN" "$(dirname "$0")/non_niq_helper.py" columns --project "$PROJECT" \
     --qa-table "$qa_table" --dict-table "$dict_table")
   qa_pk_col=$(echo "$columns_json" | jq -r '.qa_pk_col')
+  qa_platform_col=$(echo "$columns_json" | jq -r '.qa_platform_col')
   dict_identity_col=$(echo "$columns_json" | jq -r '.dict_identity_col')
   dict_typo_col=$(echo "$columns_json" | jq -r '.dict_typo_col')
 
@@ -556,7 +584,7 @@ main() {
 
   local meili_index="${dataset}_taxonomy_qa"
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$qa_platform_col")
 
   # Materialize the FULL worklist to a file for Claude to Read, instead of handing Claude the raw
   # SQL to re-run itself -- with item_description/product_attributes_attrs enrichment, the raw

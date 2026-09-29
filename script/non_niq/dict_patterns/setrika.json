@@ -1,0 +1,10 @@
+{
+  "sku_type_complete": {
+    "sources": ["type", "category"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["type"],
+    "separator": ""
+  }
+}

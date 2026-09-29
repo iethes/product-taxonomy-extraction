@@ -60,6 +60,8 @@ script needs) -- subcommands, called directly from non_niq_qa.sh/non_niq_qa_v2.s
       across both tabs. Never raises -- a Sheets hiccup yields an empty list, never blocks a QA run.
 """
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import argparse
@@ -119,6 +121,12 @@ QA_PK_CANDIDATES = ["product_id", "prod_id"]
 QA_PLATFORM_CANDIDATES = ["ecommerce_platform", "ecommerce"]
 DICT_IDENTITY_CANDIDATES = ["sku_type_complete", "sku_type"]
 DICT_TYPO_CANDIDATES = ["keywords_typo", "keyword_typo"]
+# (QA column, dictionary column) pairs casefold auto-confirm copies from the matched dictionary row.
+CASEFOLD_COPY_COLUMNS = (
+    ("sku_type_abbott", "sku_type_abbott"),
+    ("keywords", "keywords"),
+    ("lookup", "keywords"),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +226,283 @@ def _meili_request(meili_url, method, path, body=None):
         raise RuntimeError(f"Meilisearch {method} {path} unreachable: {e.reason}") from e
 
 
+def worklist_row_key(row):
+    """Return the product/platform/title identity used throughout a QA run."""
+    return (
+        str(row.get("product_id", "")),
+        str(row.get("ecommerce_platform", "")),
+        str(row.get("sku_name", row.get("query_sku_name", ""))),
+    )
+
+
+def casefold_title_matches(rows, hits, identity_fields):
+    """Return unambiguous candidates whose non-empty titles match case-insensitively."""
+    hits_by_key = {}
+    for hit in hits:
+        if not isinstance(hit, Mapping):
+            continue
+        platform = hit.get("ecommerce_platform")
+        product_id = str(hit.get("product_id", hit.get("id", "")))
+        platform = str(platform) if isinstance(platform, str) else None
+        query_sku_name = hit.get("query_sku_name")
+        key = (
+            product_id,
+            platform,
+            str(query_sku_name),
+        ) if isinstance(query_sku_name, str) else (product_id, platform)
+        candidates = hit.get("candidates", [])
+        hits_by_key[key] = candidates if isinstance(candidates, list) else []
+    matches = {}
+    for row in rows:
+        title = row.get("sku_name")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        row_key = worklist_row_key(row)
+        candidates = hits_by_key.get(
+            row_key,
+            hits_by_key.get(
+                (row_key[0], row_key[1]),
+                hits_by_key.get((row_key[0], None), []),
+            ),
+        )
+        matched_candidate = None
+        matched_identity = None
+        for candidate in candidates:
+            if (
+                not isinstance(candidate, Mapping)
+                or not isinstance(candidate.get("sku_name"), str)
+                or not candidate["sku_name"].strip()
+                or candidate["sku_name"].casefold() != title.casefold()
+                or not all(
+                    isinstance(candidate.get(field), str) and candidate[field].strip()
+                    for field in identity_fields
+                )
+            ):
+                continue
+            candidate_identity = tuple(candidate[field].strip() for field in identity_fields)
+            if matched_candidate is None:
+                matched_candidate = candidate
+                matched_identity = candidate_identity
+            elif candidate_identity != matched_identity:
+                matched_candidate = None
+                break
+        if matched_candidate is not None:
+            matches[row_key] = matched_candidate
+    return matches
+
+
+def confirm_casefold_matches(
+    client, project, qa_table, qa_pk_col, qa_platform_col, rows, hits,
+    *, qa_identity_col="sku_type_complete", dict_table=None, dict_identity_col=None,
+    extra_identity_fields=(),
+):
+    """Write idempotent confident QA rows for casefold-exact Meilisearch matches."""
+    extra_identity_fields = tuple(extra_identity_fields)
+    if bool(dict_table) != bool(dict_identity_col):
+        raise ValueError("dictionary table and identity column must be configured together")
+    if not dict_table and not extra_identity_fields:
+        raise ValueError("a live dictionary or full taxonomy fields are required")
+    if not qa_identity_col:
+        raise ValueError("QA identity column is required")
+    identity_fields = ("brand", "sku_type_complete") + extra_identity_fields
+    matches = casefold_title_matches(rows, hits, identity_fields)
+    if not matches:
+        return set()
+    if dict_table:
+        pairs = {
+            (
+                str(candidate["brand"]).strip(),
+                str(candidate.get(dict_identity_col, candidate["sku_type_complete"])).strip(),
+            )
+            for candidate in matches.values()
+        }
+        pair_parameter = bigquery.ArrayQueryParameter(
+            "requested", "STRUCT", [
+                bigquery.StructQueryParameter(
+                    None,
+                    bigquery.ScalarQueryParameter("brand", "STRING", brand),
+                    bigquery.ScalarQueryParameter("identity_value", "STRING", identity),
+                )
+                for brand, identity in sorted(pairs)
+            ],
+        )
+        live_rows = client.query(
+            """WITH requested AS (
+  SELECT brand, identity_value FROM UNNEST(@requested)
+)
+SELECT d.brand, d.`%s` AS identity_value
+FROM `%s.%s` d
+JOIN requested r ON d.brand = r.brand AND d.`%s` = r.identity_value""" % (
+                dict_identity_col, project, dict_table, dict_identity_col,
+            ),
+            job_config=bigquery.QueryJobConfig(query_parameters=[pair_parameter]),
+        ).result()
+        live = set()
+        for row in live_rows:
+            values = dict(row.items())
+            live.add((str(values["brand"]), str(values["identity_value"])))
+    else:
+        live = None
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    records = []
+    record_keys = set()
+    for row in rows:
+        row_key = worklist_row_key(row)
+        candidate = matches.get(row_key)
+        if candidate is None:
+            continue
+        product_id, platform, sku_name = row_key
+        brand = str(candidate["brand"]).strip()
+        identity = str(candidate["sku_type_complete"]).strip()
+        if dict_table:
+            dictionary_identity = str(
+                candidate.get(dict_identity_col, identity)
+            ).strip()
+            if (brand, dictionary_identity) not in live:
+                continue
+        if row_key in record_keys:
+            continue
+        taxonomy = {field: str(candidate[field]).strip() for field in extra_identity_fields}
+        auto_match_id = sha256(json.dumps({
+            "product_id": product_id,
+            "ecommerce_platform": platform,
+            "sku_name": sku_name,
+            **{field: str(candidate[field]).strip() for field in identity_fields},
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        record = {
+            "product_id": product_id,
+            "ecommerce_platform": platform,
+            "sku_name": sku_name,
+            "brand": brand,
+            qa_identity_col: identity,
+            "auto_match_id": auto_match_id,
+            "meta": json.dumps({
+                "source": "meilisearch_casefold_exact",
+                "qa_confidence": "confident",
+                "timestamp": now,
+                "candidate_product_id": str(candidate.get("product_id", "")),
+                "auto_match_id": auto_match_id,
+            }, separators=(",", ":")),
+            **taxonomy,
+        }
+        if extra_identity_fields:
+            record["image"] = str(row.get("image", ""))
+        if dict_table:
+            record["dictionary_identity"] = dictionary_identity
+        records.append(record)
+        record_keys.add(row_key)
+    if not records:
+        return set()
+    record_fields = (
+        "product_id", "ecommerce_platform", "sku_name", "brand", qa_identity_col,
+        *(("dictionary_identity",) if dict_table else ()),
+        *extra_identity_fields,
+        *(("image",) if extra_identity_fields else ()),
+        "auto_match_id", "meta",
+    )
+    parameter = bigquery.ArrayQueryParameter(
+        "matches", "STRUCT", [
+            bigquery.StructQueryParameter(
+                None,
+                *[
+                    bigquery.ScalarQueryParameter(field, "STRING", record[field])
+                    for field in record_fields
+                ],
+            )
+            for record in records
+        ],
+    )
+    table = "`%s.%s`" % (project, qa_table)
+    dictionary_join = ""
+    if dict_table:
+        dictionary_join = "JOIN `%s.%s` d ON d.brand = m.brand AND d.`%s` = m.dictionary_identity" % (
+            project, dict_table, dict_identity_col,
+        )
+    qa_identity_match = (
+        "\n AND q.brand = m.brand\n AND q.`%s` = m.%s" % (
+            qa_identity_col, qa_identity_col,
+        )
+    )
+    qa_identity_match += "".join(
+        "\n AND q.%s = m.%s" % (field, field)
+        for field in extra_identity_fields
+    )
+    if extra_identity_fields:
+        insert_columns = (
+            "`%s`, `%s`, brand, sku_name, `%s`, %s, image, keywords, "
+            "timestamp, _meta"
+        ) % (
+            qa_pk_col, qa_platform_col, qa_identity_col,
+            ", ".join(extra_identity_fields),
+        )
+        select_columns = (
+            "m.product_id, m.ecommerce_platform, m.brand, m.sku_name, "
+            "m.%s, %s, m.image, m.%s, CURRENT_TIMESTAMP(), m.meta"
+        ) % (
+            qa_identity_col,
+            ", ".join("m.%s" % field for field in extra_identity_fields),
+            qa_identity_col,
+        )
+    else:
+        # Copy the matched dictionary row's derived columns too (only where both tables have them);
+        # without this susubayi rows landed with NULL sku_type_abbott/keywords/lookup.
+        copy_cols = []
+        if dict_table:
+            qa_cols = _table_columns(client, project, qa_table)
+            dict_cols = _table_columns(client, project, dict_table)
+            copy_cols = [
+                (qa_col, dict_col) for qa_col, dict_col in CASEFOLD_COPY_COLUMNS
+                if qa_col in qa_cols and dict_col in dict_cols and qa_col != qa_identity_col
+            ]
+        insert_columns = "`%s`, `%s`, brand, sku_name, `%s`, %s_meta" % (
+            qa_pk_col, qa_platform_col, qa_identity_col,
+            "".join("`%s`, " % qa_col for qa_col, _ in copy_cols),
+        )
+        select_columns = (
+            "m.product_id, m.ecommerce_platform, m.brand, m.sku_name, "
+            "m.%s, %sm.meta" % (
+                qa_identity_col, "".join("d.`%s`, " % dict_col for _, dict_col in copy_cols),
+            )
+        )
+    # The dictionary key (brand + identity) is not always unique (bundle vs single-pack rows), so
+    # the join can fan out. Ambiguous matches are skipped and stay residual for the agent.
+    unique_match = (
+        "\nQUALIFY COUNT(*) OVER (PARTITION BY m.product_id, m.ecommerce_platform, m.sku_name) = 1"
+        if dict_table else ""
+    )
+    client.query(
+        """BEGIN TRANSACTION;
+INSERT INTO %s (%s)
+SELECT %s
+FROM UNNEST(@matches) m
+%s
+WHERE NOT EXISTS (
+  SELECT 1 FROM %s q
+  WHERE q.`%s` = m.product_id
+    AND q.`%s` = m.ecommerce_platform
+    AND q.sku_name = m.sku_name
+)%s;
+COMMIT TRANSACTION;""" % (
+            table, insert_columns, select_columns, dictionary_join,
+            table, qa_pk_col, qa_platform_col, unique_match,
+        ),
+        job_config=bigquery.QueryJobConfig(query_parameters=[parameter]),
+    ).result()
+    readback = client.query(
+        """SELECT DISTINCT m.product_id, m.ecommerce_platform, m.sku_name
+FROM UNNEST(@matches) m
+JOIN %s q
+  ON q.`%s` = m.product_id
+ AND q.`%s` = m.ecommerce_platform
+ AND q.sku_name = m.sku_name%s
+%s""" % (
+            table, qa_pk_col, qa_platform_col, qa_identity_match, dictionary_join,
+        ),
+        job_config=bigquery.QueryJobConfig(query_parameters=[parameter]),
+    ).result()
+    return {worklist_row_key(dict(row.items())) for row in readback}
+
+
 def retrieve_candidates(lines, meili_url, meili_index, limit=10, model=None):
     model = model or SentenceTransformer(MODEL_NAME)
     texts = [_format_query_text(l["text"]) for l in lines]
@@ -236,7 +521,15 @@ def retrieve_candidates(lines, meili_url, meili_index, limit=10, model=None):
         except RuntimeError as e:
             print(f"  WARNING: retrieval failed for product_id={line['id']}: {e}")
             candidates = []
-        results.append({"id": line["id"], "candidates": candidates})
+        result = {
+            "id": line["id"],
+            "product_id": str(line.get("product_id", line["id"])),
+            "query_sku_name": str(line.get("text", "")),
+            "candidates": candidates,
+        }
+        if "ecommerce_platform" in line:
+            result["ecommerce_platform"] = str(line["ecommerce_platform"])
+        results.append(result)
     return results
 
 
@@ -438,11 +731,12 @@ def append_sheet_new_entries_strict(
             spreadsheetId=spreadsheet_id, range=f"'{tab_title}'!A:ZZ"
         ).execute().get("values", [])
         header = sheet_values[0] if sheet_values else []
-        header_index = {name: i for i, name in enumerate(header)}
+        # Case-insensitive, like _map_row_to_header: some Sheets use "Brand"/"SKU_type_complete".
+        header_index = {name.strip().lower(): i for i, name in enumerate(header)}
         if "brand" not in header_index:
             raise ValueError("Sheet is missing brand header")
         unsupported = {
-            key[1] for key in valid_entries if key[1] not in header_index
+            key[1] for key in valid_entries if key[1].lower() not in header_index
         }
         if unsupported:
             raise ValueError(
@@ -454,11 +748,12 @@ def append_sheet_new_entries_strict(
     existing_keys = set()
     brand_index = header_index["brand"]
     for key in valid_entries:
-        identity_index = header_index[key[1]]
+        identity_index = header_index[key[1].lower()]
         for row in sheet_values[1:]:
             brand = row[brand_index] if brand_index < len(row) else ""
             identity = row[identity_index] if identity_index < len(row) else ""
-            existing_keys.add((brand, key[1], identity))
+            # strip: hand-edited Sheet cells carry stray leading/trailing \r\n; keys are stripped.
+            existing_keys.add((brand.strip(), key[1], identity.strip()))
 
     client = client or bigquery.Client(project=project)
     rows_to_append = []
@@ -611,6 +906,33 @@ def _cmd_retrieve(args):
     print(f"Retrieved candidates for {len(results)} products -> {args.output_file}")
 
 
+
+def _cmd_auto_confirm(args):
+    rows = [json.loads(line) for line in open(args.input_file) if line.strip()]
+    hits = [json.loads(line) for line in open(args.candidates_file) if line.strip()]
+    confirmed = confirm_casefold_matches(
+        bigquery.Client(project=args.project),
+        args.project,
+        args.qa_table,
+        args.qa_pk_col,
+        args.qa_platform_col,
+        rows,
+        hits,
+        qa_identity_col=getattr(args, "qa_identity_col", "sku_type_complete"),
+        dict_table=args.dict_table,
+        dict_identity_col=args.identity_col,
+        extra_identity_fields=tuple(
+            field for field in args.extra_identity_fields.split(",") if field
+        ),
+    )
+    residual_count = 0
+    with open(args.residual_file, "w") as output:
+        for row in rows:
+            if worklist_row_key(row) not in confirmed:
+                output.write(json.dumps(row) + "\n")
+                residual_count += 1
+    print(json.dumps({"confirmed": len(rows) - residual_count, "residual": residual_count}))
+
 def _cmd_index(args):
     lines = [json.loads(l) for l in open(args.input_file) if l.strip()]
     count = index_documents(lines, args.meili_url, args.meili_index)
@@ -657,6 +979,19 @@ def main():
     ret_p.add_argument("--meili-url", default=MEILI_URL)
     ret_p.add_argument("--limit", type=int, default=10)
 
+    auto_p = sub.add_parser("auto-confirm")
+    auto_p.add_argument("--input-file", required=True)
+    auto_p.add_argument("--candidates-file", required=True)
+    auto_p.add_argument("--residual-file", required=True)
+    auto_p.add_argument("--project", required=True)
+    auto_p.add_argument("--qa-table", required=True)
+    auto_p.add_argument("--qa-pk-col", required=True)
+    auto_p.add_argument("--qa-platform-col", default="ecommerce_platform")
+    auto_p.add_argument("--qa-identity-col", default="sku_type_complete")
+    auto_p.add_argument("--dict-table", default=None)
+    auto_p.add_argument("--identity-col", default=None)
+    auto_p.add_argument("--extra-identity-fields", default="")
+
     index_p = sub.add_parser("index")
     index_p.add_argument("--input-file", required=True)
     index_p.add_argument("--meili-index", required=True)
@@ -686,6 +1021,8 @@ def main():
         _cmd_index(args)
     elif args.command == "append-sheet":
         _cmd_append_sheet(args)
+    elif args.command == "auto-confirm":
+        _cmd_auto_confirm(args)
     elif args.command == "forced-merchants":
         _cmd_forced_merchants(args)
 
