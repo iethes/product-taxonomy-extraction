@@ -1,0 +1,32 @@
+{
+  "packsize": {
+    "sources": [
+      "gramasi",
+      "satuan"
+    ],
+    "separator": " ",
+    "note": "packsize = '<gramasi> <satuan>' (e.g. '2 gr', '3.5 ml', '4.2 ml'); holds on 886/1044 rows. The remainder are multipack listings, encoded in packsize ONLY as '<gramasi> <satuan> x <N> pcs' (e.g. '2.5 gr x 2 pcs', '5 ml x 2 pcs', '2.5 ml x 6 pcs') with gramasi/satuan holding the PER-UNIT size -- there is no bundle_quantity column in this dict. 151 legacy sparse rows leave gramasi/satuan/packsize as the empty string."
+  },
+  "sku_type_complete": {
+    "sources": [
+      "sub_brand",
+      "warna",
+      "packsize"
+    ],
+    "separator": " ",
+    "note": "sku_type_complete = TRIM(CONCAT(sub_brand,' ',warna,' ',packsize)) on 1044/1044 rows (100%) -- a mechanical concat, apply it literally. sub_brand ALREADY carries the brand prefix (brand='Adara', sub_brand='Adara Glossy Lip Bomb'), so brand is never concatenated again. warna is the shade ('Berry Sorbet', '#3', '02 Savvy Red'); use the literal 'Multi Variant' when the listing covers several shades. Do NOT collapse the double space that results when warna is the empty string -- e.g. 'Acone Magic Lip Gloss  2 gr' and 'Wardah Moist Dew Tint  Multi Variant 3 gr' keep it, and the QA table's confirmed rows carry it verbatim."
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "note": "Verbatim copy of sku_type_complete on 874/1044 rows; the remainder append extra colloquial search tokens (e.g. '... 3 ml x 2 pcs BNB Bossy Bundle'). Default to an exact copy."
+  },
+  "_constants": {
+    "variant": "Lip Gloss",
+    "note": "variant='Lip Gloss' on 893/1044 rows; the other 151 are legacy sparse rows carrying the empty string. Always write 'Lip Gloss' on a new row. satuan is 'gr' (503) or 'ml' (390) -- read it off the pack, do not default."
+  },
+  "_no_meta_column": "lipgloss_dict has NO _meta column (columns are exactly: brand, sub_brand, variant, warna, gramasi, satuan, packsize, sku_type_complete, keywords, keywords_typo). Do not attempt to write _meta on a dict row -- the harness prompt asks for it, but the INSERT will fail.",
+  "_null_convention": "ZERO NULLs exist anywhere in this dict -- missing values are the empty string '', never NULL. Write '' (including for keywords_typo) rather than NULL on every new row."
+}

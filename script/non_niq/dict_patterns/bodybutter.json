@@ -1,0 +1,19 @@
+{
+  "_note": "bodybutter shares bodylotion's dict table (sincere-hearth-273704.bodylotion.bodylotion_dict), QA table (bodylotion.product_id_dict_qa) and filter table (bodylotion.filter_bodylotion_lazada). Pattern verified 2026-09-16 against 'body butter' rows in that dict; identical to dict_patterns/bodylotion.json.",
+  "packsize": {
+    "sources": ["gramasi", "satuan"],
+    "separator": " ",
+    "note": "For bundle_type='multipack' the packsize carries a multiplier suffix: '{gramasi} {satuan} x {N} pcs' (N = bundle_quantity). Bundles/sets use packsize=gramasi=satuan='Set'; unknown/multi-size listings use packsize='Multi Size', gramasi='Multi', satuan='Multi Variant'."
+  },
+  "sku_type_complete": {
+    "sources": ["sub_brand", "packsize"],
+    "separator": " ",
+    "note": "sub_brand already begins with the brand, e.g. brand='Herborist' -> sub_brand='Herborist Body Butter Mango With Shea Butter' -> sku_type_complete='Herborist Body Butter Mango With Shea Butter 80 gr'."
+  },
+  "keywords": {
+    "sources": ["sku_type_complete"],
+    "separator": " ",
+    "suffix": " ",
+    "note": "keywords = sku_type_complete plus a single trailing space."
+  }
+}

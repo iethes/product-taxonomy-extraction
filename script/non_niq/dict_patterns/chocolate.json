@@ -1,0 +1,27 @@
+{
+  "_dataset_note": {
+    "sources": [],
+    "separator": "",
+    "note": "Inferred 2026-09-14 from sincere-hearth-273704.chocolate.chocolate_dict (3282 rows). The table has ELEVEN columns only: keywords, keywords_typo, brand, sub_brand, total_size, size_units, size_multiplier, variant, sku_type_complete, packaging, size. There is NO _meta column, so dict INSERTs for this dataset CANNOT be _meta-stamped (the v2 harness prompt's 2c Step-A _meta stamp is impossible here -- stamp _meta only on product_id_dict_qa and filter_chocolate). filter_chocolate likewise has NO `reason` column (its columns are ecommerce_platform, product_id, sku_name, merchant_id, _meta), so a filter reason cannot be persisted; put it in the session findings instead."
+  },
+  "sku_type_complete": {
+    "sources": ["brand", "sub_brand", "variant", "total_size"],
+    "separator": " ",
+    "note": "brand + ' ' + sub_brand + ' ' + total_size holds on 2780/3282 rows; adding variant between sub_brand and total_size covers a further 229 (3009/3282). variant is '' on 3256/3282 rows, so in practice it is brand + sub_brand + total_size. The remaining ~270 rows are legacy imports whose attribute columns are blank/noisy -- do not imitate them. NOTE the composition is a literal join that does NOT collapse blanks: when total_size is a pcs-only string like '  x 30 pcs' (size and size_units both empty) the resulting sku_type_complete legitimately carries a DOUBLE space, e.g. 'Cokelat Rempah Coklat Relax Rempah Nusantara  4 x 8 pcs'. Reproduce that spacing exactly when minting such a row."
+  },
+  "keywords": {
+    "sources": ["sku_type_complete"],
+    "separator": " ",
+    "note": "Verbatim copy of sku_type_complete on 3264/3282 rows (no trailing space, unlike petfood). Always set keywords = sku_type_complete."
+  },
+  "keywords_typo": {
+    "sources": [],
+    "separator": "",
+    "note": "NEVER NULL on any of the 3282 rows: '' on 3266, a real alternate-spelling string on 16. Write '' when you have no typo variants -- do not write NULL."
+  },
+  "_attribute_conventions": {
+    "sources": [],
+    "separator": "",
+    "note": "brand: the manufacturer/house brand ('Cadbury', 'Silverqueen', 'Beryl's'); unbranded/store-label products use 'No Brand' (with sub_brand carrying a generic descriptor, e.g. 'No Brand Chocolate'). sub_brand: the product line + form + flavour, all in one string, WITHOUT the brand and WITHOUT the size ('Dairy Milk Share Bag', 'Almond Milk Chocolate', 'Big Bar White Chocolate'). total_size: the full pack string -- '<size> <size_units>' for a single pack ('220 gr'), '<size> <size_units> x <size_multiplier> pcs' for a multipack ('50 gr x 24 pcs'), or '  x <N> pcs' when the per-unit weight is unknown. size: the numeric unit weight as a STRING with no unit ('220', '55'); '' when unknown. size_units: 'gr' on 2871/3282 rows and '' on 404 (the pcs-only / unsized rows) -- 'gr' is effectively the only real unit, weights in kg are expressed in gr (a 1 kg pack is total_size '1000 gr'). size_multiplier: the pack count as a STRING ('6', '24'); '' for a single pack (2388/3282 rows). variant: '' on 3256/3282 -- the flavour lives inside sub_brand, so leave variant '' unless you are deliberately following one of the ~26 exceptions. packaging: '' on 3278/3282 (only 'Pack' x2 and 'Carton' x2) -- leave ''. Every column on a minted row should be '' rather than NULL when it has no value; the table uses empty strings, not NULLs, throughout."
+  }
+}

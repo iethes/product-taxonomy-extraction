@@ -1,0 +1,24 @@
+{
+  "sku_type": {
+    "sources": ["sub_brand", "rasa", "kemasan"],
+    "separator": " ",
+    "notes": "Identity column of uht.uht_dict (there is no sku_type_complete column here). Verified 1690/1694 rows equal TRIM(CONCAT(sub_brand,' ',rasa,' ',kemasan)). Skip any null/empty source when composing."
+  },
+  "keywords": {
+    "sources": ["sku_type", "keyword_typo"],
+    "separator": " ",
+    "notes": "keywords == sku_type exactly on 963/1694 rows; the rest are sku_type followed by space-separated common misspellings/aliases (the same tokens stored in keyword_typo). When minting with no typos, set keywords = sku_type and keyword_typo = '' (empty string, never NULL)."
+  },
+  "kemasan": {
+    "sources": ["volume", "units", "pcs"],
+    "separator": " ",
+    "notes": "'<volume:int> <units>' plus ' x <pcs:int> pcs' when pcs > 1. Verified 1671/1694."
+  },
+  "_table_notes": {
+    "dict_table": "sincere-hearth-273704.uht.uht_dict",
+    "no_meta_column": "uht_dict has NO _meta column - do not try to stamp _meta on dict inserts here.",
+    "filter_table_schema": "uht.filter_uht_tokopedia has columns ecommerce, product_id, sku_name, merchant_id, _meta - there is NO reason column.",
+    "qa_table_schema": "uht.product_id_dict_qa: url, ecommerce_platform, product_id, keywords, sku_type_complete, brand, sku_name, unnamed:_7, _meta.",
+    "packsize_buckets": "Mini (0 - 125 ml) / Small (126 - 200 ml) / Medium (201 - 899 ml) / Large (900 - 1000 ml) / Extra Large (1000 - 5000 ml) - bucket on UNIT volume, not carton total."
+  }
+}

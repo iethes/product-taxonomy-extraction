@@ -1,0 +1,26 @@
+{
+  "packsize": {
+    "sources": [
+      "gramasi",
+      "satuan"
+    ],
+    "separator": " ",
+    "note": "When gramasi is a numeric size, packsize = '<gramasi> <satuan>' (e.g. '50 gr', '40 ml'); holds on 5214/6506 rows. When gramasi is a non-numeric literal such as 'Set' or 'Multi Variant', packsize equals gramasi verbatim and satuan carries the same literal. For bundle_type='multipack', packsize = '<gramasi> <satuan> x <int(bundle_quantity)> pcs' (e.g. '10 gr x 2 pcs')."
+  },
+  "sku_type_complete": {
+    "sources": [
+      "sub_brand",
+      "packsize"
+    ],
+    "separator": " ",
+    "note": "Holds on 6471/6506 rows. sub_brand already carries the brand prefix (e.g. 'Amura Ageless Ultra Day Cream'), so brand is NOT concatenated again. For bundle_type='set', packsize is the literal 'Set' and sub_brand already ends in 'Set', so sku_type_complete == sub_brand with no suffix appended."
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "note": "keywords is a verbatim copy of sku_type_complete in 6235/6506 (95.8%) of existing rows."
+  },
+  "_note": "menmoisturizer shares mosturizer's tables (mosturizer.mosturizer_dict / product_id_dict_qa / filter_mosturizer). Pattern copied from mosturizer.json and re-verified against live dict rows on 2026-09-09: packsize='<gramasi> <satuan>' (multipack '<gramasi> <satuan> x <n> pcs'), sku_type_complete='<sub_brand> <packsize>', keywords=verbatim sku_type_complete. mosturizer_dict has NO _meta column."
+}

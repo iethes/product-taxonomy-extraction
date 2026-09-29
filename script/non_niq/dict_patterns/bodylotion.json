@@ -1,0 +1,18 @@
+{
+  "packsize": {
+    "sources": ["gramasi", "satuan"],
+    "separator": " ",
+    "note": "For bundle_type='multipack' the packsize carries a multiplier suffix: '{gramasi} {satuan} x {N} pcs' (N = bundle_quantity)."
+  },
+  "sku_type_complete": {
+    "sources": ["sub_brand", "packsize"],
+    "separator": " ",
+    "note": "sub_brand already begins with the brand, e.g. brand='A Bonne' -> sub_brand='A Bonne Hokkaido Milk Whitening Lotion' -> sku_type_complete='A Bonne Hokkaido Milk Whitening Lotion 400 ml'."
+  },
+  "keywords": {
+    "sources": ["sku_type_complete"],
+    "separator": " ",
+    "suffix": " ",
+    "note": "keywords = sku_type_complete plus a single trailing space (3125/3163 existing rows)."
+  }
+}

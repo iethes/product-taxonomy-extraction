@@ -1,0 +1,22 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "flavor", "packsize", "pack_type"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["sku_type_complete"],
+    "separator": " "
+  },
+  "_notes": {
+    "identity_col": "sku_type_complete",
+    "typo_col": "keywords_typo",
+    "verified_on": "2026-09-14",
+    "verification": "3045/3226 rows with a non-empty sub_brand reproduce sku_type_complete exactly from sub_brand+flavor+packsize+pack_type joined by a single space; the remaining 181 differ ONLY by a doubled space, because the real producer does a naive join and some rows carry a trailing space in sub_brand or an empty flavor/packsize. keywords == sku_type_complete on 3219/3226. Populate all four sources so no doubled space is emitted.",
+    "degenerate_rows": "Rows with sub_brand = '' are brand-only stubs: sku_type_complete = brand alone, pack_type NOT appended. Do not mint in that shape.",
+    "no_meta_column": "multivitamin_dict has NO _meta column - do not attempt to stamp _meta on dict inserts.",
+    "sibling_tables": {
+      "qa": "multivitamin.product_id_dict_qa (identity col sku_type_complete; has url/merchant_name/ecommerce_platform/_meta)",
+      "filter": "multivitamin.filter_multivitamin_cross (NO reason column; uses `ecommerce` not `ecommerce_platform`, plus merchant_id)"
+    }
+  }
+}

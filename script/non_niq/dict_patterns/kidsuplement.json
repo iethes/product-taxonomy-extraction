@@ -1,0 +1,25 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "flavor", "pack_size"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["keywords_typo", "sku_type_complete"],
+    "separator": " "
+  },
+  "_notes": {
+    "verified_on": "2026-09-11",
+    "table": "sincere-hearth-273704.kidsuplement.kidsuplement_dict",
+    "match_rates": "sku_type_complete 1559/1572 (CONCAT(sub_brand,' ',flavor,' ',pack_size), empties NOT skipped), keywords 1563/1572 (TRIM(CONCAT(keywords_typo,' ',sku_type_complete)))",
+    "gotchas": [
+      "kidsuplement_dict has NO _meta column -- the harness prompt asks for an _meta stamp on dict inserts that cannot be written. Provenance for minted rows lives only in the product_id_dict_qa row that points at them.",
+      "sku_type_complete does NOT skip an empty flavor: the double space is load-bearing identity, e.g. 'Blackmores Multivitamin  Multi Variant', 'ChildLife Omega 3 DHA + Choline  27 tablets'. Reproduce it exactly.",
+      "keywords DOES skip an empty keywords_typo (leading separator is trimmed), so keywords == sku_type_complete when there is no alias.",
+      "Every attribute column is '' (empty string), never NULL, when unknown -- including function__2, segmentasi_soho, age_group.",
+      "pack_size is the human-readable string ('60 tablets'); gramasi is the bare number as STRING; satuan is the unit ('tablets'/'ml'/'gr'). All columns are STRING, there are no numeric columns.",
+      "category is 'Baby Vitamin' on 1571/1572 rows regardless of whether the product is for kids or adults.",
+      "variant has an 'Eye Health' value but variant_ta does not -- eye products use variant_ta 'Others'.",
+      "Watch the typo'd vocabulary already in the table: 'Growth & Develompment' (11 rows), 'Support Immunnity' (7 rows), 'single' lowercase (1 row). Prefer the correctly-spelled majority value."
+    ]
+  }
+}

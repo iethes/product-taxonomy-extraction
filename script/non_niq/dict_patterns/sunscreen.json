@@ -1,0 +1,37 @@
+{
+  "sku_type_complete": {
+    "sources": [
+      "sub_brand",
+      "packsize"
+    ],
+    "separator": " ",
+    "note": "Holds exactly on 2627/2637 rows. sub_brand carries the full identity string INCLUDING the brand token (e.g. 'Wardah UV Shield Airy Smooth Sunscreen Serum SPF 50 PA ++++'), packsize carries the size suffix. Size formatting is '<n> ml' / '<n> gr' (space before unit, lowercase). Multipacks append ' x <N> pcs' to packsize (e.g. '40 ml x 2 pcs'). Where the listing is a mixed/unspecified pack, packsize is the literal 'Multi Variant', 'Set' or 'Bundle' instead of a size; a multipack of mixed variants is 'Multi Variant x <N> pcs'."
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete",
+      "keywords_typo"
+    ],
+    "separator": " ",
+    "note": "Holds on 2633/2637 rows. keywords_typo is the empty string '' (never NULL) on 1983/2637 rows; when populated it is usually the no-space size form ('40ml', '30g') and gets appended to sku_type_complete."
+  },
+  "gramasi": {
+    "sources": [
+      "packsize"
+    ],
+    "separator": "",
+    "note": "The numeric leading token of packsize as a string ('40', '30'). For non-numeric packsizes ('Multi Variant', 'Set', 'Bundle') existing rows write 'Multi' or leave ''."
+  },
+  "satuan": {
+    "sources": [
+      "packsize"
+    ],
+    "separator": "",
+    "note": "The unit token of packsize: 'ml' (1372 rows) or 'gr' (1214). Non-size packsizes use 'Set' / 'Multi Variant' / '' ."
+  },
+  "_vocabulary": {
+    "sources": [],
+    "separator": "",
+    "note": "Grounded distinct values, most-common first. packaging: Tube|Jar|Bottle|Spray|Stick|Sachet|Multi Variant|Powder|Case|Set. variant (= skin type): All Skin Type|Oily Skin Type|Acne Skin Type|Dry Skin Type|Sensitive Skin Type|Multi Variant. user_category: Women|Men|Baby & Kids|Baby. function: 'UV Protection' on 2628/2637 rows -- effectively constant. function_additional: Not Available|Brightening|Soothing & Calming|Antioxidant|UV Protection|Hydrating & Moisturizing|Repair & Barrier|Anti-Aging|Exfoliant|Nourishing|Acne Treatment|Oil Control. ingredient/ingredient_additional: an INCI or marketing actives name, or the literal 'Not Available'/'UV Filter' when unknown. bundle_type: single (2441) | multipack (158); bundle_quantity is FLOAT64, 1.0 for single and N for multipack. company: the manufacturer's legal name ('PT. PAragon Technology And Innovation' -- sic, the existing rows' own capitalisation) or '' when unknown. sunscreen_dict has NO _meta column, so dict inserts cannot be _meta-stamped for this category."
+  }
+}

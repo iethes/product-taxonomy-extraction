@@ -1,0 +1,41 @@
+{
+  "sku_type": {
+    "sources": [
+      "sub_brand",
+      "scent",
+      "packsize"
+    ],
+    "separator": " ",
+    "skip_empty_sources": false,
+    "note": "babycreamlotion's dict identity column is sku_type (there is NO sku_type_complete column on this table; the QA table's sku_type_complete is populated from this value). sub_brand already carries the brand prefix (e.g. 'Calamom Lotion', 'Pigeon Baby Water Gel Lotion Botanical'), so brand is NOT concatenated again. Empty sources are NOT skipped: the production convention is a raw CONCAT with a single-space separator, so an empty `scent` leaves a literal double space (e.g. 'Labore Barrier Revive Cream  10 ml', 'Kado Skin Daily Soothin Cream Multiceramide  100 ml'). Exact-concat holds on 1578/1719 rows; the rest are legacy drift (single space with empty scent, or a scent folded into sub_brand). New rows follow the 1578-row majority so downstream exact-string joins on sku_type keep matching."
+  },
+  "keywords": {
+    "sources": [
+      "sku_type",
+      "keywords_typo"
+    ],
+    "separator": " ",
+    "skip_empty_sources": true,
+    "note": "Holds on 1719/1719 rows (100%). When keywords_typo is empty, keywords is a verbatim copy of sku_type; otherwise the typo string is appended (e.g. keywords_typo='60ml' -> 'Calamom Lotion Lavender 60 ml 60ml'). Note the source ORDER is the reverse of babybath's."
+  },
+  "packsize": {
+    "sources": [],
+    "separator": " ",
+    "note": "Not generated but strongly conventionalised: '<number> <unit>' with a space, unit lowercase ('60 ml', '150 gr'). Pick-your-own / unknown-size rows use the literal 'Multi Variant' (also mirrored into gramasi/total_gramasi). Multi-item bundles join components with ' + '."
+  },
+  "ingredients": {
+    "sources": [
+      "ingredient_1",
+      "ingredient_2",
+      "ingredient_3",
+      "ingredient_4"
+    ],
+    "separator": ", ",
+    "skip_empty_sources": true,
+    "note": "When no ingredient is known, every ingredient_N column and `ingredients` are set to the literal 'Not Available' (dominant production convention), not left empty. Some rows list a 5th ingredient in `ingredients` that has no ingredient_N column."
+  },
+  "gramasi": {
+    "sources": [],
+    "note": "Numeric part of packsize as a STRING, no unit ('60', '150'); 'Multi Variant' when packsize is 'Multi Variant'. total_gramasi = gramasi * bundle_quantity for multipacks, equal to gramasi for singles."
+  }
+}

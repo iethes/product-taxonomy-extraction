@@ -1,0 +1,34 @@
+{
+  "sku": {
+    "sources": ["sub_brand", "kemasan"],
+    "separator": " "
+  },
+  "sku_complete": {
+    "sources": ["sub_brand", "kemasan", "rasa"],
+    "separator": " "
+  },
+  "sku_type_complete": {
+    "sources": ["sub_brand", "kemasan", "rasa"],
+    "separator": " "
+  },
+  "sku_type_abbott": {
+    "sources": ["sub_brand", "gramasi_abbott", "rasa"],
+    "separator": " "
+  },
+  "keywords": {
+    "sources": ["keyword_typo", "sku_type_complete", "parent_brand", "usia"],
+    "separator": " "
+  },
+  "_notes": {
+    "verified_on": "2026-09-11",
+    "table": "sincere-hearth-273704.susubayi.susubayi_dict",
+    "match_rates": "sku 3423/3430, sku_complete 3409/3430, sku_type_complete=sku_complete 3415/3430, sku_type_abbott 3413/3430, keywords 3411/3430",
+    "gotchas": [
+      "susubayi_dict has NO _meta column -- the harness prompt asks for an _meta stamp on dict inserts that cannot be written.",
+      "kemasan == packsize on 3376/3430 rows; both are the human-readable pack string e.g. '800 gr'.",
+      "gramasi_abbott spells out multipacks as '130 gr x 2 pcs' while kemasan/packsize carry the TOTAL ('260 gr').",
+      "keyword_typo is '' (never NULL) when there is no alias; it is the leading token block of keywords.",
+      "size_single/gramasi/tonase/bundling/bundle_pcs are FLOAT64; tonase = gramasi / 1e6 (metric tons)."
+    ]
+  }
+}

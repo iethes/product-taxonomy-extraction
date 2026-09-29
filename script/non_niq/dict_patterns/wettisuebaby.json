@@ -1,0 +1,12 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "variant", "packsize", "scent"],
+    "separator": " ",
+    "notes": "Verified live 2026-09-09: 947/1000 dict rows match CONCAT(sub_brand,' ',variant,' ',packsize,' ',scent) exactly. Skip any source that is null/empty when composing. Some legacy rows append a bundling suffix (e.g. ' x 42 pack') after scent instead of folding it into packsize -- do not reproduce that shape on new rows."
+  },
+  "keywords": {
+    "sources": ["sku_type_complete"],
+    "separator": " ",
+    "notes": "keywords is a verbatim copy of sku_type_complete on 760/1000 rows; the rest are legacy hand-edited variants. Mint new rows with keywords = sku_type_complete."
+  }
+}

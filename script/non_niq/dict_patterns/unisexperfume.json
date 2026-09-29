@@ -1,0 +1,21 @@
+{
+  "_note": "unisexperfume (blibli/shopee/lazada/tokopedia/tiktok ID) writes to the shared `cologne` dataset, exactly like menperfume: cologne.product_id_dict_qa / cologne.cologne_dict / cologne.filter_cologne. cologne_dict columns are brand, sku_type_complete, user_category, keywords, keyword_typo, bundle_type, bundle_quantity -- there is NO _meta column on the dict table, so the harness's 'stamp _meta on the dict insert' step cannot be honoured. sku_type_complete is a BASE column (typed directly, brand-first), not composed from sub_brand/variant/packsize columns. Inferred 2026-09-09 from 8075 live rows (7968 of them match the `keywords` rule below exactly; the remainder are '' or '#REF!' junk).",
+  "keywords": {
+    "sources": ["brand", "sku_type_complete"],
+    "separator": " "
+  },
+  "_keyword_typo": "Optional. '' (never NULL) on 8035/8075 rows. When non-empty it holds a common misspelling of the identity.",
+  "_sku_type_complete": {
+    "shape": "<brand> <line/variant> [<concentration>] <size>",
+    "concentration_vocab": ["EDP", "EDT", "EDC", "Extrait De Parfum", "Body Mist", "Body Spray", "Parfum", "(omitted)"],
+    "size_format": "'100 ml' (space before unit); multipack suffix ' x N pcs'; unknown variant -> 'Multi Variant'; unknown size -> 'Multi Size'",
+    "bundles": "Mixed-FORM bundles (fragrance + face wash / pomade / roll-on / hair&body wash) ENUMERATE their components joined by ' + ' and are typed bundle_type='single', bundle_quantity=1.0, with NO ' x N pcs' suffix. Multi-fragrance packs use ' x N pcs' with bundle_type='multipack' and bundle_quantity=N.",
+    "no_brand": "brand='No Brand', sku_type_complete='No Brand Perfume'"
+  },
+  "_attribute_vocab": {
+    "user_category": ["Women", "Men", "Unisex"],
+    "_user_category_note": "Legacy-noisy: 7192 Women / 864 Men / 18 Unisex. Default to 'Women' unless the pack is explicitly a men's or boys' product; do not add to 'Unisex'.",
+    "bundle_type": ["single", "multipack"],
+    "bundle_quantity": "FLOAT64; 1.0 for single, N for multipack"
+  }
+}

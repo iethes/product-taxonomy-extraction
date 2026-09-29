@@ -1,0 +1,38 @@
+{
+  "packsize": {
+    "sources": [
+      "gramasi",
+      "satuan"
+    ],
+    "separator": " ",
+    "note": "Dominant form '15 gr'. Multipack appends ' x {bundle_quantity} pcs' -> '15 gr x 2 pcs'. When size is unknown/varies use the literal 'Multi Variant' (and gramasi='Multi')."
+  },
+  "sku_type_complete": {
+    "sources": [
+      "sub_brand",
+      "warna",
+      "packsize"
+    ],
+    "separator": " ",
+    "note": "1358/1364 existing rows match TRIM(CONCAT(sub_brand,' ',warna,' ',packsize)). sub_brand already begins with the brand (e.g. brand='Azzura', sub_brand='Azzura Luminous Cushion'). warna is the shade; use the literal 'Multi Variant' when no single shade applies. When BOTH warna and packsize are the literal 'Multi Variant', the dominant convention keeps both (doubled: '<sub_brand> Multi Variant Multi Variant', 9 rows) rather than de-duplicating to one (4 rows) - follow the mechanical concat."
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "note": "Equal to sku_type_complete on 1215/1364 rows; the remainder append an extra colloquial token (e.g. '12g', 'bundle'). Default to an exact copy of sku_type_complete."
+  },
+  "_constants": {
+    "category": "Make Up",
+    "sub_category": "Foundation",
+    "variant": "Cushion",
+    "user_category": "Women",
+    "packaging": "Case",
+    "satuan": "gr",
+    "bundle_type": "single",
+    "bundle_quantity": 1.0,
+    "note": "category/sub_category/variant are single-valued across all 1364 rows. packaging='Case' (1259), satuan='gr' (1136) and user_category='Women' (1358) are the dominant values, not invariants - override when the product genuinely differs (e.g. packaging 'Tube'/'Stick'/'Bottle', satuan 'ml')."
+  },
+  "_no_meta_column": "cushion_dict has NO _meta column - do not attempt to write one."
+}

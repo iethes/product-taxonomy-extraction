@@ -1,0 +1,22 @@
+{
+  "_dataset_note": {
+    "sources": [],
+    "separator": "",
+    "note": "dataset 'vaporizer' -> `sincere-hearth-273704.vaporizer.vaporizer_dict` (8231 rows measured 2026-09-16). The dict table has NO _meta column, so dict inserts for this dataset CANNOT be _meta-stamped (the v2 harness prompt asks for it; the column does not exist). `identifier` is INT64 and is the row's PK -- assign MAX(identifier)+1 manually, it is not auto-generated. The filter table `vaporizer.filter_vaporizer` has NO `reason` column and names its platform column `ecommerce` (not `ecommerce_platform`); it also has `merchant_id`. The QA table `vaporizer.product_id_dict_qa` uses `prod_id` as PK and carries ecommerce_platform/keywords/brand/sku_name/identifier/sku_type_complete/vlookup/_meta."
+  },
+  "sku_type_complete": {
+    "sources": ["sub_brand", "type", "category", "varian", "size"],
+    "separator": " ",
+    "note": "Holds on 8195/8231 rows. e.g. sub_brand 'Foom Beverage Series Liquid' + type 'Open System' + category 'Salt Nicotine' + varian 'Iced Tea' + size '15 ml' -> 'Foom Beverage Series Liquid Open System Salt Nicotine Iced Tea 15 ml'. NOTE the non-obvious ordering: type and category come BETWEEN sub_brand and varian. `size` is appended only when it is non-empty AND differs from `varian` -- a row whose varian and size are both the literal 'Multivariant' emits it once ('Rincoe Manto Pod Open System Pods Multivariant'), but a row whose varian and size are both '-' emits BOTH dashes ('Coil Oxva Xlim C By Oxva Open System Coil - -'). Device rows (Pods/Mod/RDA/Coil) usually have size='' and emit nothing. Literal '-' placeholders are real values here and are emitted verbatim, never dropped."
+  },
+  "keywords": {
+    "sources": ["sub_brand", "varian", "type"],
+    "separator": " ",
+    "note": "Holds on 8100/8231 rows. Same components as sku_type_complete minus `category` and `size`, and in a DIFFERENT order: sub_brand, then varian, then type. e.g. 'Puff Plus Strawberry Banana MoDi', 'VTV Smart Blue - Open System' (varian '-' emitted verbatim). keyword_typo is a separate column, NOT concatenated into keywords."
+  },
+  "_attribute_conventions": {
+    "sources": [],
+    "separator": "",
+    "note": "type in ('Open System' 5884, 'MoDi' 1523, 'Close System' 608, 'THP' 197, 'Nicotine Pouch' 19) -- this is the SYSTEM, not the product form. category in ('Pods' 3150, 'Freebase' 1615, 'Salt Nicotine' 1389, 'Cartridge' 669, 'Mod' 384, 'RDA' 286, 'Coil' 211, 'Device' 158, 'RTA' 140, 'THP Sticks' 83, 'Pods Mods' 67, 'RBA', 'Nicotine Pouch', 'Coil Prebuild', 'Cotton', 'RDTA', 'Tank', 'RTA / DTA', 'Pod Kit'). device_consumables in ('Consumables' 5520, 'Device' 2711) -- e-liquid, cartridges, coils, cotton and disposables are Consumables; pod kits/mods/RDAs/atomizers are Device. battery like '550mAh' / 'Dual 18650mAh' / '-' (no space before mAh). power_range like '5W - 30W' or '-'. resistance like '0.33 ohm - 3.0 ohm' / '-'. size is the e-liquid volume '15 ml' / '30 ml' / '60 ml' / '100 ml' (space before unit) and is '' on most devices. nicotine is '<n> mg' ('3 mg','30 mg'), or '-' on devices, or 'Multivariant'. puff_count is '∞' (infinity, 6743 rows) for anything refillable/open-system and a bare integer ('600','5000') for disposables. manufacturer is blank on 4175 rows -- blank is an accepted value, do not invent one. `varian` is the colour (devices) or flavour (liquids); 'Multivariant' is the accepted pick-your-own value and '-' the accepted no-variant value."
+  }
+}

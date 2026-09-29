@@ -1,0 +1,38 @@
+{
+  "_notes": [
+    "SCOPE: these top-level keys describe sincere-hearth-273704.waterheater.waterheater_dict_new",
+    "(1751 rows), which is the dict table the non-NIQ QA harness is configured to write. Verified",
+    "2026-09-16 over all 1751 rows: 0 mismatches for both formulas below.",
+    "waterheater_dict_new has NO _meta column and NO 'type' column -- do not try to stamp or compose",
+    "either. Columns: brand, model, ajusted_model, system, sku_type_complete, keywords, keyword_typo.",
+    "brand is INITCAP-ed when composed into sku_type_complete but stored raw in the brand column",
+    "(e.g. brand 'KDK' -> sku_type_complete 'Kdk RG30AHM1'). 85 of 1751 rows differ this way.",
+    "keyword_typo is NULL on 1744 of 1751 rows (the old waterheater_dict used '' instead); it is the",
+    "one column allowed to be NULL. Its separator space is emitted even when it is NULL, so keywords",
+    "always starts with a single leading space.",
+    "ajusted_model is model with '-', '/', '(' and ')' each replaced by a single space (verified",
+    "2026-09-16: 1731/1758 rows match that rule vs 1685 for '-' and '/' alone; e.g. model",
+    "'TWH-45MCPMY(S)-WS' -> ajusted_model 'TWH 45MCPMY S  WS', the ')-' pair yielding two spaces).",
+    "'system' vocabulary in dict_new: 'Instan' 1329, 'Tank' 419, '' 3. NOTE this differs from the old",
+    "waterheater_dict ('Instan System'/'Tank System'), and in dict_new 'system' is NOT part of",
+    "sku_type_complete at all. Ground a new row's system on its own brand family's existing rows.",
+    "Load-bearing whitespace: many models carry leading/trailing spaces (' DH-3UDP1MZR', 'Pro80 ',",
+    "'JSH25 '), which leaks into sku_type_complete as double/trailing spaces. Preserve them in the",
+    "dict, but the QA table's own convention is the TRIMMED identity string (e.g. 'No Brand Water",
+    "Heater' 1218 rows vs 'No Brand Water Heater ' 476) -- trim when writing to the QA table.",
+    "LEGACY: sincere-hearth-273704.waterheater.waterheater_dict (1062 rows) is a different, older",
+    "table that DOES have a 'type' column (type = brand + ' ' + model; sku_type_complete = type +",
+    "' ' + system; keywords = keyword_typo + ' ' + type + ajusted_model). Do not apply this file's",
+    "formulas to it, and do not apply its formulas to dict_new."
+  ],
+  "sku_type_complete": {
+    "sources": ["brand", "model"],
+    "separator": " ",
+    "transforms": { "brand": "INITCAP" }
+  },
+  "keywords": {
+    "sources": ["keyword_typo", "sku_type_complete", "ajusted_model"],
+    "separator": "",
+    "source_separators": { "keyword_typo": " ", "sku_type_complete": "" }
+  }
+}

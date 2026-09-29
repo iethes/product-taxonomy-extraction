@@ -1,0 +1,38 @@
+{
+  "sku_type_complete": {
+    "sources": [
+      "sub_brand",
+      "flavor",
+      "packsize",
+      "pack_type"
+    ],
+    "separator": " ",
+    "note": "sku_type_complete = RTRIM(CONCAT(sub_brand,' ',flavor,' ',packsize,' ',pack_type)). Holds on 712/748 rows exactly and on ~all of the remaining 36 once you account for whitespace: the concat is LITERAL, so an empty flavor (or an empty pack_type) leaves a DOUBLE SPACE that is preserved verbatim in the stored value (e.g. 'Glawfyskin L-Pink Capsule  6 box', 'Zaneta Hi Glow  75 gr Sachet'). Several sub_brand values also carry a load-bearing TRAILING space ('Arvil Gluta Drink ', 'Cool-Vita Collagen Effervescent ') which shows up as the same double space. Do NOT collapse or trim interior whitespace when minting -- match the existing family's spelling byte-for-byte. sub_brand ALREADY carries the brand prefix (brand='Bronson', sub_brand='Bronson UC-II Collagen'), so brand is never concatenated again.",
+    "skip_empty": false
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "note": "Verbatim copy of sku_type_complete on 741/748 rows. Default to an exact copy (no trailing space in this dict, unlike petfood)."
+  },
+  "_vocabulary": {
+    "note": "Grounded counts as of 2026-09-14 (748 dict rows). Prefer an existing value; only invent when the pack genuinely has no analogue.",
+    "flavor": "Original (574) dominates -- use it for any unflavoured/plain supplement, NOT the empty string. Then Strawberry 38, Multi Variant 10 (use for pick-your-own / mixed-flavour listings), Peach 10, Lemon 8, Mixberry 7, Jeruk Bali dan Lemon 7, Blueberry 6.",
+    "pack_type": "Bottle 469, Sachet 93, Blister 72, Box 46, Pouch 30, Tube 25, Jar 4. Read it off the pack shot.",
+    "sub_category": "Tablet 286, Syrup 211, Powder 185, Softgel 46, Gummy 6, Capsule 3. This is the FORM, despite the name.",
+    "variant": "Overwhelmingly 'Skin, Hair, Nails' (646) -- this is a beauty-supplement dict, so that is the default. Immune Support 57, Bone & Joint Health 17, Probiotic 7, Eye Health 4, Immune Support & Beauty 4.",
+    "claim": "Support Immunity 456, Skin Health 230, Disgestive Health 30 (sic -- keep the typo), Weight Management 23.",
+    "claim_additional": "Skin Health 438, Anti Inflammatory 169, Body Defense 94, Speeding Up Recovery 19, Astaxanthin 18.",
+    "segment": "Other Combination 213, Collagen Plain 98, Vitamin C Combination 93, Collagen Combination 62, Antioxidant Power Plain 55, Antioxidant Power Combination 50, Skin Supplement (Collagen) 39, Anti-Oxidant 27, Superfood Combination 19.",
+    "form_soho": "Mostly the empty string (592). Tablet 86, Powder 43, Gummy 15, Effervescent 7.",
+    "function": "Mostly the empty string (596). Skin brightening 57, Support skin health 36, Promotes collagen 27, Support immunity 10.",
+    "ingredient / ingredient_additional": "Long '; '-joined INCI-style lists copied off the BPOM komposisi panel; the empty string is acceptable and common when the panel is not legible.",
+    "bundle_type": "single 573 / multipack 169 (empty on 6). bundle_quantity is FLOAT64 -- 1.0 for single, N for an N-pack; it is the ONLY column that is ever NULL (6 rows).",
+    "packsize": "'<count> <unit>' e.g. '30 tablet', '10 tablets', '250 gr', '14 pcs'. Multipacks append ' x <N> pcs' e.g. '100 gr x 3 pcs', '5 sachet x 6 pcs'. Use the literal 'Multi Variant' for pick-your-own size/variant listings."
+  },
+  "_no_meta_column": "beautysupplement_dict has NO _meta column (columns are exactly: keywords, keywords_typo, sku_type_complete, sub_brand, brand, flavor, packsize, variant, form_soho, function, sub_category, pack_type, segment, claim, claim_additional, ingredient, ingredient_additional, bundle_type, bundle_quantity). The harness prompt asks to stamp _meta on a new dict row -- that INSERT will fail. Skip it.",
+  "_null_convention": "ZERO NULLs anywhere except bundle_quantity (6 rows). Missing values are the empty string '', never NULL -- including keywords_typo. Write '' on every new row.",
+  "_filter_table": "filter_beautysupplement has NO `reason` column. Its columns are url, ecommerce_platform, product_id, sku_name, merchant_id, _meta. The harness prompt asks for {product_id, ecommerce_platform, sku_name, reason} -- drop reason, and populate url/merchant_id from the master table instead."
+}

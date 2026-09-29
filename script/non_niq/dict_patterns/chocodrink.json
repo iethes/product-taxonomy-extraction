@@ -1,0 +1,27 @@
+{
+  "_note": "chocodrink QA writes into the susububuk.* tables (dict = susububuk.susububuk_dict, identity col = sku_type_complete, typo col = keyword_typo). Pattern VERIFIED live 2026-09-15: sku_type_complete = TRIM(sub_brand + ' ' + flavor + ' ' + kemasan). Same shape as dict_patterns/susububuk.json.",
+  "sku_type_complete": {
+    "sources": [
+      "sub_brand",
+      "flavor",
+      "kemasan"
+    ],
+    "separator": " ",
+    "notes": "skip any null/empty source; keep flavor even when it is 'Original'/'Plain'. kemasan is 'SIZE UNITS' or 'SIZE UNITS x N pcs' when bundled, e.g. '200 ml', '22 gr x 10 pcs'; use kemasan='Multi Variant' (with packsize='Multi Variant', gramasi/ton/gramasi_pcs='0') for pick-your-own size listings. The categories vocabulary is 'Choco drink' (NOT 'Chocolate Drink' - corrected 2026-09-15) for powder, 'Liquid Milk' for RTD/UHT; many chocolate sachet families legitimately sit under 'Powder Milk'/'Specialized Milk' instead - copy the value from the closest sibling row rather than assuming.",
+    "per_size_rows": "RTD/liquid families keep ONE ROW PER PACK SIZE, they are NOT collapsed: sub_brand 'Ultra Milk UHT' has 125/200/250/1000 ml, 'Greenfields UHT' has 125/200/1000 ml, 'Indomilk UHT' has 190/250/1000 ml. Mint a size-accurate sibling rather than reusing a differently-sized row."
+  },
+  "keywords": {
+    "sources": [
+      "keyword_typo",
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "notes": "keywords = keyword_typo + ' ' + sku_type_complete (e.g. 'activgo active go activ 10X22gr 10 Sachet x 22 gr Milo Activ-Go Chocolate 22 gr x 10 pcs'). When keyword_typo is null the legacy rows keep a LEADING SPACE (' Zee RTD Up & Go Chocolate 200 ml') - that is data noise, do not replicate it; emit the bare sku_type_complete instead."
+  },
+  "attribute_conventions": {
+    "units_ml_rows": "packsize/pcs are NULL on almost every units='ml' row (all Cimory 250 ml, Brookfarm 350/946 ml, and the Zee RTD Up & Go 200 ml row). 'Small (100-200 gr)' is the only packsize bucket ever seen on ml rows. gramasi = the numeric size, gramasi_pcs = gramasi/1000, ton = gramasi/1e9.",
+    "relevance_boundary": "chocodrink keeps every CHOCOLATE-flavoured drink whatever its form - powder sachets, UHT/RTD cartons and cans all map (Ultra Milk UHT Chocolate, HiLo RTD Chocolate, Ovaltine UHT Choco Malt, KitKat RTD, Milo RTD cans). Coffee drinks are FILTERED even when milk-based (Golda, Tropicana Slim Cafe Latte, HiLo Teen Coffee Tiramisu RTD - 3144 coffee rows in filter_susububuk_nestle_all, 0 in the QA table). Also FILTERED (precedent rows already in the filter table, 2026-09-15): plain malted drinks with no cocoa (Horlicks Original) and coffee-machine capsules (Nescafe Dolce Gusto KitKat Hot Chocolate pods).",
+    "gr_rows": "on units='gr' rows gramasi_pcs = gramasi * pcs and ton = gramasi_pcs / 1e6 (e.g. 35 gr x 22 pcs -> 770 / 0.00077). Some legacy HiLo/Hotto carton rows have inconsistent pcs/ton values - do not copy those, recompute.",
+    "filter_table_shape": "filter_susububuk_nestle_all has NO reason column (cols: ecommerce_platform, product_id, sku_name, merchant_id, _meta) - put the reason inside _meta as a 'reason' key, which is what the earlier claude_code rows do."
+  }
+}

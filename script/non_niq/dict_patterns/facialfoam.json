@@ -1,0 +1,33 @@
+{
+  "packsize": {
+    "sources": [
+      "gramasi",
+      "satuan"
+    ],
+    "separator": " ",
+    "note": "When gramasi is numeric, packsize = '<gramasi> <satuan>' (e.g. '100 ml', '60 gr'); holds on 3405/4194 rows. Multipack listings are still bundle_type='single' in this dict -- the multipack is encoded in packsize only, as '<gramasi> <satuan> x <N> pcs' (e.g. '100 ml x 2 pcs'), with gramasi/satuan holding the PER-UNIT size. When the listing is a multi-variant or set listing, packsize is the literal 'Multi Variant' / 'Set' and gramasi/satuan carry the same literal (or are left empty)."
+  },
+  "sku": {
+    "sources": [
+      "sub_brand",
+      "categories"
+    ],
+    "separator": " ",
+    "note": "sku = sub_brand + category noun; holds on 4148/4194 rows. sub_brand already carries the brand prefix (e.g. 'Nivea Men'), so brand is NOT concatenated again. categories is the category noun as written on the pack -- 'Facial Wash' (3250 rows) or 'Facial Foam' (798); prefer 'Facial Wash' unless the pack itself says Foam."
+  },
+  "sku_type_complete": {
+    "sources": [
+      "sku",
+      "packsize"
+    ],
+    "separator": " ",
+    "note": "Holds on 4132/4194 rows. Equivalently sub_brand + ' ' + categories + ' ' + packsize."
+  },
+  "keywords": {
+    "sources": [
+      "sku_type_complete"
+    ],
+    "separator": " ",
+    "note": "keywords is a verbatim copy of sku_type_complete in 4158/4194 (99.1%) of existing rows."
+  }
+}

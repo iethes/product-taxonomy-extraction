@@ -1,0 +1,21 @@
+{
+  "sku_type_complete": {
+    "sources": ["sub_brand", "variant", "total_size"],
+    "separator": " ",
+    "note": "Plain space-join of the three source columns with NULL/empty treated as ''. Verified against 4768 live rows: CONCAT(IFNULL(sub_brand,''),' ',IFNULL(variant,''),' ',IFNULL(total_size,'')) reproduces 4072 (85%) exactly. sub_brand already embeds the brand token (e.g. brand='Aim Biscuits', sub_brand='Aim Biscuits Crackers'). Legacy rows keep the double space / trailing space that an empty variant or total_size produces -- do NOT trim when minting a row whose variant or total_size is empty; match the family's existing rows."
+  },
+  "keywords": {
+    "sources": ["sku_type_complete"],
+    "separator": "",
+    "suffix": " ",
+    "note": "keywords = sku_type_complete plus ONE trailing space (2700 of 2887 legacy rows). Prior claude_code sessions instead wrote keywords = sku_type_complete verbatim (1166 rows) or freeform search-term lists (714 rows); the trailing-space form is the real generated pattern and is what new rows should use."
+  },
+  "attribute_columns": {
+    "brand": "Brand token only, e.g. 'Nabati', 'Oreo', 'No Brand'.",
+    "sub_brand": "brand + product line, e.g. 'Nabati Nextar Pie'.",
+    "variant": "Flavour/variant, e.g. 'Chocolate', 'Multi Variant'. '' when the line has no variant axis.",
+    "total_size": "Net size with a space before the unit, e.g. '168 gr', '250 gr x 12 pcs', '4 pcs'.",
+    "packaging": "Grounded vocabulary (live counts): Pack 2171, Box 766, Carton 607, Pouch 594, Jar 173, Can 138, Bag 72, Cup 54, Multipack 15, Toples 9, Bundle 6, Kiloan 5, Tin 5, Pcs 4, Ziplock 3, Sachet 3, Wrapper 3. Prefer Pack; use Carton for karton/dus multipacks, Jar for toples."
+  },
+  "nullable_columns": ["keywords_typo"]
+}
