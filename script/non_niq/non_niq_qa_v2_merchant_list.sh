@@ -1389,21 +1389,14 @@ RUNTIME AUTHENTICATION (already prepared):
   fi
   if [[ "$residual_valid" == true ]] && [[ "$(extract_rows_created "$agent_output")" != "0" ]]; then
     # 2c.1 in the prompt is agent-trusted text, not code-enforced (unlike non_niq_qa_v3.py's
-    # builder) -- this is the code-side backstop: any dict row that appeared since run_start with
-    # no matching insert-log row means the agent skipped or failed its mandatory log write.
-    local gap_count
-    gap_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-      "$(taxonomy_insert_log_gap_query "\`${PROJECT}.${dict_table}\`" "${PROJECT}.${dict_table}" \
-        "$run_start" \
-        "JSON_VALUE(log.row_json, '\$.inserted_row.brand') = cur.brand AND JSON_VALUE(log.row_json, '\$.inserted_row.${dict_identity_col}') = cur.\`${dict_identity_col}\`")" \
-      2>/dev/null | tail -1)
-    if [[ ! "$gap_count" =~ ^[0-9]+$ ]] || [[ "$gap_count" != "0" ]]; then
+    # builder) -- apply_taxonomy_insert_log_backstop is the code-side backstop: any dict row that
+    # appeared since run_start with no matching insert-log row means the agent skipped or failed
+    # its mandatory log write.
+    if ! agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \
+      "\`${PROJECT}.${dict_table}\`" "${PROJECT}.${dict_table}" "$run_start" \
+      "JSON_VALUE(log.row_json, '\$.inserted_row.brand') = cur.brand AND JSON_VALUE(log.row_json, '\$.inserted_row.${dict_identity_col}') = cur.\`${dict_identity_col}\`" \
+      "$dict_table"); then
       residual_valid=false
-      log ERROR "Post-run insert-log verification found ${gap_count:-an unreadable count} of new ${dict_table} row(s) with no matching non_niq_taxonomy_insert_log entry."
-      agent_output=$(jq -c '
-        .status = "blocked" |
-        .blockers = ((.blockers // []) + ["Post-run validation found a new dictionary row with no matching non_niq_taxonomy_insert_log entry; the mandatory 2c.1 same-transaction log write was skipped or failed."])
-      ' <<< "$agent_output")
     fi
   fi
   if (( auto_confirmed > 0 )) && [[ "$residual_valid" == true ]]; then

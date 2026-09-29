@@ -859,20 +859,13 @@ RUNTIME AUTHENTICATION (already prepared):
   if [[ "$residual_valid" == true ]] && \
      [[ "$(jq -r '.rows_created_in_dict // 0' <<< "$result_json" 2>/dev/null)" != "0" ]]; then
     # 2d.1 in the prompt is agent-trusted text, not code-enforced (unlike non_niq_qa_v3.py's
-    # builder) -- this is the code-side backstop: any QA row that appeared since run_start with no
-    # matching insert-log row means the agent skipped or failed its mandatory log write.
-    local gap_count
-    gap_count=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-      "$(taxonomy_insert_log_gap_query "\`${PROJECT}.${QA_TABLE}\`" "${PROJECT}.${QA_TABLE}" \
-        "$run_start" "JSON_VALUE(log.row_json, '\$.product_id') = cur.product_id")" \
-      2>/dev/null | tail -1)
-    if [[ ! "$gap_count" =~ ^[0-9]+$ ]] || [[ "$gap_count" != "0" ]]; then
+    # builder) -- apply_taxonomy_insert_log_backstop is the code-side backstop: any QA row that
+    # appeared since run_start with no matching insert-log row means the agent skipped or failed
+    # its mandatory log write.
+    if ! agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \
+      "\`${PROJECT}.${QA_TABLE}\`" "${PROJECT}.${QA_TABLE}" "$run_start" \
+      "JSON_VALUE(log.row_json, '\$.product_id') = cur.product_id" "$QA_TABLE"); then
       residual_valid=false
-      log ERROR "Post-run insert-log verification found ${gap_count:-an unreadable count} of new ${QA_TABLE} row(s) with no matching non_niq_taxonomy_insert_log entry."
-      agent_output=$(jq -c '
-        .status = "blocked" |
-        .blockers = ((.blockers // []) + ["Post-run validation found a new QA-table row with no matching non_niq_taxonomy_insert_log entry; the mandatory 2d.1 same-transaction log write was skipped or failed."])
-      ' <<< "$result_json")
     fi
   fi
   if (( auto_confirmed > 0 )) && [[ "$residual_valid" == true ]]; then

@@ -89,17 +89,16 @@ grep -qF 'signal=$(decide_queue_signal "$agent_output")' <<< "$script_src" || fa
 echo "PASS: main() wiring"
 
 # --- main() wiring: code-side backstop for 2c.1's agent-trusted insert-log contract ---
-grep -qF 'taxonomy_insert_log_gap_query "\`${PROJECT}.${dict_table}\`"' <<< "$script_src" \
-  || fail "main() must run the shared insert-log gap check against this dataset's dict_table"
+grep -qF 'apply_taxonomy_insert_log_backstop "$agent_output" \' <<< "$script_src" \
+  || fail "main() must run the shared insert-log backstop against this dataset's dict_table"
 grep -qF 'run_start=$(date -u' <<< "$script_src" \
   || fail "main() must capture run_start before dispatching the agent, to scope the gap check"
-if grep -qF 'gap_count" != "0"' <<< "$script_src" && grep -qF 'residual_valid=false' <<< "$script_src"; then
+if grep -qF '! agent_output=$(apply_taxonomy_insert_log_backstop' <<< "$script_src" && \
+   grep -qF 'residual_valid=false' <<< "$script_src"; then
   :
 else
-  fail "main() must block the queue signal when the gap check finds an unlogged dictionary row"
+  fail "main() must block the queue signal when the backstop finds an unlogged dictionary row"
 fi
-grep -qF 'non_niq_taxonomy_insert_log entry' <<< "$script_src" \
-  || fail "the blocked result must explain the insert-log gap"
 echo "PASS: main() insert-log gap backstop wiring"
 
 echo "ALL TESTS PASSED"

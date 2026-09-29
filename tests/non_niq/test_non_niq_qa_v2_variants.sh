@@ -23,12 +23,13 @@ for script in script/non_niq/non_niq_qa_v2_merchant_list.sh script/non_niq/non_n
     || fail "$script's Step A must defer the dictionary INSERT so 2c.1 logs the one true inserted row"
   grep -qF "run_start=\$(date -u" <<< "$src" \
     || fail "$script's main() must capture run_start before dispatching the agent"
-  grep -qF 'taxonomy_insert_log_gap_query "\`${PROJECT}.${dict_table}\`"' <<< "$src" \
-    || fail "$script's main() must run the shared insert-log gap check against this dataset's dict_table"
-  if grep -qF 'gap_count" != "0"' <<< "$src" && grep -qF 'residual_valid=false' <<< "$src"; then
+  grep -qF 'apply_taxonomy_insert_log_backstop "$agent_output" \' <<< "$src" \
+    || fail "$script's main() must run the shared insert-log backstop against this dataset's dict_table"
+  if grep -qF '! agent_output=$(apply_taxonomy_insert_log_backstop' <<< "$src" && \
+     grep -qF 'residual_valid=false' <<< "$src"; then
     :
   else
-    fail "$script's main() must block the queue signal when the gap check finds an unlogged dictionary row"
+    fail "$script's main() must block the queue signal when the backstop finds an unlogged dictionary row"
   fi
   echo "PASS: $script insert-log wiring"
 done
