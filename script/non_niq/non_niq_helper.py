@@ -564,6 +564,62 @@ def recalc_tier_if_needed(client, project, master_table, filter_table, month, pl
 
 
 # ---------------------------------------------------------------------------
+# Update-labelling sync: top-level entry point
+# ---------------------------------------------------------------------------
+
+def sync_labelling(client, project, qa_table, qa_pk_col, qa_platform_col, master_table,
+                    filter_table, rows, month, platform, country, category,
+                    qa_identity_col="sku_type_complete"):
+    """Scoped to one QA session's own worklist rows. Runs, in order:
+      1. dedupe_qa_table -- resolve duplicate QA rows for this worklist's identities.
+      2. sync_master_table -- propagate the kept QA rows into master_table's taxonomy columns.
+      3. recalc_tier_if_needed -- only if this worklist touches a currently-filtered product.
+    Never raises for a worklist with no usable identities."""
+    identities = set()
+    product_ids = set()
+    for row in rows:
+        identity = build_worklist_identity(row)
+        if identity is None:
+            continue
+        identities.add(identity)
+        product_ids.add(identity[0])
+    if not identities:
+        return {
+            "duplicates_removed": 0, "master_rows_updated": 0,
+            "tier_recalc": {"ran": False, "filtered_count": 0},
+        }
+
+    kept, duplicates_removed = dedupe_qa_table(
+        client, project, qa_table, qa_pk_col, qa_platform_col, identities,
+    )
+    excluded = filtered_product_ids(client, project, filter_table, product_ids)
+    master_columns = resolve_master_sync_columns(client, project, master_table)
+    updated = sync_master_table(
+        client, project, master_table, qa_table, kept, excluded, month,
+        master_columns, qa_identity_col,
+    )
+    tier_result = recalc_tier_if_needed(
+        client, project, master_table, filter_table, month, platform, country, category, excluded,
+    )
+    return {
+        "duplicates_removed": duplicates_removed,
+        "master_rows_updated": updated,
+        "tier_recalc": tier_result,
+    }
+
+
+def _cmd_sync_labelling(args):
+    rows = [json.loads(line) for line in open(args.input_file) if line.strip()]
+    client = bigquery.Client(project=args.project)
+    result = sync_labelling(
+        client, args.project, args.qa_table, args.qa_pk_col, args.qa_platform_col,
+        args.master_table, args.filter_table, rows, args.month, args.platform,
+        args.country, args.category, qa_identity_col=args.qa_identity_col,
+    )
+    print(json.dumps(result))
+
+
+# ---------------------------------------------------------------------------
 # Retrieval: batch embed + batch Meilisearch hybrid search
 # ---------------------------------------------------------------------------
 
@@ -1379,6 +1435,20 @@ def main():
     forced_p.add_argument("--category", required=True)
     forced_p.add_argument("--platform", required=True)
 
+    sync_p = sub.add_parser("sync-labelling")
+    sync_p.add_argument("--input-file", required=True)
+    sync_p.add_argument("--project", required=True)
+    sync_p.add_argument("--qa-table", required=True)
+    sync_p.add_argument("--qa-pk-col", required=True)
+    sync_p.add_argument("--qa-platform-col", required=True)
+    sync_p.add_argument("--qa-identity-col", default="sku_type_complete")
+    sync_p.add_argument("--master-table", required=True)
+    sync_p.add_argument("--filter-table", required=True)
+    sync_p.add_argument("--month", required=True)
+    sync_p.add_argument("--platform", required=True)
+    sync_p.add_argument("--country", required=True)
+    sync_p.add_argument("--category", required=True)
+
     args = parser.parse_args()
     if args.command == "categories":
         _cmd_categories(args)
@@ -1394,6 +1464,8 @@ def main():
         _cmd_auto_confirm(args)
     elif args.command == "forced-merchants":
         _cmd_forced_merchants(args)
+    elif args.command == "sync-labelling":
+        _cmd_sync_labelling(args)
 
 
 if __name__ == "__main__":
