@@ -951,6 +951,39 @@ ${blockers}
 SUMMARY
 }
 
+# sync_labelling_step <source_table> <qa_table> <qa_pk_col> <qa_platform_col> <filter_table>
+#   <full_worklist_file> <month> <platform_titlecase> <country> <category>
+# Best-effort wrapper around non_niq_helper.py's sync-labelling subcommand (dedupe QA-table
+# duplicates, sync taxonomy/qa_status/source_pid into master_table_prod, recalc product_tier only
+# for identities newly filtered this session). Prints the JSON summary to stdout on success,
+# "skipped" when there's no full worklist file to sync from, or "failed" on any error -- never
+# fails the caller. Called from BOTH the all-auto-confirmed early exit and the normal end-of-run
+# path in main() -- auto-confirmed rows are written straight to the QA table without going through
+# the agent, so they need syncing exactly the same as agent-processed rows do. stderr is left
+# unredirected (not captured into the printed value) so a Python traceback or venv warning lands in
+# this script's own log stream instead of polluting the JSON summary text.
+sync_labelling_step() {
+  local source_table="$1" qa_table="$2" qa_pk_col="$3" qa_platform_col="$4" filter_table="$5"
+  local full_worklist_file="$6" month="$7" platform_titlecase="$8" country="$9" category="${10}"
+  local output
+  if [[ ! -s "$full_worklist_file" ]]; then
+    echo "skipped"
+    return 0
+  fi
+  log INFO "Syncing this session's QA writes into ${source_table}..."
+  if output=$("$PYTHON_BIN" "$(dirname "$SCRIPT_SOURCE")/non_niq_helper.py" sync-labelling \
+    --project "$PROJECT" --qa-table "$qa_table" --qa-pk-col "$qa_pk_col" \
+    --qa-platform-col "$qa_platform_col" --master-table "$source_table" --filter-table "$filter_table" \
+    --input-file "$full_worklist_file" --month "$month" --platform "$platform_titlecase" \
+    --country "$country" --category "$category"); then
+    log INFO "sync-labelling: ${output}"
+    echo "$output"
+  else
+    log WARN "sync-labelling failed (non-fatal) for ${source_table}"
+    echo "failed"
+  fi
+}
+
 main() {
   if [[ $# -lt 2 ]]; then
     echo "Usage: $0 <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS] [KATEGORI]" >&2
@@ -1144,8 +1177,14 @@ main() {
       '{status:"complete",rows_qa_confirmed:$confirmed,rows_qa_unconfident:0,rows_filtered:0,rows_created_in_dict:0,rows_unresolved:0,findings:["Confirmed by case-insensitive exact Meilisearch title match."],blockers:[]}')
     echo "$agent_output"
     format_result_summary "$agent_output"
+    # Every row this session touched was auto-confirmed -- written straight to the QA table by
+    # code (never agent-trusted), so it's always safe to sync, no residual_valid gate needed.
+    local auto_only_sync_output
+    auto_only_sync_output=$(sync_labelling_step "$source_table" "$qa_table" "$qa_pk_col" "$qa_platform_col" \
+      "$filter_table" "/tmp/${tmp_tag}_v2_full_worklist.jsonl" "$month" "$platform_titlecase" \
+      "$country" "$category")
     echo "QUEUE_SIGNAL: DONE"
-    emit_result "${dataset}:${platform}" "DONE" "QA v2 session finished" "rows_created=0" "rows_auto_confirmed=$auto_confirmed"
+    emit_result "${dataset}:${platform}" "DONE" "QA v2 session finished" "rows_created=0" "rows_auto_confirmed=$auto_confirmed" "sync_labelling=${auto_only_sync_output}"
     exit 0
   fi
 
@@ -1388,27 +1427,17 @@ RUNTIME AUTHENTICATION (already prepared):
   echo "$agent_output"
   format_result_summary "$agent_output"
 
-  # sync-labelling: propagate this session's QA-table writes into master_table_prod (dedupe
-  # duplicate QA rows for this worklist's identities, sync taxonomy/qa_status/source_pid, recalc
-  # product_tier only for identities newly filtered this session). Best-effort, same non-fatal
-  # contract as the Sheet write-back next to it -- the QA writes already succeeded; this is
-  # downstream propagation, not part of the QA session's own pass/fail. Uses the FULL original
+  # sync-labelling: propagate this session's QA-table writes into master_table_prod. Best-effort,
+  # same non-fatal contract as the Sheet write-back next to it -- the QA writes already succeeded;
+  # this is downstream propagation, not part of the QA session's own pass/fail. Gated on
+  # residual_valid: only sync once the agent's writes are verified valid. Uses the FULL original
   # worklist (before the auto-confirm/agent split), not the reassigned $worklist_file, since
   # auto-confirmed rows also need syncing.
   local sync_labelling_output="skipped"
-  local full_worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"
-  if [[ "$residual_valid" == true && -s "$full_worklist_file" ]]; then
-    log INFO "Syncing this session's QA writes into ${source_table}..."
-    if sync_labelling_output=$("$PYTHON_BIN" "$(dirname "$SCRIPT_SOURCE")/non_niq_helper.py" sync-labelling \
-      --project "$PROJECT" --qa-table "$qa_table" --qa-pk-col "$qa_pk_col" \
-      --qa-platform-col "$qa_platform_col" --master-table "$source_table" --filter-table "$filter_table" \
-      --input-file "$full_worklist_file" --month "$month" --platform "$platform_titlecase" \
-      --country "$country" --category "$category" 2>&1); then
-      log INFO "sync-labelling: ${sync_labelling_output}"
-    else
-      log WARN "sync-labelling failed (non-fatal): ${sync_labelling_output}"
-      sync_labelling_output="failed"
-    fi
+  if [[ "$residual_valid" == true ]]; then
+    sync_labelling_output=$(sync_labelling_step "$source_table" "$qa_table" "$qa_pk_col" "$qa_platform_col" \
+      "$filter_table" "/tmp/${tmp_tag}_v2_full_worklist.jsonl" "$month" "$platform_titlecase" \
+      "$country" "$category")
   fi
 
   # Sheet write-back: bash-invoked (not an agent tool call), reading STEP 3's complete artifact of

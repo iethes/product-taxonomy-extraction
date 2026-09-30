@@ -222,22 +222,43 @@ def _non_null_count(row):
     return count
 
 
+def _is_null_meta_row(row):
+    """True when a row has no real _meta value -- this repo's legacy/human-authored signal.
+    A duplicate group containing such a row must NEVER be auto-deleted from: this repo has a
+    documented history of human-authored QA/taxonomy rows being wiped, and an agent write must
+    never be allowed to silently outrank a human one via the dedupe path."""
+    meta_raw = row.get("_meta")
+    if meta_raw is None:
+        return True
+    text = str(meta_raw).strip()
+    return not text or text.lower() in ("nan", "none", "null")
+
+
 def _dedup_sort_key(row):
     meta_raw = row.get("_meta") or row.get("meta") or "{}"
     try:
         meta = json.loads(meta_raw)
     except (TypeError, ValueError):
         meta = {}
-    return (_non_null_count(row), str(meta.get("timestamp", "")))
+    if not isinstance(meta, dict):
+        meta = {}
+    # Final tiebreaker is the row's own full content, not row order -- two calls on the same
+    # (even reordered) input must always pick the same loser, never depend on incidental
+    # BigQuery/dict iteration order.
+    return (_non_null_count(row), str(meta.get("timestamp", "")), json.dumps(row, sort_keys=True, default=str))
 
 
 def select_duplicates_to_delete(qa_rows_by_identity):
     """qa_rows_by_identity: {(product_id, platform, normalized_sku_name): [row_dict, ...]}.
     Returns a flat list of row dicts to DELETE -- every row in a >1-row group except the one with
-    the most non-null fields (ties broken by the latest _meta.timestamp)."""
+    the most non-null fields (ties broken by the latest _meta.timestamp, then by full row content
+    for a fully deterministic order) -- EXCEPT a group containing any legacy human-authored row
+    (no real _meta), which is left entirely untouched."""
     to_delete = []
     for rows in qa_rows_by_identity.values():
         if len(rows) <= 1:
+            continue
+        if any(_is_null_meta_row(r) for r in rows):
             continue
         ordered = sorted(rows, key=_dedup_sort_key, reverse=True)
         to_delete.extend(ordered[1:])
@@ -257,13 +278,15 @@ def tier_for_share(cumulative_share):
 # Update-labelling sync: SQL builders (pure -- return SQL text, no execution)
 # ---------------------------------------------------------------------------
 
-def _platform_filter_sql(platform):
-    """Python port of the bash `platform_match_clause` / v3.py `_platform_match_sql` -- Tokopedia's
-    own first-party channel ('Tokopedia | Shop') must stay in the same population as 'Tokopedia'
-    for GMV/tier purposes; every other platform matches its exact value."""
+def _raw_platform_values(platform):
+    """Raw ecommerce_platform values scoped SEPARATELY under this umbrella platform for GMV/tier
+    purposes -- Tokopedia's own first-party channel ('Tokopedia | Shop') must never share a
+    cumulative-GMV window with 'Tokopedia': combining them corrupts both platforms' product_tier
+    (see non_niq_qa_v2.sh:232-234). Every other platform is just itself. Each value returned here
+    is run through build_tier_recalc_sql/build_tier_null_sql as its own exact-match @platform."""
     if platform == "Tokopedia":
-        return "IN ('Tokopedia', 'Tokopedia | Shop')"
-    return "= @platform"
+        return ("Tokopedia", "Tokopedia | Shop")
+    return (platform,)
 
 
 def build_dedupe_lookup_sql(qa_table, qa_pk_col, qa_platform_col):
@@ -301,12 +324,19 @@ SET
 FROM (SELECT * FROM UNNEST(@records)) s
 WHERE m.product_id = s.product_id
   AND m.ecommerce_platform = s.ecommerce_platform
-  AND FORMAT_DATE('%%Y-%%m', m.month) = @month
+  AND m.month = PARSE_DATE('%%Y-%%m', @month)
   AND REGEXP_REPLACE(TRIM(m.sku_name), r'\\s+', ' ') = s.normalized_sku_name
 """ % (master_table, sku_col, extra_sets)
 
 
-def build_tier_recalc_sql(master_table, filter_table, platform_filter):
+def build_tier_recalc_sql(master_table, filter_table):
+    """Recomputes product_tier for exactly ONE raw ecommerce_platform value (always @platform,
+    never a combined umbrella clause -- callers loop over _raw_platform_values themselves so
+    Tokopedia and Tokopedia | Shop are always separate windows). GMV is summed per product_id
+    BEFORE the cumulative window: master tables can carry more than one row per product_id (single
+    duplicate rows confirmed live), and BigQuery's UPDATE...FROM requires each target row to match
+    at most one source row -- aggregating first guarantees exactly one source row per product_id
+    regardless of how many target rows share that id."""
     return """
 UPDATE `%s` m
 SET m.product_tier = t.new_tier
@@ -323,26 +353,31 @@ FROM (
         ORDER BY gmv_monthly DESC, product_id ASC
         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
       ) / NULLIF(SUM(gmv_monthly) OVER (), 0) AS cum_share
-    FROM `%s`
-    WHERE FORMAT_DATE('%%Y-%%m', month) = @month AND country = @country AND category = @category
-      AND ecommerce_platform %s
-      AND product_id NOT IN (SELECT product_id FROM `%s`)
+    FROM (
+      SELECT product_id, SUM(gmv_monthly) AS gmv_monthly
+      FROM `%s`
+      WHERE month = PARSE_DATE('%%Y-%%m', @month) AND country = @country AND category = @category
+        AND ecommerce_platform = @platform
+        AND product_id NOT IN (SELECT product_id FROM `%s`)
+      GROUP BY product_id
+    )
   )
 ) t
 WHERE m.product_id = t.product_id
-  AND FORMAT_DATE('%%Y-%%m', m.month) = @month AND m.country = @country AND m.category = @category
-  AND m.ecommerce_platform %s
-""" % (master_table, master_table, platform_filter, filter_table, platform_filter)
+  AND m.month = PARSE_DATE('%%Y-%%m', @month) AND m.country = @country AND m.category = @category
+  AND m.ecommerce_platform = @platform
+""" % (master_table, master_table, filter_table)
 
 
-def build_tier_null_sql(master_table, filter_table, platform_filter):
+def build_tier_null_sql(master_table, filter_table):
+    """Companion to build_tier_recalc_sql -- always one exact @platform value, never combined."""
     return """
 UPDATE `%s` m
 SET m.product_tier = NULL
-WHERE FORMAT_DATE('%%Y-%%m', m.month) = @month AND m.country = @country AND m.category = @category
-  AND m.ecommerce_platform %s
+WHERE m.month = PARSE_DATE('%%Y-%%m', @month) AND m.country = @country AND m.category = @category
+  AND m.ecommerce_platform = @platform
   AND m.product_id IN (SELECT product_id FROM `%s`)
-""" % (master_table, platform_filter, filter_table)
+""" % (master_table, filter_table)
 
 
 # ---------------------------------------------------------------------------
@@ -432,22 +467,48 @@ def delete_qa_duplicate_rows(client, project, qa_table, qa_pk_col, qa_platform_c
     return len(rows_to_delete)
 
 
+def _row_delete_key(row, qa_pk_col, qa_platform_col):
+    """The exact tuple build_dedupe_delete_sql's STRUCT match targets. Two rows sharing this key
+    are indistinguishable to that DELETE -- removing one would remove both."""
+    return (
+        str(row.get(qa_pk_col, "")), str(row.get(qa_platform_col, "")),
+        str(row.get("sku_name", "")), str(row.get("_meta", "")),
+    )
+
+
 def dedupe_qa_table(client, project, qa_table, qa_pk_col, qa_platform_col, identities):
     """Full Step 1: fetch QA rows for these identities, resolve duplicates, delete the losers
     (logged), return ({identity: kept_row_dict}, duplicates_deleted_count). An identity with no QA
-    row at all (unresolved/blocked this session) is simply absent from the returned map."""
+    row at all (unresolved/blocked this session) is simply absent from the returned map.
+
+    Safety: the DELETE statement targets rows by (pk, platform, sku_name, _meta) -- if a "loser"
+    row shares that exact key with the row being kept, deleting it would delete the keeper too.
+    Such a loser is left in place (not deleted) rather than risk that; the identity keeps one
+    extra un-deleted duplicate instead of losing its only surviving row."""
     grouped = fetch_qa_rows_for_identities(
         client, project, qa_table, qa_pk_col, qa_platform_col, identities,
     )
     to_delete = select_duplicates_to_delete(grouped)
-    if to_delete:
-        delete_qa_duplicate_rows(client, project, qa_table, qa_pk_col, qa_platform_col, to_delete)
+    to_delete_ids = {id(r) for r in to_delete}
+    safe_to_delete = []
     kept = {}
     for identity, group_rows in grouped.items():
-        remaining = [r for r in group_rows if r not in to_delete]
-        if remaining:
-            kept[identity] = remaining[0]
-    return kept, len(to_delete)
+        losers = [r for r in group_rows if id(r) in to_delete_ids]
+        keepers = [r for r in group_rows if id(r) not in to_delete_ids]
+        if not keepers:
+            # select_duplicates_to_delete always leaves exactly one row per >1-row group (or skips
+            # the group entirely) -- unreachable in practice, but never delete an entire group.
+            if group_rows:
+                kept[identity] = group_rows[0]
+            continue
+        keeper = keepers[0]
+        keeper_key = _row_delete_key(keeper, qa_pk_col, qa_platform_col)
+        safe_losers = [r for r in losers if _row_delete_key(r, qa_pk_col, qa_platform_col) != keeper_key]
+        safe_to_delete.extend(safe_losers)
+        kept[identity] = keeper
+    if safe_to_delete:
+        delete_qa_duplicate_rows(client, project, qa_table, qa_pk_col, qa_platform_col, safe_to_delete)
+    return kept, len(safe_to_delete)
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +528,8 @@ def resolve_master_sync_columns(client, project, master_table):
         "has_qa_status": "qa_status" in cols,
         "has_source_pid": "source_pid" in cols,
         "has_product_tier": "product_tier" in cols,
+        "has_country": "country" in cols,
+        "has_category": "category" in cols,
     }
 
 
@@ -492,7 +555,7 @@ def sync_master_table(client, project, master_table, qa_table, kept_rows_by_iden
             "normalized_sku_name": normalized_sku_name,
             "sku_type_complete": identity_value,
             "brand": brand,
-            "source_pid": "%s.%s" % (project, qa_table),
+            "source_pid": qa_table,
         })
     if not records:
         return 0
@@ -539,27 +602,37 @@ def filtered_product_ids(client, project, filter_table, product_ids):
 
 
 def recalc_tier_if_needed(client, project, master_table, filter_table, month, platform,
-                           country, category, filtered_ids):
+                           country, category, filtered_ids, master_columns):
     """Step 3: only runs the (expensive, whole-partition) tier recompute when filtered_ids is
     non-empty -- i.e. this session's worklist touches at least one currently-filtered product.
     Idempotent -- safe to call even when nothing actually changed this session, since recomputing
-    an unchanged partition reproduces the same tier values it already has."""
+    an unchanged partition reproduces the same tier values it already has.
+
+    Skips entirely (never queries) when this category's master table lacks product_tier, country,
+    or category -- some master tables don't carry these columns, and recalc_tier_sql's WHERE
+    clause references all three; erroring after Step 2's master sync has already committed would
+    lose the rest of this session's summary.
+
+    Runs the recompute once per RAW platform value (see _raw_platform_values) -- Tokopedia and
+    Tokopedia | Shop are always separate GMV windows, never combined."""
     if not filtered_ids:
         return {"ran": False, "filtered_count": 0}
-    platform_filter = _platform_filter_sql(platform)
+    if not (master_columns.get("has_product_tier") and master_columns.get("has_country")
+            and master_columns.get("has_category")):
+        return {"ran": False, "filtered_count": len(filtered_ids), "skipped_reason": "missing_columns"}
     master_fqtn = "%s.%s" % (project, master_table)
     filter_fqtn = "%s.%s" % (project, filter_table)
-    params = [
-        bigquery.ScalarQueryParameter("month", "STRING", month),
-        bigquery.ScalarQueryParameter("country", "STRING", country),
-        bigquery.ScalarQueryParameter("category", "STRING", category),
-    ]
-    if platform_filter == "= @platform":
-        params.append(bigquery.ScalarQueryParameter("platform", "STRING", platform))
-    recalc_sql = build_tier_recalc_sql(master_fqtn, filter_fqtn, platform_filter)
-    client.query(recalc_sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
-    null_sql = build_tier_null_sql(master_fqtn, filter_fqtn, platform_filter)
-    client.query(null_sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+    recalc_sql = build_tier_recalc_sql(master_fqtn, filter_fqtn)
+    null_sql = build_tier_null_sql(master_fqtn, filter_fqtn)
+    for raw_platform in _raw_platform_values(platform):
+        params = [
+            bigquery.ScalarQueryParameter("month", "STRING", month),
+            bigquery.ScalarQueryParameter("country", "STRING", country),
+            bigquery.ScalarQueryParameter("category", "STRING", category),
+            bigquery.ScalarQueryParameter("platform", "STRING", raw_platform),
+        ]
+        client.query(recalc_sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+        client.query(null_sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
     return {"ran": True, "filtered_count": len(filtered_ids)}
 
 
@@ -600,6 +673,7 @@ def sync_labelling(client, project, qa_table, qa_pk_col, qa_platform_col, master
     )
     tier_result = recalc_tier_if_needed(
         client, project, master_table, filter_table, month, platform, country, category, excluded,
+        master_columns,
     )
     return {
         "duplicates_removed": duplicates_removed,
