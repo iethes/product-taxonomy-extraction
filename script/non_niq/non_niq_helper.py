@@ -522,6 +522,48 @@ def sync_master_table(client, project, master_table, qa_table, kept_rows_by_iden
 
 
 # ---------------------------------------------------------------------------
+# Update-labelling sync: Step 3 -- tier recalculation (BigQuery)
+# ---------------------------------------------------------------------------
+
+def filtered_product_ids(client, project, filter_table, product_ids):
+    product_ids = sorted({str(p) for p in product_ids if p})
+    if not product_ids:
+        return set()
+    fqtn = "%s.%s" % (project, filter_table)
+    param = bigquery.ArrayQueryParameter("product_ids", "STRING", product_ids)
+    sql = "SELECT DISTINCT product_id FROM `%s` WHERE product_id IN UNNEST(@product_ids)" % fqtn
+    rows = client.query(
+        sql, job_config=bigquery.QueryJobConfig(query_parameters=[param]),
+    ).result()
+    return {row.product_id for row in rows}
+
+
+def recalc_tier_if_needed(client, project, master_table, filter_table, month, platform,
+                           country, category, filtered_ids):
+    """Step 3: only runs the (expensive, whole-partition) tier recompute when filtered_ids is
+    non-empty -- i.e. this session's worklist touches at least one currently-filtered product.
+    Idempotent -- safe to call even when nothing actually changed this session, since recomputing
+    an unchanged partition reproduces the same tier values it already has."""
+    if not filtered_ids:
+        return {"ran": False, "filtered_count": 0}
+    platform_filter = _platform_filter_sql(platform)
+    master_fqtn = "%s.%s" % (project, master_table)
+    filter_fqtn = "%s.%s" % (project, filter_table)
+    params = [
+        bigquery.ScalarQueryParameter("month", "STRING", month),
+        bigquery.ScalarQueryParameter("country", "STRING", country),
+        bigquery.ScalarQueryParameter("category", "STRING", category),
+    ]
+    if platform_filter == "= @platform":
+        params.append(bigquery.ScalarQueryParameter("platform", "STRING", platform))
+    recalc_sql = build_tier_recalc_sql(master_fqtn, filter_fqtn, platform_filter)
+    client.query(recalc_sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+    null_sql = build_tier_null_sql(master_fqtn, filter_fqtn, platform_filter)
+    client.query(null_sql, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+    return {"ran": True, "filtered_count": len(filtered_ids)}
+
+
+# ---------------------------------------------------------------------------
 # Retrieval: batch embed + batch Meilisearch hybrid search
 # ---------------------------------------------------------------------------
 
