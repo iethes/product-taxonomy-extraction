@@ -346,6 +346,111 @@ WHERE FORMAT_DATE('%%Y-%%m', m.month) = @month AND m.country = @country AND m.ca
 
 
 # ---------------------------------------------------------------------------
+# Update-labelling sync: Step 1 -- QA-table duplicate resolution (BigQuery)
+# ---------------------------------------------------------------------------
+
+def fetch_qa_rows_for_identities(client, project, qa_table, qa_pk_col, qa_platform_col, identities):
+    """identities: iterable of (product_id, platform, normalized_sku_name). Returns
+    {(product_id, platform, normalized_sku_name): [row_dict, ...]} for every QA row matching one
+    of those identities. An identity with zero matching rows is simply absent from the result --
+    callers must not assume every requested identity comes back."""
+    identities = list(identities)
+    if not identities:
+        return {}
+    fqtn = "%s.%s" % (project, qa_table)
+    identity_param = bigquery.ArrayQueryParameter(
+        "identities", "STRUCT", [
+            bigquery.StructQueryParameter(
+                None,
+                bigquery.ScalarQueryParameter("product_id", "STRING", pid),
+                bigquery.ScalarQueryParameter("platform", "STRING", platform),
+                bigquery.ScalarQueryParameter("normalized_sku_name", "STRING", sku),
+            )
+            for pid, platform, sku in identities
+        ],
+    )
+    sql = build_dedupe_lookup_sql(fqtn, qa_pk_col, qa_platform_col)
+    rows = client.query(
+        sql, job_config=bigquery.QueryJobConfig(query_parameters=[identity_param]),
+    ).result()
+    grouped = {}
+    for row in rows:
+        key = (row.product_id, row.platform, row.normalized_sku_name)
+        grouped.setdefault(key, []).append(json.loads(row.row_json))
+    return grouped
+
+
+def delete_qa_duplicate_rows(client, project, qa_table, qa_pk_col, qa_platform_col, rows_to_delete):
+    """Deletes each row in rows_to_delete (full QA-table row dicts) and logs it to
+    magpie_reference.non_niq_taxonomy_insert_log in the same BigQuery script -- QA tables are
+    otherwise insert-only, so every delete here needs the same forensic trail as a new taxonomy
+    row."""
+    if not rows_to_delete:
+        return 0
+    fqtn = "%s.%s" % (project, qa_table)
+    delete_param = bigquery.ArrayQueryParameter(
+        "to_delete", "STRUCT", [
+            bigquery.StructQueryParameter(
+                None,
+                bigquery.ScalarQueryParameter("pid", "STRING", str(row.get(qa_pk_col, ""))),
+                bigquery.ScalarQueryParameter("platform", "STRING", str(row.get(qa_platform_col, ""))),
+                bigquery.ScalarQueryParameter("sku_name", "STRING", str(row.get("sku_name", ""))),
+                bigquery.ScalarQueryParameter("meta", "STRING", str(row.get("_meta", ""))),
+            )
+            for row in rows_to_delete
+        ],
+    )
+    log_param = bigquery.ArrayQueryParameter(
+        "log_rows", "STRUCT", [
+            bigquery.StructQueryParameter(
+                None,
+                bigquery.ScalarQueryParameter("target_table", "STRING", fqtn),
+                bigquery.ScalarQueryParameter(
+                    "created_at", "TIMESTAMP",
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                ),
+                bigquery.ScalarQueryParameter(
+                    "row_json", "STRING",
+                    json.dumps({"action": "dedup_delete", "deleted_row": row}, default=str),
+                ),
+            )
+            for row in rows_to_delete
+        ],
+    )
+    script = "\n".join([
+        "BEGIN TRANSACTION;",
+        build_dedupe_delete_sql(fqtn, qa_pk_col, qa_platform_col) + ";",
+        "INSERT INTO `%s.magpie_reference.non_niq_taxonomy_insert_log`"
+        " (target_table, created_at, row_json)" % project,
+        "SELECT target_table, created_at, PARSE_JSON(row_json) FROM UNNEST(@log_rows);",
+        "COMMIT;",
+    ])
+    client.query(
+        script,
+        job_config=bigquery.QueryJobConfig(query_parameters=[delete_param, log_param]),
+    ).result()
+    return len(rows_to_delete)
+
+
+def dedupe_qa_table(client, project, qa_table, qa_pk_col, qa_platform_col, identities):
+    """Full Step 1: fetch QA rows for these identities, resolve duplicates, delete the losers
+    (logged), return ({identity: kept_row_dict}, duplicates_deleted_count). An identity with no QA
+    row at all (unresolved/blocked this session) is simply absent from the returned map."""
+    grouped = fetch_qa_rows_for_identities(
+        client, project, qa_table, qa_pk_col, qa_platform_col, identities,
+    )
+    to_delete = select_duplicates_to_delete(grouped)
+    if to_delete:
+        delete_qa_duplicate_rows(client, project, qa_table, qa_pk_col, qa_platform_col, to_delete)
+    kept = {}
+    for identity, group_rows in grouped.items():
+        remaining = [r for r in group_rows if r not in to_delete]
+        if remaining:
+            kept[identity] = remaining[0]
+    return kept, len(to_delete)
+
+
+# ---------------------------------------------------------------------------
 # Retrieval: batch embed + batch Meilisearch hybrid search
 # ---------------------------------------------------------------------------
 
