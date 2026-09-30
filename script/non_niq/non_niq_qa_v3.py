@@ -30,6 +30,7 @@ from non_niq_helper import (
     parse_categories,
     retrieve_candidates,
     confirm_casefold_matches,
+    sync_labelling,
     worklist_row_key,
 )
 
@@ -2653,11 +2654,27 @@ def run(args: Any, client=None) -> int:
                     apply_chunk(client, context, packets, decisions, datetime.now(timezone.utc))
                     drain_outbox(client, context, datetime.now(timezone.utc))
 
+        sync_summary = {"duplicates_removed": 0, "master_rows_updated": 0, "tier_recalc": {"ran": False, "filtered_count": 0}}
+        if not args.dry_run:
+            try:
+                sync_summary = sync_labelling(
+                    client, context.project, context.qa_table, context.qa_pk_col,
+                    _qa_platform_column(context), context.source_table, context.filter_table,
+                    rows, context.month, context.platform, context.country, context.category,
+                    qa_identity_col=context.qa_identity_col,
+                )
+            except Exception as sync_error:
+                # Best-effort, same non-fatal contract as the bash side's Sheet write-back --
+                # the QA writes already succeeded; this is downstream propagation, not part of
+                # the QA session's own pass/fail.
+                sync_summary = {"error": "%s: %s" % (type(sync_error).__name__, sync_error)}
+
         signal = "BLOCKED" if blocked else "DONE"
         message = "QA v3 session blocked on deferred products" if blocked else "QA v3 session finished"
         emit_result(
             table, signal, message, rows=str(len(rows)),
             rows_auto_confirmed=str(auto_confirmed_rows),
+            sync_labelling=json.dumps(sync_summary, sort_keys=True, separators=(",", ":")),
         )
         return 0
     except Exception as error:
