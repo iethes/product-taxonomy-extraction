@@ -195,6 +195,65 @@ def resolve_category_columns(client, project, qa_table, dict_table):
 
 
 # ---------------------------------------------------------------------------
+# Update-labelling sync: duplicate resolution + tier bucket logic (pure)
+# ---------------------------------------------------------------------------
+
+def build_worklist_identity(row):
+    """Returns (product_id, platform, normalized_sku_name) for a worklist row, or None if the row
+    has no usable product_id/sku_name -- a blank identity must never become a wildcard match
+    against every blank-titled QA row."""
+    product_id, platform, sku_name = worklist_row_key(row)
+    normalized = re.sub(r"\s+", " ", sku_name.strip())
+    if not product_id or not normalized:
+        return None
+    return (product_id, platform, normalized)
+
+
+def _non_null_count(row):
+    """Count of row's fields that are non-null and non-blank (ignoring the literal 'nan' string
+    some legacy exports use for missing values)."""
+    count = 0
+    for value in row.values():
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text.lower() != "nan":
+            count += 1
+    return count
+
+
+def _dedup_sort_key(row):
+    meta_raw = row.get("_meta") or row.get("meta") or "{}"
+    try:
+        meta = json.loads(meta_raw)
+    except (TypeError, ValueError):
+        meta = {}
+    return (_non_null_count(row), str(meta.get("timestamp", "")))
+
+
+def select_duplicates_to_delete(qa_rows_by_identity):
+    """qa_rows_by_identity: {(product_id, platform, normalized_sku_name): [row_dict, ...]}.
+    Returns a flat list of row dicts to DELETE -- every row in a >1-row group except the one with
+    the most non-null fields (ties broken by the latest _meta.timestamp)."""
+    to_delete = []
+    for rows in qa_rows_by_identity.values():
+        if len(rows) <= 1:
+            continue
+        ordered = sorted(rows, key=_dedup_sort_key, reverse=True)
+        to_delete.extend(ordered[1:])
+    return to_delete
+
+
+def tier_for_share(cumulative_share):
+    """Reference tool's cumulative-GMV-share bucket rule (_pipeline.py build_update_query)."""
+    if cumulative_share <= 0.8:
+        return "Tier 1"
+    if cumulative_share <= 0.9:
+        return "Tier 2"
+    return "Tier 3"
+
+
+# ---------------------------------------------------------------------------
 # Retrieval: batch embed + batch Meilisearch hybrid search
 # ---------------------------------------------------------------------------
 
