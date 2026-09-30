@@ -451,6 +451,77 @@ def dedupe_qa_table(client, project, qa_table, qa_pk_col, qa_platform_col, ident
 
 
 # ---------------------------------------------------------------------------
+# Update-labelling sync: Step 2 -- master-table sync (BigQuery)
+# ---------------------------------------------------------------------------
+
+def resolve_master_sync_columns(client, project, master_table):
+    cols = _table_columns(client, project, master_table)
+    if "sku_type_complete" in cols:
+        sku_col = "sku_type_complete"
+    elif "sku_type" in cols:
+        sku_col = "sku_type"
+    else:
+        sku_col = None
+    return {
+        "sku_col": sku_col,
+        "has_qa_status": "qa_status" in cols,
+        "has_source_pid": "source_pid" in cols,
+        "has_product_tier": "product_tier" in cols,
+    }
+
+
+def sync_master_table(client, project, master_table, qa_table, kept_rows_by_identity,
+                       excluded_product_ids, month, master_columns, qa_identity_col):
+    """kept_rows_by_identity: {(product_id, platform, normalized_sku_name): row_dict} -- the single
+    QA row (post-dedup) for each identity. excluded_product_ids: product_ids to skip entirely
+    (filtered this session -- there is no taxonomy to write for them, see Step 3 instead)."""
+    sku_col = master_columns["sku_col"]
+    if sku_col is None:
+        return 0
+    records = []
+    for (product_id, platform, normalized_sku_name), row in kept_rows_by_identity.items():
+        if product_id in excluded_product_ids:
+            continue
+        identity_value = str(row.get(qa_identity_col, "")).strip()
+        brand = str(row.get("brand", "")).strip()
+        if not identity_value or not brand:
+            continue
+        records.append({
+            "product_id": product_id,
+            "ecommerce_platform": platform,
+            "normalized_sku_name": normalized_sku_name,
+            "sku_type_complete": identity_value,
+            "brand": brand,
+            "source_pid": "%s.%s" % (project, qa_table),
+        })
+    if not records:
+        return 0
+    fqtn = "%s.%s" % (project, master_table)
+    record_fields = (
+        "product_id", "ecommerce_platform", "normalized_sku_name",
+        "sku_type_complete", "brand", "source_pid",
+    )
+    record_param = bigquery.ArrayQueryParameter(
+        "records", "STRUCT", [
+            bigquery.StructQueryParameter(
+                None,
+                *[bigquery.ScalarQueryParameter(field, "STRING", record[field]) for field in record_fields],
+            )
+            for record in records
+        ],
+    )
+    month_param = bigquery.ScalarQueryParameter("month", "STRING", month)
+    sql = build_master_sync_sql(
+        fqtn, sku_col, master_columns["has_qa_status"], master_columns["has_source_pid"],
+    )
+    job = client.query(
+        sql, job_config=bigquery.QueryJobConfig(query_parameters=[record_param, month_param]),
+    )
+    job.result()
+    return job.num_dml_affected_rows or 0
+
+
+# ---------------------------------------------------------------------------
 # Retrieval: batch embed + batch Meilisearch hybrid search
 # ---------------------------------------------------------------------------
 
