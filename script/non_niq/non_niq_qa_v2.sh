@@ -1388,6 +1388,29 @@ RUNTIME AUTHENTICATION (already prepared):
   echo "$agent_output"
   format_result_summary "$agent_output"
 
+  # sync-labelling: propagate this session's QA-table writes into master_table_prod (dedupe
+  # duplicate QA rows for this worklist's identities, sync taxonomy/qa_status/source_pid, recalc
+  # product_tier only for identities newly filtered this session). Best-effort, same non-fatal
+  # contract as the Sheet write-back next to it -- the QA writes already succeeded; this is
+  # downstream propagation, not part of the QA session's own pass/fail. Uses the FULL original
+  # worklist (before the auto-confirm/agent split), not the reassigned $worklist_file, since
+  # auto-confirmed rows also need syncing.
+  local sync_labelling_output="skipped"
+  local full_worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"
+  if [[ "$residual_valid" == true && -s "$full_worklist_file" ]]; then
+    log INFO "Syncing this session's QA writes into ${source_table}..."
+    if sync_labelling_output=$("$PYTHON_BIN" "$(dirname "$SCRIPT_SOURCE")/non_niq_helper.py" sync-labelling \
+      --project "$PROJECT" --qa-table "$qa_table" --qa-pk-col "$qa_pk_col" \
+      --qa-platform-col "$qa_platform_col" --master-table "$source_table" --filter-table "$filter_table" \
+      --input-file "$full_worklist_file" --month "$month" --platform "$platform_titlecase" \
+      --country "$country" --category "$category" 2>&1); then
+      log INFO "sync-labelling: ${sync_labelling_output}"
+    else
+      log WARN "sync-labelling failed (non-fatal): ${sync_labelling_output}"
+      sync_labelling_output="failed"
+    fi
+  fi
+
   # Sheet write-back: bash-invoked (not an agent tool call), reading STEP 3's complete artifact of
   # newly-created dictionary identities. The separate Meilisearch artifact can omit unconfident
   # creations, so it must not drive Sheet synchronization. Non-fatal by design (`|| true`), same
@@ -1416,7 +1439,7 @@ RUNTIME AUTHENTICATION (already prepared):
   local signal
   signal=$(decide_queue_signal "$agent_output")
   echo "QUEUE_SIGNAL: ${signal}"
-  emit_result "${dataset}:${platform}" "$signal" "QA v2 session finished" "rows_created=$(extract_rows_created "$agent_output")" "rows_auto_confirmed=$auto_confirmed"
+  emit_result "${dataset}:${platform}" "$signal" "QA v2 session finished" "rows_created=$(extract_rows_created "$agent_output")" "rows_auto_confirmed=$auto_confirmed" "sync_labelling=${sync_labelling_output}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
