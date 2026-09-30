@@ -254,6 +254,98 @@ def tier_for_share(cumulative_share):
 
 
 # ---------------------------------------------------------------------------
+# Update-labelling sync: SQL builders (pure -- return SQL text, no execution)
+# ---------------------------------------------------------------------------
+
+def _platform_filter_sql(platform):
+    """Python port of the bash `platform_match_clause` / v3.py `_platform_match_sql` -- Tokopedia's
+    own first-party channel ('Tokopedia | Shop') must stay in the same population as 'Tokopedia'
+    for GMV/tier purposes; every other platform matches its exact value."""
+    if platform == "Tokopedia":
+        return "IN ('Tokopedia', 'Tokopedia | Shop')"
+    return "= @platform"
+
+
+def build_dedupe_lookup_sql(qa_table, qa_pk_col, qa_platform_col):
+    return """
+WITH identities AS (
+  SELECT product_id, platform, normalized_sku_name FROM UNNEST(@identities)
+)
+SELECT TO_JSON_STRING(q) AS row_json, i.product_id, i.platform, i.normalized_sku_name
+FROM `%s` q
+JOIN identities i
+  ON q.%s = i.product_id AND q.%s = i.platform
+  AND REGEXP_REPLACE(TRIM(q.sku_name), r'\\s+', ' ') = i.normalized_sku_name
+""" % (qa_table, qa_pk_col, qa_platform_col)
+
+
+def build_dedupe_delete_sql(qa_table, qa_pk_col, qa_platform_col):
+    return """
+DELETE FROM `%s`
+WHERE STRUCT(%s AS pid, %s AS platform, sku_name AS sku_name, _meta AS meta)
+  IN UNNEST(@to_delete)
+""" % (qa_table, qa_pk_col, qa_platform_col)
+
+
+def build_master_sync_sql(master_table, sku_col, set_qa_status, set_source_pid):
+    extra_sets = ""
+    if set_qa_status:
+        extra_sets += ",\n  m.qa_status = 'Reviewed'"
+    if set_source_pid:
+        extra_sets += ",\n  m.source_pid = s.source_pid"
+    return """
+UPDATE `%s` m
+SET
+  m.%s = s.sku_type_complete,
+  m.brand = s.brand%s
+FROM (SELECT * FROM UNNEST(@records)) s
+WHERE m.product_id = s.product_id
+  AND m.ecommerce_platform = s.ecommerce_platform
+  AND FORMAT_DATE('%%Y-%%m', m.month) = @month
+  AND REGEXP_REPLACE(TRIM(m.sku_name), r'\\s+', ' ') = s.normalized_sku_name
+""" % (master_table, sku_col, extra_sets)
+
+
+def build_tier_recalc_sql(master_table, filter_table, platform_filter):
+    return """
+UPDATE `%s` m
+SET m.product_tier = t.new_tier
+FROM (
+  SELECT product_id,
+    CASE
+      WHEN cum_share <= 0.8 THEN 'Tier 1'
+      WHEN cum_share <= 0.9 THEN 'Tier 2'
+      ELSE 'Tier 3'
+    END AS new_tier
+  FROM (
+    SELECT product_id, gmv_monthly,
+      SUM(gmv_monthly) OVER (
+        ORDER BY gmv_monthly DESC, product_id ASC
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) / NULLIF(SUM(gmv_monthly) OVER (), 0) AS cum_share
+    FROM `%s`
+    WHERE FORMAT_DATE('%%Y-%%m', month) = @month AND country = @country AND category = @category
+      AND ecommerce_platform %s
+      AND product_id NOT IN (SELECT product_id FROM `%s`)
+  )
+) t
+WHERE m.product_id = t.product_id
+  AND FORMAT_DATE('%%Y-%%m', m.month) = @month AND m.country = @country AND m.category = @category
+  AND m.ecommerce_platform %s
+""" % (master_table, master_table, platform_filter, filter_table, platform_filter)
+
+
+def build_tier_null_sql(master_table, filter_table, platform_filter):
+    return """
+UPDATE `%s` m
+SET m.product_tier = NULL
+WHERE FORMAT_DATE('%%Y-%%m', m.month) = @month AND m.country = @country AND m.category = @category
+  AND m.ecommerce_platform %s
+  AND m.product_id IN (SELECT product_id FROM `%s`)
+""" % (master_table, platform_filter, filter_table)
+
+
+# ---------------------------------------------------------------------------
 # Retrieval: batch embed + batch Meilisearch hybrid search
 # ---------------------------------------------------------------------------
 

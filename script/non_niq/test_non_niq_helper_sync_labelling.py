@@ -51,4 +51,50 @@ assert tier_for_share(0.9) == "Tier 2"
 assert tier_for_share(0.9000001) == "Tier 3"
 assert tier_for_share(1.0) == "Tier 3"
 
+from non_niq_helper import (
+    _platform_filter_sql, build_dedupe_lookup_sql, build_dedupe_delete_sql,
+    build_master_sync_sql, build_tier_recalc_sql, build_tier_null_sql,
+)
+
+# _platform_filter_sql: Tokopedia's own first-party channel stays in the same population.
+assert _platform_filter_sql("Tokopedia") == "IN ('Tokopedia', 'Tokopedia | Shop')"
+assert _platform_filter_sql("Shopee") == "= @platform"
+
+lookup_sql = build_dedupe_lookup_sql("proj.ds.qa", "product_id", "ecommerce_platform")
+assert "FROM `proj.ds.qa` q" in lookup_sql
+assert "q.product_id = i.product_id" in lookup_sql
+assert "q.ecommerce_platform = i.platform" in lookup_sql
+
+delete_sql = build_dedupe_delete_sql("proj.ds.qa", "product_id", "ecommerce_platform")
+assert "DELETE FROM `proj.ds.qa`" in delete_sql
+assert "product_id AS pid" in delete_sql
+assert "IN UNNEST(@to_delete)" in delete_sql
+
+sync_sql = build_master_sync_sql("proj.ds.master", "sku_type_complete", True, True)
+assert "m.sku_type_complete = s.sku_type_complete" in sync_sql
+assert "m.qa_status = 'Reviewed'" in sync_sql
+assert "m.source_pid = s.source_pid" in sync_sql
+assert "FORMAT_DATE('%Y-%m', m.month) = @month" in sync_sql
+
+sync_sql_no_extras = build_master_sync_sql("proj.ds.master", "sku_type", False, False)
+assert "qa_status" not in sync_sql_no_extras
+assert "source_pid" not in sync_sql_no_extras
+
+tier_sql = build_tier_recalc_sql(
+    "proj.ds.master", "proj.ds.filter", "IN ('Tokopedia', 'Tokopedia | Shop')",
+)
+assert "product_tier = t.new_tier" in tier_sql
+assert "ecommerce_platform IN ('Tokopedia', 'Tokopedia | Shop')" in tier_sql
+assert "NOT IN (SELECT product_id FROM `proj.ds.filter`)" in tier_sql
+# The SQL's hardcoded CASE boundaries must match tier_for_share's thresholds exactly -- these two
+# are independent representations of the same rule (one runs server-side over a whole partition,
+# one is the pure Python mirror tested above), so a change to one without the other must fail here.
+assert "cum_share <= 0.8 THEN 'Tier 1'" in tier_sql
+assert "cum_share <= 0.9 THEN 'Tier 2'" in tier_sql
+
+tier_null_sql = build_tier_null_sql("proj.ds.master", "proj.ds.filter", "= @platform")
+assert "SET m.product_tier = NULL" in tier_null_sql
+assert "ecommerce_platform = @platform" in tier_null_sql
+assert "IN (SELECT product_id FROM `proj.ds.filter`)" in tier_null_sql
+
 print("OK")
