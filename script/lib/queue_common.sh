@@ -47,7 +47,7 @@ reclaim_stale_leases_query() {
   [[ -n "$script_type" ]] && type_filter=" AND script_type=$(_sql_quote "$script_type")"
   echo "UPDATE ${QUEUE_TABLE} SET status='queued', claimed_by=NULL, claimed_at=NULL
     WHERE status='running'${type_filter}
-      AND claimed_at < now() - interval '${LEASE_TIMEOUT_HOURS:-4} hours';"
+      AND claimed_at < now() - interval '${LEASE_TIMEOUT_HOURS:-2} hours';"
 }
 
 reclaim_stale_leases() {

@@ -874,10 +874,10 @@ main() {
     # "expected, still running" rather than "hung".
     log INFO "Delegating to claude (max_turns=${max_turns}) -- embeds+retrieves via Meilisearch, then runs the per-product QA loop. No further progress output until it returns."
 
-    # Rate-limit retry: identical to non_niq_qa_v2.sh's -- capped at half LEASE_TIMEOUT_HOURS so a
+    # Rate-limit retry: identical to non_niq_qa_v2.sh's -- capped at half LEASE_TIMEOUT_HOURS (default 2h) so a
     # sleep here can never outlast another worker's stale-lease reclaim window.
     local claude_output claude_attempt=1 max_claude_attempts=10
-    local lease_safe_cap=$(( (${LEASE_TIMEOUT_HOURS:-4} * 3600) / 2 ))
+    local lease_safe_cap=$(( (${LEASE_TIMEOUT_HOURS:-2} * 3600) / 2 ))
     while :; do
       claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt") || true
       is_claude_rate_limited "$claude_output" || break

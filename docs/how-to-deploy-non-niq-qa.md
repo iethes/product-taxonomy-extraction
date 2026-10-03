@@ -29,7 +29,7 @@ cp .env.example .env
 QUEUE_DATABASE_URL=postgres://user:password@host:port/dbname
 QUEUE_SCHEMA=p4ct2g2urhzcfnz
 POLL_INTERVAL_SECONDS=30
-LEASE_TIMEOUT_HOURS=4
+LEASE_TIMEOUT_HOURS=2
 GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 chmod 600 .env — it holds a live DB credential.
 

@@ -42,7 +42,7 @@ script/non_niq/non_niq_qa_v2.sh <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_
 |---|---|---|
 | `MONTHLY_REVERIFY` | unset (off) | Set (e.g. `=1`) to force re-review of a product_id whose `sku_name`/`kategori` changed since its own prior-month row (merchant reused the product_id for a different listing) |
 | `AGENT_HARNESS` | `claude` | Selects the coding-agent CLI. Checked for availability (`command -v`) before any BigQuery work — unknown name or missing binary exits with `QUEUE_SIGNAL: FAILED`. **Only `claude` actually runs today** — `codex`/`pi`/`omp`/`opencode` are recognized names but error as "not wired up" even if the binary is present, since the script's output parsing is written against `claude -p`'s JSON schema specifically |
-| `LEASE_TIMEOUT_HOURS` | `4` | Not specific to this script (shared with `queue_worker.sh`'s stale-lease reclaim) — used here only to cap the claude-session-limit retry sleep at half the lease window before giving up `BLOCKED` |
+| `LEASE_TIMEOUT_HOURS` | `2` | Not specific to this script (shared with `queue_worker.sh`'s stale-lease reclaim) — used here only to cap the claude-session-limit retry sleep at half the lease window before giving up `BLOCKED` |
 
 ### Examples
 
@@ -156,7 +156,7 @@ script/non_niq/queue_worker.sh
 | `QUEUE_DATABASE_URL` | — | **yes** | Postgres connection string; the script refuses to start without it |
 | `QUEUE_SCHEMA` | `public` | no | Schema `task_queue` lives in (production uses `p4ct2g2urhzcfnz`) |
 | `POLL_INTERVAL_SECONDS` | `15` | no | Idle-loop sleep between claim attempts |
-| `LEASE_TIMEOUT_HOURS` | `4` | no | How long a claimed row can go without a heartbeat before another worker reclaims it |
+| `LEASE_TIMEOUT_HOURS` | `2` | no | How long a claimed row can go without a heartbeat before another worker reclaims it |
 | `NON_NIQ_QA_SCRIPT` | `./script/non_niq/non_niq_qa_v2.sh` | no | Override which script gets invoked. **Only safe for a script sharing `non_niq_qa_v2.sh`'s exact positional signature** (`dataset platform country max_turns max_rows kategori`) — `eiger_qa.sh`/`susubayi_qa.sh` take a different, shorter arg list (no `dataset`/`kategori`) and will silently misalign if pointed at from here |
 
 ### Examples

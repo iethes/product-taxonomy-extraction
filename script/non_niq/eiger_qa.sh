@@ -760,7 +760,7 @@ main() {
 
   if [[ "$agent_harness" == "codex" ]]; then
     local codex_final_file codex_stdout_file codex_runtime_paths codex_gcloud_config codex_adc_file
-    local codex_model="${CODEX_QA_MODEL:-cx/gpt-6.1-sol}"
+    local codex_model="${CODEX_QA_MODEL:-cx/gpt-6-sol}"
     local codex_reasoning_effort="${CODEX_QA_REASONING_EFFORT:-high}"
     case "$codex_reasoning_effort" in
       low|medium|high|xhigh|max) ;;

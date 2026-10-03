@@ -34,7 +34,7 @@ direct_result='{"status":"complete","rows_qa_confirmed":1,"rows_qa_unconfident":
 residual_counts_cover_worklist "$direct_result" 1 || fail "residual counts must cover Eiger worklist"
 residual_counts_cover_worklist '{"rows_qa_confirmed":0.5,"rows_qa_unconfident":0.5,"rows_filtered":0,"rows_unresolved":0}' 1 && fail "fractional Eiger residual counts must block automatic-total merge"
 residual_counts_cover_worklist '{"rows_qa_confirmed":0,"rows_qa_unconfident":0,"rows_filtered":0,"rows_unresolved":0}' 1 && fail "under-counted Eiger residual must block automatic-total merge"
-grep -qF 'CODEX_QA_MODEL:-cx/gpt-6.1-sol' script/non_niq/eiger_qa.sh || fail "Eiger should default Codex to Sol"
+grep -qF 'CODEX_QA_MODEL:-cx/gpt-6-sol' script/non_niq/eiger_qa.sh || fail "Eiger should default Codex to Sol"
 grep -qF 'CODEX_QA_REASONING_EFFORT:-high' script/non_niq/eiger_qa.sh || fail "Eiger should default Codex to high reasoning"
 
 # Exercise main() end to end with local fake CLIs; no BigQuery, Sheet, image download,

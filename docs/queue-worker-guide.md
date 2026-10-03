@@ -33,7 +33,7 @@ cp .env.example .env
 QUEUE_DATABASE_URL=postgres://user:password@host:port/dbname
 QUEUE_SCHEMA=p4ct2g2urhzcfnz   # this deployment's real schema -- leave unset for "public"
 POLL_INTERVAL_SECONDS=30       # how often an idle worker checks for new work
-LEASE_TIMEOUT_HOURS=4          # see § 6 below before raising task-level max-turns
+LEASE_TIMEOUT_HOURS=2          # see § 6 below before raising task-level max-turns
 ```
 
 `.env` is gitignored — it holds a live credential, never commit it.
@@ -239,7 +239,7 @@ cancel`.
 
 A worker sends a heartbeat only between loop iterations, not while a single `claude -p` session is
 actually running. If one iteration's `--max-turns` is large enough that a single run genuinely takes
-longer than `LEASE_TIMEOUT_HOURS` (default 4), another worker can decide the lease is stale and
+longer than `LEASE_TIMEOUT_HOURS` (default 2), another worker can decide the lease is stale and
 reclaim the row — resulting in two workers processing the same table at once.
 
 **Rule of thumb:** if you submit a task with `--max-turns` large enough that you'd expect a single

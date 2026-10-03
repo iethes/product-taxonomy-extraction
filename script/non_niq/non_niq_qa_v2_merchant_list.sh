@@ -1267,7 +1267,7 @@ RUNTIME AUTHENTICATION (already prepared):
     # Meilisearch HTTP calls) requires it; without this the session silently degrades every
     # product to the text-only/unconfident fallback instead of erroring loudly.
     local codex_attempt=1 codex_capacity_exhausted=false
-    local codex_model="${CODEX_QA_MODEL:-cx/gpt-6.1-sol}"
+    local codex_model="${CODEX_QA_MODEL:-cx/gpt-6-sol}"
     local codex_reasoning_effort="${CODEX_QA_REASONING_EFFORT:-high}"
     case "$codex_reasoning_effort" in
       low|medium|high|xhigh|max) ;;
@@ -1338,13 +1338,13 @@ RUNTIME AUTHENTICATION (already prepared):
   #
   # Rate-limit retry: queue_worker.sh's heartbeat only fires ONCE per loop iteration, BEFORE this
   # subprocess starts (script/lib/queue_common.sh) -- there is no heartbeat while we sleep here.
-  # Sleeping past LEASE_TIMEOUT_HOURS (default 4h, reclaim_stale_leases_query) would let another
+  # Sleeping past LEASE_TIMEOUT_HOURS (default 2h, reclaim_stale_leases_query) would let another
   # worker reclaim this task mid-sleep and start a concurrent duplicate run on the same worklist --
   # the exact bug in project_non_niq_qa_concurrent_session_launch_gap.md. So the wait is capped at
   # half the lease window; a reset further out than that exits BLOCKED instead of sleeping through
   # the lease, so the task is safely reclaimed and retried later rather than raced.
   local claude_output claude_attempt=1 max_claude_attempts=10
-  local lease_safe_cap=$(( (${LEASE_TIMEOUT_HOURS:-4} * 3600) / 2 ))
+  local lease_safe_cap=$(( (${LEASE_TIMEOUT_HOURS:-2} * 3600) / 2 ))
   while :; do
     claude_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt") || true
     is_claude_rate_limited "$claude_output" || break
