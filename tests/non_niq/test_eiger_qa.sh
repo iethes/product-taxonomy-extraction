@@ -34,7 +34,7 @@ direct_result='{"status":"complete","rows_qa_confirmed":1,"rows_qa_unconfident":
 residual_counts_cover_worklist "$direct_result" 1 || fail "residual counts must cover Eiger worklist"
 residual_counts_cover_worklist '{"rows_qa_confirmed":0.5,"rows_qa_unconfident":0.5,"rows_filtered":0,"rows_unresolved":0}' 1 && fail "fractional Eiger residual counts must block automatic-total merge"
 residual_counts_cover_worklist '{"rows_qa_confirmed":0,"rows_qa_unconfident":0,"rows_filtered":0,"rows_unresolved":0}' 1 && fail "under-counted Eiger residual must block automatic-total merge"
-grep -qF 'CODEX_QA_MODEL:-gpt-5.6-sol' script/non_niq/eiger_qa.sh || fail "Eiger should default Codex to Sol"
+grep -qF 'CODEX_QA_MODEL:-cx/gpt-6.1-sol' script/non_niq/eiger_qa.sh || fail "Eiger should default Codex to Sol"
 grep -qF 'CODEX_QA_REASONING_EFFORT:-high' script/non_niq/eiger_qa.sh || fail "Eiger should default Codex to high reasoning"
 
 # Exercise main() end to end with local fake CLIs; no BigQuery, Sheet, image download,
@@ -173,9 +173,9 @@ undercount_output=$(
   AGENT_HARNESS=codex
   prepare_eiger_codex_gcloud_runtime() { printf '%s\n%s\n' "$mock_dir" "$mock_dir/adc.json"; }
   main mockplatform ID 1 2
-) || fail "under-counted residual run must return a blocked result"
-[[ "$undercount_output" == *'QUEUE_SIGNAL: BLOCKED'* ]] || fail "under-counted residual must block the queue"
-[[ "$undercount_output" == *'"rows_qa_confirmed":0'* ]] || fail "under-counted residual must not merge automatic confirmations"
+) || fail "under-counted residual run must complete"
+[[ "$undercount_output" == *'QUEUE_SIGNAL: DONE'* ]] || fail "under-counted residual must still release the queue task (findings-only audit, never a hard block)"
+[[ "$undercount_output" == *'"rows_qa_confirmed":1'* ]] || fail "under-counted residual must still merge automatic confirmations (the merge is unconditional now)"
 
 log_gap_output=$(
   EIGER_PARTIAL=1
@@ -188,8 +188,8 @@ log_gap_output=$(
   AGENT_HARNESS=codex
   prepare_eiger_codex_gcloud_runtime() { printf '%s\n%s\n' "$mock_dir" "$mock_dir/adc.json"; }
   main mockplatform ID 1 2
-) || fail "a complete residual run with an insert-log gap must still return a blocked result"
-[[ "$log_gap_output" == *'QUEUE_SIGNAL: BLOCKED'* ]] || fail "a new QA row with no matching non_niq_taxonomy_insert_log entry must block the queue even when the agent reports complete"
-[[ "$log_gap_output" == *'non_niq_taxonomy_insert_log entry'* ]] || fail "the blocked result must explain the insert-log gap"
+) || fail "a complete residual run with an insert-log gap must still complete"
+[[ "$log_gap_output" == *'QUEUE_SIGNAL: DONE'* ]] || fail "an insert-log gap must never block the queue -- it's a findings-only audit"
+[[ "$log_gap_output" == *'non_niq_taxonomy_insert_log entry'* ]] || fail "the result must still explain the insert-log gap in findings"
 
 echo "ALL EIGER QA TESTS PASSED"

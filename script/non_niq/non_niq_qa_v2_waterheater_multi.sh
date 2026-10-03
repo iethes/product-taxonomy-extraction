@@ -1259,7 +1259,7 @@ RUNTIME AUTHENTICATION (already prepared):
     # Meilisearch HTTP calls) requires it; without this the session silently degrades every
     # product to the text-only/unconfident fallback instead of erroring loudly.
     local codex_attempt=1 codex_capacity_exhausted=false
-    local codex_model="${CODEX_QA_MODEL:-gpt-5.6-sol}"
+    local codex_model="${CODEX_QA_MODEL:-cx/gpt-6.1-sol}"
     local codex_reasoning_effort="${CODEX_QA_REASONING_EFFORT:-high}"
     case "$codex_reasoning_effort" in
       low|medium|high|xhigh|max) ;;
@@ -1361,13 +1361,22 @@ RUNTIME AUTHENTICATION (already prepared):
     agent_output="$claude_output"
   fi
   log INFO "${agent_harness} subprocess returned, formatting summary..."
-  local result_json residual_valid=true
+  # Unresolved rows alone are a normal, expected outcome (the agent's own status=partial already
+  # maps to QUEUE_SIGNAL: DONE via decide_queue_signal -- see its case statement). The checks below
+  # are a provenance/accounting AUDIT, never a gate: they append to findings and log loudly, but
+  # deliberately never force status to "blocked" or skip the auto-confirmed merge below. A queue
+  # BLOCKED signal stops queue_worker.sh's whole per-task iteration loop early (even when
+  # iterations_run < loop_count) and parks the task -- far too disruptive a consequence for "this
+  # audit query couldn't confirm something," which can itself be a false positive in the audit
+  # query (see the 2026-09-30 lighting/ID incident: a bug in this exact insert-log query
+  # force-blocked an otherwise-clean 296-row session). The real DB writes this run made already
+  # happened regardless of what these checks find.
+  local result_json
   result_json=$(extract_result_json "$agent_output")
   if [[ -n "$result_json" ]] && {
     ! residual_counts_cover_worklist "$result_json" "$worklist_count" ||
     ! residual_ledger_covers_worklist "$worklist_file" "/tmp/${tmp_tag}_v2_decisions.jsonl";
   }; then
-    residual_valid=false
     log ERROR "Agent result does not account for every residual row with a valid per-product evidence ledger."
     # Merge onto the original agent_output (not result_json alone) -- for the Claude harness,
     # result_json is only the inner object extracted from claude_output.result and never carried
@@ -1375,23 +1384,21 @@ RUNTIME AUTHENTICATION (already prepared):
     # alone silently dropped those envelope fields from the summary printed below.
     agent_output=$(jq -c --argjson result "$result_json" '
       . * ($result
-        | .status = "blocked"
-        | .blockers = ((.blockers // []) + ["Post-run validation found incomplete residual row accounting or a missing/invalid per-product decision ledger; automatic totals were not merged."]))
+        | .findings = ((.findings // []) + ["Post-run validation found incomplete residual row accounting or a missing/invalid per-product decision ledger; automatic totals may be incomplete."]))
     ' <<< "$agent_output")
   fi
-  if [[ "$residual_valid" == true ]] && [[ "$(extract_rows_created "$agent_output")" != "0" ]]; then
+  if [[ "$(extract_rows_created "$agent_output")" != "0" ]]; then
     # 2c.1 in the prompt is agent-trusted text, not code-enforced (unlike non_niq_qa_v3.py's
     # builder) -- apply_taxonomy_insert_log_backstop is the code-side backstop: any dict row that
     # appeared since run_start with no matching insert-log row means the agent skipped or failed
-    # its mandatory log write.
-    if ! agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \
+    # its mandatory log write. It only ever appends a finding (see its own doc comment) -- never
+    # treat its return code as a reason to skip anything below.
+    agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \
       "\`${PROJECT}.${dict_table}\`" "${PROJECT}.${dict_table}" "$run_start" \
       "JSON_VALUE(log.row_json, '\$.inserted_row.brand') = cur.brand AND JSON_VALUE(log.row_json, '\$.inserted_row.${dict_identity_col}') = cur.\`${dict_identity_col}\`" \
-      "$dict_table"); then
-      residual_valid=false
-    fi
+      "$dict_table") || true
   fi
-  if (( auto_confirmed > 0 )) && [[ "$residual_valid" == true ]]; then
+  if (( auto_confirmed > 0 )); then
     local auto_result_json
     auto_result_json=$(extract_result_json "$agent_output")
     if echo "$auto_result_json" | jq -e . >/dev/null 2>&1; then

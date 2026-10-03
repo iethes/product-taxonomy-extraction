@@ -499,12 +499,19 @@ grep -qF 'run_start=$(date -u' <<< "$script_src" \
   || fail "main() must capture run_start before dispatching the agent, to scope the gap check"
 grep -qF 'apply_taxonomy_insert_log_backstop "$agent_output" \' <<< "$script_src" \
   || fail "main() must run the shared insert-log backstop against this dataset's dict_table"
-if grep -qF '! agent_output=$(apply_taxonomy_insert_log_backstop' <<< "$script_src" && \
-   grep -qF 'residual_valid=false' <<< "$script_src"; then
-  :
-else
-  fail "main() must block the queue signal when the backstop finds an unlogged dictionary row"
+# The backstop (and the residual accounting/ledger check above it) must never force the queue
+# signal to BLOCKED -- it's a findings-only audit now (see apply_taxonomy_insert_log_backstop's
+# own doc comment and the 2026-09-30 lighting/ID incident that prompted this: a bug in that exact
+# verification query force-blocked an otherwise-clean 296-row session). Assert the call is
+# unconditional (no longer gated behind a residual_valid flag that no longer exists) and that its
+# failure is swallowed with `|| true`, never re-propagated into a forced blocked status.
+if grep -qE 'residual_valid=(true|false)' <<< "$script_src"; then
+  fail "main() must not reintroduce a residual_valid gate variable -- the backstop/audit checks must always run and only ever append findings"
 fi
+grep -qF 'agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \' <<< "$script_src" \
+  || fail "main() must call the insert-log backstop unconditionally (not gated behind a validity flag)"
+grep -qF '"$dict_table") || true' <<< "$script_src" \
+  || fail "main() must swallow the backstop's nonzero return rather than treating it as a reason to block"
 echo "PASS: main() insert-log backstop wiring"
 
 echo "ALL TESTS PASSED (part 2: prompt + main)"

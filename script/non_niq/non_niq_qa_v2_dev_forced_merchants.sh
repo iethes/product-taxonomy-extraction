@@ -33,58 +33,42 @@ if [[ -n "${NON_NIQ_QA_V2_SNAPSHOT:-}" ]]; then
   trap cleanup_non_niq_qa_v2_runtime EXIT
 fi
 
-# Usage: script/non_niq/non_niq_qa_v2.sh <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS] [KATEGORI]
-# e.g.  script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee
-#       script/non_niq/non_niq_qa_v2.sh lighting shopee TH
-#       script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee ID 500 400
-#       script/non_niq/non_niq_qa_v2.sh lighting shopee ID 300 300 "Connected Light"
-#       MONTHLY_REVERIFY=1 script/non_niq/non_niq_qa_v2.sh lighting shopee ID 300 100
+# COPY of non_niq_qa_v2.sh with a different worklist scope, built for one specific ad hoc request:
+# a fixed, hardcoded merchant_id list against master_table_prod (Sheet column AC -- same source
+# table v2.sh uses), for one fixed month, requiring qa_status = 'Not Reviewed' and
+# sold_monthly > 0 on the source row. Filter-table exclusion and the
+# QA-table (product_id_dict_qa) title-match dedup still apply exactly as in v2.sh -- a product is
+# only worklisted when its current whitespace-normalized sku_name has no matching row there. No
+# Tier 1/2 product_tier restriction, no kategori/brand scoping, no monthly-reverify: this is a
+# narrow one-off scope, not the normal population.
 #
-# KATEGORI, if given, adds an exact-match filter on source_table's own `kategori` column (a
-# per-category sub-scope some master_table_prod tables carry, e.g. lighting's "Connected Light")
-# before the source-table product_tier filter -- optional because most datasets don't have
-# this column at all.
+# FORCED_MERCHANT_IDS env var (optional): comma-separated merchant_id list, overrides the default
+# baked-in list below (35 dedup'd IDs from the original ad hoc request).
+# MONTH env var (optional, default 2026-08): fixed YYYY-MM source `month` value to scope to. MUST
+# stay YYYY-MM, not YYYY-MM-DD -- non_niq_helper.py's sync-labelling/tier-recalc SQL always does
+# PARSE_DATE('%Y-%m', @month), the same convention default_month_query() produces elsewhere in this
+# script family; a full date here parses fine against worklist_query()'s own FORMAT_DATE comparison
+# but throws "Failed to parse input string" once it reaches sync_labelling_step() downstream.
 #
-# MONTHLY_REVERIFY=1 env var (optional, off by default): forces re-review of a product_id even if
-# it already has a lifetime-confident QA row, whenever that product_id's sku_name/kategori differs
-# from its most recent prior month's row on source_table -- i.e. the merchant swapped the listing
-# under the same product_id (the reason this whole QA process has to run monthly, not once). Off by
-# default so every other dataset's query is byte-identical to before. See worklist_query()'s
-# listing_changed logic.
+# Usage: script/non_niq/non_niq_qa_v2_dev_forced_merchants.sh <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS]
+# e.g.  script/non_niq/non_niq_qa_v2_dev_forced_merchants.sh lighting shopee ID
+#       FORCED_MERCHANT_IDS="'123','456'" MONTH=2026-09 script/non_niq/non_niq_qa_v2_dev_forced_merchants.sh lighting tokopedia ID
 #
 # AGENT_HARNESS env var (optional, defaults to "claude"): which coding-agent CLI drives the
 # build_qa_prompt() session. Checked for availability (via `command -v`) before any BigQuery work
 # starts -- an unavailable or unsupported harness fails fast with QUEUE_SIGNAL: FAILED rather than
 # burning a worklist query first.
 #       AGENT_HARNESS=codex script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee
-#       AGENT_HARNESS=omp script/non_niq/non_niq_qa_v2.sh cookiesbiscuit shopee
-# Claude, Codex, and omp have separate adapters in main(): Claude returns its JSON envelope on
-# stdout; Codex writes its schema-constrained final message to --output-last-message; omp has
-# neither concept -- it streams JSONL progress events (--mode json) with no final-message flag, so
-# its adapter recovers the final assistant text from the last `agent_end` event itself. Do not
-# funnel a new harness through any of these three adapters without implementing its own
-# invocation and output contract.
+# Claude and Codex have separate adapters in main(): Claude returns its JSON envelope on stdout;
+# Codex writes its schema-constrained final message to --output-last-message. Do not funnel a new
+# harness through either adapter without implementing its own invocation and output contract.
 # Codex progress/thinking events are captured in /tmp instead of printed; only errors and the
-# final result are shown alongside this wrapper's phase/status messages. omp has no equivalent
-# progress-capture file -- its stdout goes straight to a scratch file and only the extracted final
-# result is printed, same rationale.
+# final result are shown alongside this wrapper's phase/status messages.
 #
-# omp has no sandbox concept (unlike Codex's workspace-write/read-only split) and no turn-count
-# limit flag (unlike Claude's --max-turns) -- it runs with its default-enabled tools (bash, read,
-# write, curl-equivalent via web tools, etc.) directly against this process's own environment and
-# filesystem, so it needs none of Codex's credential-copying workaround. OMP_QA_MODEL (optional)
-# picks a model (omp's own --model fuzzy-matches, e.g. "opus" or "gpt-5.2"); OMP_MAX_TIME
-# (optional, e.g. "45m") caps wall-clock time via omp's own --max-time -- there is no turn-count
-# cap to translate MAX_TURNS into, so MAX_TURNS is silently ignored for this harness.
-#
-# v2 reads the Sheet's `master_table_prod` (AC, no "_dev" suffix), which is a genuinely distinct
-# table with its own qa_status column. Its normal worklist scope uses the source table's Tier 1 +
-# Tier 2 product_tier values (the precomputed top-90%-GMV population), then requires an exact
-# product_id + raw ecommerce_platform + whitespace-normalized sku_name QA match. Product-ID-only
-# history is retained solely for the pending-unconfident retry safety loop. Neither script writes
-# qa_status -- a separate external QA-labelling update process owns it.
-# Client OS Only and Competitor OS merchant IDs bypass the GMV rank restriction; filter-table
-# exclusions and current-title QA checks still apply.
+# Reads the Sheet's `master_table_prod` column (same resolution as v2.sh -- the prod table, NOT
+# the "_dev" table) -- that table is what qa_status = 'Not Reviewed' is filtered against here, and
+# what sync_labelling_step() writes qa_status back onto after the session. Requires an exact
+# product_id + raw ecommerce_platform + whitespace-normalized sku_name QA match, same as v2.
 # See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the shared design this
 # still implements (decision tree, confidence loop, _meta stamping).
 
@@ -109,9 +93,8 @@ source "${REPO_ROOT}/script/non_niq/codex_sandbox_preflight.sh"
 # (Tokopedia's own first-party channel) alongside plain 'Tokopedia', with NO separate config
 # Sheet row. A 'tokopedia' run reads both raw values, but keeps them distinct for QA state and
 # downstream writes: a review on one channel must never suppress the other channel's listing.
-# Known harness name -> CLI binary. Claude, Codex, and omp have real adapters in main(); the
-# remaining names let require_harness() distinguish "not installed" from "recognized but not wired
-# yet".
+# Known harness name -> CLI binary. Claude and Codex have real adapters in main(); the remaining
+# names let require_harness() distinguish "not installed" from "recognized but not wired yet".
 declare -A HARNESS_BIN=(
   [claude]="claude"
   [codex]="codex"
@@ -134,7 +117,7 @@ require_harness() {
     return 1
   fi
   case "$harness" in
-    claude|codex|omp) ;;
+    claude|codex) ;;
     *)
       echo "AGENT_HARNESS='${harness}' found on PATH, but its invocation/output-parsing isn't implemented in this script yet." >&2
       return 1
@@ -151,48 +134,35 @@ platform_match_clause() {
   fi
 }
 
-default_month_query() {
-  local source_table="$1" platform="$2"
-  local platform_titlecase="${platform^}"
-  # MUST be scoped per-platform, not global -- v1 hit this exact bug (Blibli lagging other
-  # platforms by a month on the _dev table). Confirmed live that on THIS table
-  # (master_table_prod, no _dev) every cookiesbiscuit platform currently shares the same latest
-  # month -- but that's a snapshot-in-time fact, not a guarantee, so this stays scoped per-platform
-  # for the same reason v1's fix does.
-  echo "SELECT FORMAT_DATE('%Y-%m', MAX(month)) FROM \`${PROJECT}.${source_table}\` WHERE ecommerce_platform $(platform_match_clause "$platform_titlecase")"
-}
-
-# Normal scope uses the source table's precomputed Tier 1 population (the top 90% GMV
-# population). A product is normally covered only when product_id, raw ecommerce_platform, AND
-# whitespace-normalized sku_name match a QA row; title changes under an existing product_id are
-# therefore re-reviewed. The per-platform qa_state remains only for the pending-unconfident retry.
+# A product is covered only when product_id, raw ecommerce_platform, AND whitespace-normalized
+# sku_name match a QA row; title changes under an existing product_id are therefore re-reviewed.
+# The per-platform qa_state remains only for the pending-unconfident retry. No Tier 1/2, kategori,
+# brand, or monthly-reverify scoping -- this variant's ENTIRE scope is the fixed WHERE clause below
+# (qa_status = 'Not Reviewed', sold_monthly > 0, merchant_id in the forced list, fixed month).
 worklist_query() {
   local source_table="$1" qa_table="$2" qa_pk_col="$3" month="$4" platform="$5" enrichment_table="${6:-}"
   # Same LIMIT rationale as v1: a single agent session's turn budget can't process an unbounded
   # worklist. 100 is the safe default.
   local row_limit="${7:-100}"
   local filter_table="${8:-}"
-  local kategori="${9:-}"
-  local monthly_reverify="${10:-}"
-  local forced_merchant_ids_sql="${11:-}"
+  local forced_merchant_ids_sql="${9:-}"
   # Regional QA tables use `ecommerce`; most category QA tables use
   # `ecommerce_platform`. Resolve this from INFORMATION_SCHEMA in main() rather than baking one
   # schema into a cross-category query.
-  local qa_platform_col="${12:-ecommerce_platform}"
-  local dataset_name="${13:-}"
-  local country="${14:-}"
+  local qa_platform_col="${10:-ecommerce_platform}"
   local platform_titlecase="${platform^}"
-  # Null-image Tokopedia source rows retain the product page URL. Other source
-  # schemas do not consistently expose this column, so do not reference it.
-  local product_url_select="NULL AS product_url"
-  if [[ "$platform_titlecase" == "Tokopedia" ]]; then
-    product_url_select="s.url AS product_url"
+  if [[ -z "$forced_merchant_ids_sql" ]]; then
+    echo "worklist_query: empty merchant_id list" >&2
+    return 1
   fi
+  # The pasted source query always selects `url` regardless of platform, unlike v2.sh's
+  # Tokopedia-only product_url_select.
+  local product_url_select="s.url AS product_url"
   # item_description/product_attributes_attrs enrichment is Shopee-only by data availability --
   # ported VERBATIM from non_niq_qa.sh's worklist_query (v1), already debugged there (confirmed
   # live: non-Shopee 0_pipeline_* tables have a different schema with no description/specs
-  # columns at all). dataset is derived from source_table (already "{dataset}.master_..." per
-  # master_table_prod's own convention) rather than a separate parameter.
+  # columns at all). dataset is derived from source_table (already "{dataset}.master_..."
+  # convention) rather than a separate parameter.
   local dataset="${source_table%%.*}"
   local enrichment_cte_and_join="" enrichment_join="" enrichment_select="NULL AS item_description, NULL AS product_attributes_attrs"
   if [[ "$platform_titlecase" == "Shopee" && -n "$enrichment_table" && "$enrichment_table" != "-" && "$enrichment_table" != "null" ]]; then
@@ -229,65 +199,21 @@ worklist_query() {
     filter_where="WHERE fs.product_id IS NULL"
   fi
 
-  local kategori_clause=""
-  if [[ -n "$kategori" ]]; then
-    kategori_clause="    AND s.kategori = '${kategori}'
-"
-  fi
-
-  # Indonesia lighting QA is currently limited to the two in-scope brands. Keep this
-  # dataset/country-specific so lighting runs for other markets retain their full scope.
-  local brand_clause=""
-  if [[ "$dataset_name" == "lighting" && "$country" == "ID" ]]; then
-    log INFO "Filtering to Cahaya and Surya brand only"
-    brand_clause="    AND s.brand IN ('Cahaya', 'Surya')
-"
-  fi
-
-  # master_table_prod already assigns Tier 1 from the top-90%-GMV calculation. Do not
-  # recalculate it here: a combined Tokopedia / Tokopedia | Shop GMV window would incorrectly
-  # alter the two raw platform populations.
-  local stakeholder_scope_clause="s.product_tier IN ('Tier 1')"
-  if [[ -n "$forced_merchant_ids_sql" ]]; then
-    stakeholder_scope_clause="(${stakeholder_scope_clause} OR s.merchant_id IN (${forced_merchant_ids_sql}))"
-  fi
-
-  # listing_changed remains an optional safety review for categories that explicitly opt in. The
-  # normal title-mismatch path below already catches title changes relative to QA history.
-  local scoped_kategori_select="" reverify_cte="" reverify_join=""
-  local reverify_expr="FALSE" reverify_prior_select="NULL AS prior_sku_name, NULL AS prior_kategori"
-  if [[ -n "$monthly_reverify" ]]; then
-    scoped_kategori_select=", s.kategori AS current_kategori"
-    reverify_cte="prior_snapshot AS (
-  SELECT product_id, ecommerce_platform, sku_name AS prior_sku_name, kategori AS prior_kategori
-  FROM \`${PROJECT}.${source_table}\`
-  WHERE ecommerce_platform $(platform_match_clause "$platform_titlecase")
-    AND FORMAT_DATE('%Y-%m', month) < '${month}'
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id, ecommerce_platform ORDER BY month DESC) = 1
-),
-"
-    reverify_join="LEFT JOIN prior_snapshot ps
-    ON ps.product_id = sc.product_id
-   AND ps.ecommerce_platform = sc.ecommerce_platform"
-    # IS DISTINCT FROM, not != -- NULL-safe, so a prior/current value newly appearing or
-    # disappearing (not just changing) still counts as a listing change.
-    reverify_expr="(ps.product_id IS NOT NULL AND (ps.prior_sku_name IS DISTINCT FROM sc.sku_name OR ps.prior_kategori IS DISTINCT FROM sc.current_kategori))"
-    reverify_prior_select="ps.prior_sku_name, ps.prior_kategori"
-  fi
-
   cat <<SQL
 WITH ${enrichment_cte_and_join}${filter_cte}scoped AS (
   SELECT s.product_id, s.sku_name, REPLACE(s.image, '"', '') AS image,
          ${product_url_select},
          s.ecommerce_platform,
          s.country, s.category, s.month, s.gmv_monthly, s.merchant_id,
-         ${enrichment_select}${scoped_kategori_select}
+         ${enrichment_select}
   FROM \`${PROJECT}.${source_table}\` s
   ${enrichment_join}
   WHERE FORMAT_DATE('%Y-%m', s.month) = '${month}'
     AND s.ecommerce_platform $(platform_match_clause "$platform_titlecase")
-    AND ${stakeholder_scope_clause}
-${kategori_clause}${brand_clause}),
+    AND s.qa_status = 'Not Reviewed'
+    AND s.sold_monthly > 0
+    AND s.merchant_id IN (${forced_merchant_ids_sql})
+),
 stakeholder_scope AS (
   SELECT sc.*
   FROM scoped sc
@@ -295,8 +221,14 @@ stakeholder_scope AS (
   ${filter_where}
 ),
 qa_title_state AS (
+  -- \x{00A0} (non-breaking space) alongside \s -- confirmed live 2026-10-01 that BigQuery's RE2
+  -- \s is ASCII-only and does NOT match U+00A0. Scraped Lazada titles mix NBSP and plain spaces
+  -- between words (e.g. "Philips Lampu LED..."); a product already confidently QA'd
+  -- under one spacing variant re-surfaced in every later worklist as "new" once the master table's
+  -- title used the other variant, because \s+ alone left the NBSPs uncollapsed and the normalized
+  -- strings never matched.
   SELECT DISTINCT ${qa_pk_col} AS product_id, ${qa_platform_col} AS ecommerce_platform,
-    REGEXP_REPLACE(TRIM(sku_name), r'\\s+', ' ') AS normalized_sku_name
+    REGEXP_REPLACE(TRIM(sku_name), r'[\\s\\x{00A0}]+', ' ') AS normalized_sku_name
   FROM \`${PROJECT}.${qa_table}\`
   WHERE ${qa_platform_col} $(platform_match_clause "$platform_titlecase")
 ),
@@ -313,25 +245,23 @@ qa_state AS (
   WHERE ${qa_platform_col} $(platform_match_clause "$platform_titlecase")
   GROUP BY 1, 2
 ),
-${reverify_cte}prioritized AS (
+prioritized AS (
   SELECT sc.product_id, sc.sku_name, sc.image, sc.product_url, sc.gmv_monthly, sc.ecommerce_platform, sc.merchant_id,
          sc.item_description, sc.product_attributes_attrs,
-    ${reverify_expr} AS listing_changed, ${reverify_prior_select},
+    FALSE AS listing_changed, NULL AS prior_sku_name, NULL AS prior_kategori,
     CASE
       WHEN qts.product_id IS NULL THEN 0
       WHEN qs.has_unconfident_pending AND NOT qs.has_confident AND NOT qs.has_terminal THEN 1
-      WHEN ${reverify_expr} THEN 0
       ELSE NULL
     END AS priority
   FROM stakeholder_scope sc
   LEFT JOIN qa_title_state qts
     ON qts.product_id = sc.product_id
    AND qts.ecommerce_platform = sc.ecommerce_platform
-   AND qts.normalized_sku_name = REGEXP_REPLACE(TRIM(sc.sku_name), r'\\s+', ' ')
+   AND qts.normalized_sku_name = REGEXP_REPLACE(TRIM(sc.sku_name), r'[\\s\\x{00A0}]+', ' ')
   LEFT JOIN qa_state qs
     ON qs.product_id = sc.product_id
    AND qs.ecommerce_platform = sc.ecommerce_platform
-  ${reverify_join}
 )
 SELECT * FROM prioritized
 WHERE priority IS NOT NULL
@@ -435,18 +365,19 @@ build_qa_prompt() {
   fi
 
   cat <<PROMPT
-Non-NIQ Agentic QA session (v2 -- current-title worklist) for dataset=${dataset},
-platform=${platform}, country=${country}. See docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the
-decision tree, confidence loop, and _meta conventions this still implements -- read it in full
-before starting. The normal worklist filters confirmed out-of-scope products, then uses the source
-table's precomputed Tier 1 product_tier values (the top-90%-GMV population). It includes
-any current sku_name that has no matching QA row for the same product_id, raw ecommerce_platform,
-and whitespace-normalized title. Client OS Only and Competitor OS merchants are included regardless
-of tier or GMV, including zero-GMV products, but filter exclusions and the same QA checks still
-apply. Pending-unconfident retries remain an explicit operational exception to that normal scope.
+Non-NIQ Agentic QA session (v2, forced-merchant variant -- current-title worklist) for
+dataset=${dataset}, platform=${platform}, country=${country}. See
+docs/superpowers/specs/2026-08-06-non-niq-agentic-qa-design.md for the decision tree, confidence
+loop, and _meta conventions this still implements -- read it in full before starting. This session's
+ENTIRE scope is a fixed, hardcoded merchant_id list on the source table (see below), filtered
+to qa_status = 'Not Reviewed', sold_monthly > 0, and one fixed month -- no Tier 1/2, kategori, or
+brand restriction. It includes any current sku_name that has no matching QA row for the same
+product_id, raw ecommerce_platform, and whitespace-normalized title; filter-table exclusions still
+apply. Pending-unconfident retries remain an explicit operational exception to that scope.
 
-Resolved for this run: source_table=${PROJECT}.${source_table} (master_table_prod, NOT the _dev
-table -- confirmed a separate table with its own qa_status column), qa_table=${PROJECT}.${qa_table},
+Resolved for this run: source_table=${PROJECT}.${source_table} (master_table_prod -- this
+variant's worklist and qa_status gate both read from and write back to this table),
+qa_table=${PROJECT}.${qa_table},
 dict_table=${PROJECT}.${dict_table}, filter_table (write target)=${PROJECT}.${filter_table},
 qa_pk_col=${qa_pk_col}, dict_identity_col=${dict_identity_col}, dict_typo_col=${dict_typo_col},
 dict_has_meta=${dict_has_meta},
@@ -462,23 +393,17 @@ BigQuery to re-fetch it, and do NOT trust any other row count than ${worklist_co
 (in slices if it's too large for one Read) rather than querying BigQuery for it. Each line has:
 product_id, sku_name, image, gmv_monthly, ecommerce_platform, merchant_id,
 item_description, product_attributes_attrs, listing_changed, prior_sku_name, prior_kategori,
-priority. It is already scoped to the post-filter source-table Tier 1 population
-plus products from whitelisted Client OS Only and Competitor OS merchants regardless of GMV,
-with a product considered reviewed only when its current whitespace-normalized sku_name matches a
-QA row for the same product_id and raw ecommerce_platform. It is prioritized (current-title mismatches before
-agent-flagged-unconfident retries, both by gmv_monthly descending) -- process it in that order. If you cannot account for all
+priority. It is already scoped to the fixed forced-merchant/qa_status/sold_monthly population
+described above, post-filter, with a product considered reviewed only when its current
+whitespace-normalized sku_name matches a QA row for the same product_id and raw ecommerce_platform.
+It is prioritized (current-title mismatches before agent-flagged-unconfident retries, both by
+gmv_monthly descending) -- process it in that order. If you cannot account for all
 ${worklist_count} rows by the end of your turn budget, explicitly report status: partial (or
 status: blocked if you cannot proceed at all) -- never silently process a subset and report
 status: complete.
 
-listing_changed is only ever true when this run has monthly re-verify enabled: it means this
-product_id's sku_name or kategori differs from its own most recent PRIOR month's row on
-source_table -- i.e. the merchant likely reused this product_id for a different listing since last
-time (prior_sku_name/prior_kategori show what it WAS). Treat such a row as needing a completely
-fresh judgment in 2a-2c -- do NOT assume any earlier confident QA verdict for this product_id still
-applies, this may be a different product now. In 2d, write it using the FIRST-TIME _meta shape
-(plain confident/unconfident) even if this product_id already has an older confident row -- a
-listing swap is a new judgment, not a retry of a prior failure.
+listing_changed is always false and prior_sku_name/prior_kategori are always null in this variant --
+monthly re-verify is not implemented here. Ignore these fields.
 
 STEP 1 -- The wrapper already ran one batch Meilisearch retrieval and directly confirmed the
 unambiguous case-insensitive exact-title matches. The remaining worklist contains only products
@@ -671,9 +596,9 @@ Hard rules, never relaxed:
   corrections only ever land in \`${PROJECT}.${qa_table}\`.
 - All writes use bq query DML, never the streaming API -- CLAUDE.md's 90-minute streaming-buffer
   rule. The very next run's retry-cap logic depends on reading back this run's QA rows reliably.
-- Never write to \`qa_status\` on the source table (master_table_prod). A separate QA-labelling
-  update process reads \`${qa_table}\` independently and flips \`qa_status\` to 'Reviewed' once a
-  product has a row there -- this harness's job is only to write
+- Never write to \`qa_status\` on the source table (${source_table}) yourself. The wrapper's own
+  post-session sync-labelling step flips \`qa_status\` to 'Reviewed' for the products this session
+  wrote to \`${qa_table}\` -- this harness's job during the QA loop is only to write
   \`${qa_table}\`/\`${dict_table}\`/\`${filter_table}\`, never \`qa_status\` itself.
 - "This needs individual validation", "the remaining rows need grounded dictionary creation", or
   "a bulk heuristic was unsafe" are not reasons to fabricate a mapping. Continue the per-product
@@ -969,8 +894,9 @@ SUMMARY
 # sync_labelling_step <source_table> <qa_table> <qa_pk_col> <qa_platform_col> <filter_table>
 #   <full_worklist_file> <month> <platform_titlecase> <country> <category>
 # Best-effort wrapper around non_niq_helper.py's sync-labelling subcommand (dedupe QA-table
-# duplicates, sync taxonomy/qa_status/source_pid into master_table_prod, recalc product_tier only
-# for identities newly filtered this session). Prints the JSON summary to stdout on success,
+# duplicates, sync taxonomy/qa_status/source_pid into <source_table> -- here master_table_prod,
+# per this variant's own source_table resolution above -- recalc product_tier only for identities
+# newly filtered this session). Prints the JSON summary to stdout on success,
 # "skipped" when there's no full worklist file to sync from, or "failed" on any error -- never
 # fails the caller. Called from BOTH the all-auto-confirmed early exit and the normal end-of-run
 # path in main() -- auto-confirmed rows are written straight to the QA table without going through
@@ -1001,13 +927,11 @@ sync_labelling_step() {
 
 main() {
   if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS] [KATEGORI]" >&2
+    echo "Usage: $0 <DATASET> <PLATFORM> [COUNTRY] [MAX_TURNS] [MAX_ROWS]" >&2
     exit 1
   fi
-  local dataset="$1" platform="$2" country="${3:-ID}" max_turns="${4:-500}" max_rows="${5:-100}" kategori="${6:-}"
+  local dataset="$1" platform="$2" country="${3:-ID}" max_turns="${4:-500}" max_rows="${5:-100}"
   country="${country^^}"
-  local monthly_reverify="${MONTHLY_REVERIFY:-}"
-  [[ -n "$monthly_reverify" ]] && log INFO "MONTHLY_REVERIFY enabled -- worklist will force re-review of product_ids whose sku_name/kategori changed since their prior month's row."
 
   local agent_harness="${AGENT_HARNESS:-claude}"
 
@@ -1022,8 +946,9 @@ main() {
     exit 1
   fi
 
-  # source_table here is master_table_prod (Sheet column AC, no "_dev" suffix) -- the ONLY
-  # difference in table resolution vs v1, which uses `table` (AB). Everything else is identical.
+  # source_table here is master_table_prod (Sheet column AC, no "_dev" suffix) -- same resolution
+  # as v2.sh. This run's qa_status = 'Not Reviewed' gate and sync-labelling write-back both target
+  # this table.
   local source_table qa_table dict_table filter_table_config product_id_dict enrichment_table
   source_table=$(echo "$category_json" | jq -r '.master_table_prod')
   qa_table=$(echo "$category_json" | jq -r '.product_id_dict_qa')
@@ -1033,7 +958,7 @@ main() {
   enrichment_table=$(echo "$category_json" | jq -r '."0"')
   local filter_table
   filter_table=$(primary_filter_table "$filter_table_config" "$dataset")
-  log INFO "Config resolved: source_table=${source_table}, qa_table=${qa_table}, dict_table=${dict_table}, filter_table=${filter_table}$( [[ -n "$kategori" ]] && echo ", kategori=${kategori}" )"
+  log INFO "Config resolved: source_table=${source_table}, qa_table=${qa_table}, dict_table=${dict_table}, filter_table=${filter_table}"
 
   # '-' is the Sheet's "not configured" marker -- fatal for every table this v2 harness reads or
   # writes (source_table now included, since v2's worklist depends entirely on it).
@@ -1060,44 +985,30 @@ main() {
   dict_has_meta=$(echo "$columns_json" | jq -r '.dict_has_meta')
   log INFO "Columns resolved: qa_pk_col=${qa_pk_col}, qa_platform_col=${qa_platform_col}, dict_identity_col=${dict_identity_col}, dict_typo_col=${dict_typo_col}, dict_has_meta=${dict_has_meta}"
 
-  # Explicit failure checks, not bare `set -e` reliance -- same rationale as v1: a silent bq
-  # failure inside a `var=$(...)` reassignment looks like a hang, not an error, under set -e alone.
-  log INFO "Querying BigQuery for the latest month on ${source_table}/${platform}..."
-  local month
-  if ! month=$(bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=csv \
-    "$(default_month_query "$source_table" "$platform")" | tail -1); then
-    echo "bq query failed while resolving the latest month for ${source_table}/${platform} -- see bq's error above." >&2
-    echo "QUEUE_SIGNAL: FAILED"
-    emit_result "${dataset}:${platform}" "FAILED" "bq query failed resolving latest month for ${source_table}/${platform}"
-    exit 1
-  fi
-  log INFO "Latest month resolved: ${month}"
+  # Fixed month, not resolved from source_table's MAX(month) -- this variant scopes to one
+  # specific month the pasted source query named.
+  local month="${MONTH:-2026-08}"
+  [[ "$month" =~ ^[0-9]{4}-[0-9]{2}$ ]] || { echo "MONTH must be YYYY-MM (not YYYY-MM-DD -- see the MONTH env var comment at the top of this script)" >&2; exit 1; }
+  log INFO "Using fixed month: ${month}"
 
-  # Match the reference Sheet's category label, not the dataset name. The helper handles
-  # Tokopedia | Shop aliases. Lookup failures retain the existing non-fatal behavior.
   local platform_titlecase="${platform^}" category
   category=$(echo "$category_json" | jq -r '.category')
-  log INFO "Checking merchant-allowlist Sheet (country=${country}, category=${category}, platform=${platform_titlecase})..."
-  local forced_merchant_ids_json forced_merchant_ids_sql forced_merchant_count
-  forced_merchant_ids_json=$("$PYTHON_BIN" "$(dirname "$SCRIPT_SOURCE")/non_niq_helper.py" forced-merchants \
-    --country "$country" --category "$category" --platform "$platform_titlecase") || forced_merchant_ids_json="[]"
-  forced_merchant_ids_sql=$(echo "$forced_merchant_ids_json" | jq -r '[.[] | @json] | join(",")') || forced_merchant_ids_sql=""
-  forced_merchant_count=$(echo "$forced_merchant_ids_json" | jq 'length') || forced_merchant_count=0
-  log INFO "Force-include merchants resolved: ${forced_merchant_count}"
+
+  # Fixed, hardcoded merchant_id list (35 dedup'd IDs from the original ad hoc request),
+  # overridable via FORCED_MERCHANT_IDS (comma-separated, already single-quoted, e.g.
+  # "'123','456'") -- NOT the Sheet-driven merchant-allowlist v2.sh reads via forced-merchants.
+  local default_forced_merchant_ids="'2422784','7788259','12388667','12388846','12393192','12412258','12414837','12430138','12744150','12749216','13016672','13056055','13061744','13062373','17740395','30082703','100330831','191382695','438891817','1021468482','1023358710','1027127406','1309152862','1603225139','400607361594','401830576539','402310176013','402347168576','403381888911','7495558589013067934','7495609524315327445','7495800433612458462','7495844624145811473','7496026543631928311','7496124082195106682'"
+  local forced_merchant_ids_sql="${FORCED_MERCHANT_IDS:-$default_forced_merchant_ids}"
+  local forced_merchant_count
+  forced_merchant_count=$(( $(tr -cd ',' <<< "$forced_merchant_ids_sql" | wc -c) + 1 ))
+  log INFO "Forced merchant_id list: ${forced_merchant_count} merchant_ids"
 
   local meili_index="${dataset}_taxonomy_qa"
 
-  # All of this run's /tmp scratch files are keyed off this tag. MUST include kategori when set --
-  # without it, two concurrent kategori-sharded launches of the same dataset/platform/country (e.g.
-  # lighting/shopee/ID kategori="LED Lamps" vs kategori="Luminaires") collide on the exact same
-  # /tmp path and race-overwrite each other's worklist/candidates/new-entries files. Confirmed live:
-  # a real run saw its worklist file's row count change mid-read (300 -> empty -> 215) from a
-  # sibling shard's concurrent `bq query ... > "$worklist_file"` write. Sanitized because kategori
-  # is free-text from the Sheet (e.g. "Connected Light" has a space).
-  local tmp_tag="${dataset}_${platform}_${country}"
-  if [[ -n "$kategori" ]]; then
-    tmp_tag="${tmp_tag}_$(echo "$kategori" | tr -cs 'A-Za-z0-9' '_' | sed 's/^_//;s/_$//')"
-  fi
+  # All of this run's /tmp scratch files are keyed off this tag -- suffixed so a run never
+  # collides with a normal v2.sh or non_niq_qa_v2_merchant_list.sh run of the same
+  # dataset/platform/country.
+  local tmp_tag="${dataset}_${platform}_${country}_devforced"
   # STEP 3 artifacts have stable names so the agent and wrapper can agree on them. Remove leftovers
   # before this run; otherwise an agent that fails before producing its artifact could make the
   # wrapper append a previous run's identities.
@@ -1105,14 +1016,14 @@ main() {
     "/tmp/${tmp_tag}_v2_decisions.jsonl"
 
   local query
-  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$kategori" "$monthly_reverify" "$forced_merchant_ids_sql" "$qa_platform_col" "$dataset" "$country")
+  query=$(worklist_query "$source_table" "$qa_table" "$qa_pk_col" "$month" "$platform" "$enrichment_table" "$max_rows" "$filter_table" "$forced_merchant_ids_sql" "$qa_platform_col")
 
   # Materialize the FULL worklist to a file for Claude to Read -- same rationale as v1: handing
   # Claude raw SQL to re-run risks output truncation on large worklists silently passing as
   # status: partial without unresolved rows -> QUEUE_SIGNAL: DONE; unresolved rows need review.
   # --max_rows=1000000 is NOT optional -- bq query silently
   # defaults to --max_rows=100 otherwise (v1 confirmed this live).
-  log INFO "Querying BigQuery to materialize the worklist (post-filter Tier 1 + merchant whitelist, limit=${max_rows})..."
+  log INFO "Querying BigQuery to materialize the worklist (forced merchant list, post-filter, limit=${max_rows})..."
   local worklist_file="/tmp/${tmp_tag}_v2_full_worklist.jsonl"
   local worklist_json="/tmp/${tmp_tag}_v2_full_worklist.json"
   if ! bq query --use_legacy_sql=false --project_id="${PROJECT}" --format=json --max_rows=1000000 \
@@ -1139,10 +1050,10 @@ main() {
   worklist_count=$(wc -l < "$worklist_file" | tr -d ' ')
 
   if [[ "$worklist_count" == "0" ]]; then
-    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, post-filter Tier 1 + merchant whitelist) -- nothing to do."
+    echo "No in-scope worklist for ${dataset}/${platform}/${country}/${month} (v2, forced merchant list, post-filter) -- nothing to do."
     rm -f "$worklist_file"
     echo "QUEUE_SIGNAL: NOTHING_TO_DO"
-    emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope post-filter Tier 1 + merchant whitelist worklist for ${dataset}/${platform}/${country}/${month}"
+    emit_result "${dataset}:${platform}" "NOTHING_TO_DO" "No in-scope forced-merchant-list worklist for ${dataset}/${platform}/${country}/${month}"
     exit 0
   fi
 
@@ -1219,7 +1130,6 @@ main() {
   case "$agent_harness" in
     claude) agent_meta_source="claude_code" ;;
     codex) agent_meta_source="codex" ;;
-    omp) agent_meta_source="omp" ;;
   esac
 
   local image_manifest_file="" image_summary="" codex_image_dir=""
@@ -1356,42 +1266,6 @@ RUNTIME AUTHENTICATION (already prepared):
     NON_NIQ_QA_V2_CODEX_RUNTIME_DIR=""
     rm -rf -- "$codex_image_dir"
     NON_NIQ_QA_V2_IMAGE_DIR=""
-  elif [[ "$agent_harness" == "omp" ]]; then
-    # omp has no sandbox to work around (confirmed live via `omp --help`: no sandbox/approval-mode
-    # concept like Codex's workspace-write vs read-only split beyond a plain --auto-approve), so
-    # none of Codex's gcloud-credential-copying dance is needed -- omp inherits this process's own
-    # environment directly, same as the Claude branch below (ANTHROPIC_API_KEY/OPENAI_API_KEY for
-    # the model, GOOGLE_APPLICATION_CREDENTIALS/gcloud config for bq, all already ambient).
-    #
-    # omp also has no --output-last-message-equivalent flag -- confirmed live that its --mode json
-    # output is one JSON object per line (session/agent_start/turn_start/message_*/turn_end/
-    # agent_end), never interleaved with non-JSON text on stdout (a stray MCP-connection warning
-    # observed live went to stderr, not stdout). The final assistant reply -- the structured QA
-    # result JSON this prompt demands -- lives in the LAST "agent_end" event's last assistant
-    # message's text content, so that's what's recovered below. `grep '^{'` is defense-in-depth
-    # against any future non-JSON stdout noise, not required by anything observed so far.
-    #
-    # No turn-count cap exists (unlike Claude's --max-turns) -- MAX_TURNS is silently unused here.
-    # OMP_MAX_TIME (e.g. "45m") optionally caps wall-clock time via omp's own --max-time instead.
-    # No capacity/rate-limit retry loop either (unlike Codex's startup-capacity JSONL pattern or
-    # Claude's "session limit" text match) -- there's no known omp failure signature yet to key a
-    # retry off of. A failed/empty agent_output here just surfaces as QUEUE_SIGNAL: FAILED and
-    # queue_worker.sh retries the task on its next poll.
-    local omp_stdout_file
-    omp_stdout_file=$(mktemp "/tmp/${tmp_tag}_v2_omp_stdout.XXXXXX")
-    local -a omp_model_args=() omp_time_args=()
-    [[ -n "${OMP_QA_MODEL:-}" ]] && omp_model_args=(--model "$OMP_QA_MODEL")
-    [[ -n "${OMP_MAX_TIME:-}" ]] && omp_time_args=(--max-time "$OMP_MAX_TIME")
-    log INFO "Delegating to omp${OMP_QA_MODEL:+ (model=${OMP_QA_MODEL})} -- auto-approved tool access, ambient credentials; MAX_TURNS is a Claude-only CLI setting."
-    omp -p --mode json --no-session --auto-approve --cwd "$REPO_ROOT" \
-      "${omp_model_args[@]}" "${omp_time_args[@]}" "$prompt" \
-      > "$omp_stdout_file" || true
-    agent_output=$(grep '^{' "$omp_stdout_file" | jq -sr '
-      [.[] | select(.type == "agent_end")] | last
-      | (.messages // []) | map(select(.role == "assistant")) | last
-      | (.content // []) | map(select(.type == "text") | .text) | last // empty
-    ') || agent_output=""
-    rm -f "$omp_stdout_file"
   else
     # claude -p --output-format json buffers ALL of its output until the subprocess exits -- there is
   # no incremental progress from here until it returns, potentially several minutes for a large
@@ -1442,10 +1316,10 @@ RUNTIME AUTHENTICATION (already prepared):
   # deliberately never force status to "blocked" or skip sync/merge steps. A queue BLOCKED signal
   # stops queue_worker.sh's whole per-task iteration loop early (even when iterations_run <
   # loop_count) and parks the task -- far too disruptive a consequence for "this audit query
-  # couldn't confirm something," which can itself be a false positive in the audit query (see the
-  # 2026-09-30 lighting/ID incident: a bug in this exact insert-log query force-blocked an
-  # otherwise-clean 296-row session). The real DB writes this run made already happened regardless
-  # of what these checks find.
+  # couldn't confirm something," which can itself be a false positive in the audit query (this is
+  # the exact 2026-09-30 lighting/ID incident that prompted this fix: a bug in this insert-log
+  # query force-blocked an otherwise-clean 296-row session). The real DB writes this run made
+  # already happened regardless of what these checks find.
   local result_json
   result_json=$(extract_result_json "$agent_output")
   if [[ -n "$result_json" ]] && {
@@ -1486,16 +1360,16 @@ RUNTIME AUTHENTICATION (already prepared):
   echo "$agent_output"
   format_result_summary "$agent_output"
 
-  # sync-labelling: propagate this session's QA-table writes into master_table_prod. Best-effort,
-  # same non-fatal contract as the Sheet write-back next to it -- the QA writes already succeeded;
-  # this is downstream propagation, not part of the QA session's own pass/fail, and always runs
-  # regardless of the audit findings above (see the comment block at the top of this section). Uses
-  # the FULL original worklist (before the auto-confirm/agent split), not the reassigned
-  # $worklist_file, since auto-confirmed rows also need syncing.
+  # sync-labelling: propagate this session's QA-table writes into source_table (the _dev table
+  # here). Best-effort, same non-fatal contract as the Sheet write-back next to it -- the QA writes
+  # already succeeded; this is downstream propagation, not part of the QA session's own pass/fail,
+  # and always runs regardless of the audit findings above (see the comment block at the top of
+  # this section). Uses the FULL original worklist (before the auto-confirm/agent split), not the
+  # reassigned $worklist_file, since auto-confirmed rows also need syncing.
   local sync_labelling_output
   sync_labelling_output=$(sync_labelling_step "$source_table" "$qa_table" "$qa_pk_col" "$qa_platform_col" \
-    "$filter_table" "/tmp/${tmp_tag}_v2_full_worklist.jsonl" "$month" "$platform_titlecase" \
-    "$country" "$category")
+      "$filter_table" "/tmp/${tmp_tag}_v2_full_worklist.jsonl" "$month" "$platform_titlecase" \
+      "$country" "$category")
 
   # Sheet write-back: bash-invoked (not an agent tool call), reading STEP 3's complete artifact of
   # newly-created dictionary identities. The separate Meilisearch artifact can omit unconfident

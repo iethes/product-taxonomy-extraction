@@ -25,12 +25,17 @@ for script in script/non_niq/non_niq_qa_v2_merchant_list.sh script/non_niq/non_n
     || fail "$script's main() must capture run_start before dispatching the agent"
   grep -qF 'apply_taxonomy_insert_log_backstop "$agent_output" \' <<< "$src" \
     || fail "$script's main() must run the shared insert-log backstop against this dataset's dict_table"
-  if grep -qF '! agent_output=$(apply_taxonomy_insert_log_backstop' <<< "$src" && \
-     grep -qF 'residual_valid=false' <<< "$src"; then
-    :
-  else
-    fail "$script's main() must block the queue signal when the backstop finds an unlogged dictionary row"
+  # The backstop (and the residual accounting/ledger check above it) must never force the queue
+  # signal to BLOCKED -- it's a findings-only audit now (see apply_taxonomy_insert_log_backstop's
+  # own doc comment and the 2026-09-30 lighting/ID incident that prompted this: a bug in that exact
+  # verification query force-blocked an otherwise-clean 296-row session).
+  if grep -qE 'residual_valid=(true|false)' <<< "$src"; then
+    fail "$script must not reintroduce a residual_valid gate variable -- the backstop/audit checks must always run and only ever append findings"
   fi
+  grep -qF 'agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \' <<< "$src" \
+    || fail "$script's main() must call the insert-log backstop unconditionally (not gated behind a validity flag)"
+  grep -qF '"$dict_table") || true' <<< "$src" \
+    || fail "$script's main() must swallow the backstop's nonzero return rather than treating it as a reason to block"
   echo "PASS: $script insert-log wiring"
 done
 

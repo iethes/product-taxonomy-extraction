@@ -760,7 +760,7 @@ main() {
 
   if [[ "$agent_harness" == "codex" ]]; then
     local codex_final_file codex_stdout_file codex_runtime_paths codex_gcloud_config codex_adc_file
-    local codex_model="${CODEX_QA_MODEL:-gpt-5.6-sol}"
+    local codex_model="${CODEX_QA_MODEL:-cx/gpt-6.1-sol}"
     local codex_reasoning_effort="${CODEX_QA_REASONING_EFFORT:-high}"
     case "$codex_reasoning_effort" in
       low|medium|high|xhigh|max) ;;
@@ -840,7 +840,17 @@ RUNTIME AUTHENTICATION (already prepared):
     agent_output=$(claude -p --output-format json --permission-mode bypassPermissions --max-turns "$max_turns" "$prompt") || true
   fi
   log INFO "${agent_harness} subprocess returned, formatting summary..."
-  local result_json residual_valid=true ledger_invalid=false
+  # Unresolved rows alone are a normal, expected outcome (the agent's own status=partial already
+  # maps to QUEUE_SIGNAL: DONE via decide_queue_signal -- see its case statement). The checks below
+  # are a provenance/accounting AUDIT, never a gate: they append to findings and log loudly, but
+  # deliberately never force status to "blocked" or skip the auto-confirmed merge below. A queue
+  # BLOCKED signal stops queue_worker.sh's whole per-task iteration loop early (even when
+  # iterations_run < loop_count) and parks the task -- far too disruptive a consequence for "this
+  # audit query couldn't confirm something," which can itself be a false positive in the audit
+  # query (see the 2026-09-30 lighting/ID incident on non_niq_qa_v2.sh's sibling check: a bug in
+  # this exact insert-log query force-blocked an otherwise-clean 296-row session). The real DB
+  # writes this run made already happened regardless of what these checks find.
+  local result_json ledger_invalid=false
   result_json=$(extract_result_json "$agent_output")
   if ! residual_ledger_covers_worklist "$worklist_file" "/tmp/${tmp_tag}_eiger_decisions.jsonl"; then
     ledger_invalid=true
@@ -849,26 +859,27 @@ RUNTIME AUTHENTICATION (already prepared):
     ! residual_counts_cover_worklist "$result_json" "$worklist_count" ||
     [[ "$ledger_invalid" == true ]];
   }; then
-    residual_valid=false
     log ERROR "Agent result does not account for every residual row with a valid per-product evidence ledger."
-    agent_output=$(jq -c '
-      .status = "blocked" |
-      .blockers = ((.blockers // []) + ["Post-run validation found incomplete residual row accounting or a missing/invalid per-product decision ledger; automatic totals were not merged."])
-    ' <<< "$result_json")
+    # Merge onto the original agent_output (not result_json alone) -- for the Claude harness,
+    # result_json is only the inner object extracted from claude_output.result and never carried
+    # num_turns/duration_ms/total_cost_usd/modelUsage; rebuilding agent_output from result_json
+    # alone silently dropped those envelope fields from the summary printed below.
+    agent_output=$(jq -c --argjson result "$result_json" '
+      . * ($result
+        | .findings = ((.findings // []) + ["Post-run validation found incomplete residual row accounting or a missing/invalid per-product decision ledger; automatic totals may be incomplete."]))
+    ' <<< "$agent_output")
   fi
-  if [[ "$residual_valid" == true ]] && \
-     [[ "$(jq -r '.rows_created_in_dict // 0' <<< "$result_json" 2>/dev/null)" != "0" ]]; then
+  if [[ "$(jq -r '.rows_created_in_dict // 0' <<< "$result_json" 2>/dev/null)" != "0" ]]; then
     # 2d.1 in the prompt is agent-trusted text, not code-enforced (unlike non_niq_qa_v3.py's
     # builder) -- apply_taxonomy_insert_log_backstop is the code-side backstop: any QA row that
     # appeared since run_start with no matching insert-log row means the agent skipped or failed
-    # its mandatory log write.
-    if ! agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \
+    # its mandatory log write. It only ever appends a finding (see its own doc comment) -- never
+    # treat its return code as a reason to skip anything below.
+    agent_output=$(apply_taxonomy_insert_log_backstop "$agent_output" \
       "\`${PROJECT}.${QA_TABLE}\`" "${PROJECT}.${QA_TABLE}" "$run_start" \
-      "JSON_VALUE(log.row_json, '\$.product_id') = cur.product_id" "$QA_TABLE"); then
-      residual_valid=false
-    fi
+      "JSON_VALUE(log.row_json, '\$.product_id') = cur.product_id" "$QA_TABLE") || true
   fi
-  if (( auto_confirmed > 0 )) && [[ "$residual_valid" == true ]]; then
+  if (( auto_confirmed > 0 )); then
     local auto_result_json
     auto_result_json=$(extract_result_json "$agent_output")
     if echo "$auto_result_json" | jq -e . >/dev/null 2>&1; then
