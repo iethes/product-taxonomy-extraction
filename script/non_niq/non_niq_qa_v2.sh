@@ -520,9 +520,12 @@ STEP 2 -- For each product in the worklist, in order:
     generate a write payload from an unreviewed heuristic. Verify each small write before continuing.
   - Determine one honest disposition for every worklist row: QA confident, QA unconfident with a
     truthful existing identity, filtered with positive out-of-scope evidence, or unresolved. An
-    unresolved row is one where image/text/candidates conflict or no real dictionary identity can
-    be grounded. Record its product_id and reason in the ledger, make NO QA/dict/filter write for
-    it, and continue with independent rows. Report rows_unresolved and status=partial at the end.
+    unresolved row is one where sku_name and candidates conflict or no real dictionary identity
+    can be grounded. An image that conflicts with sku_name, an unbranded product, a multi-variant
+    listing, or a promo pack with free items is NOT by itself grounds for unresolved -- resolve it
+    with the image-wins rule and LABELING RULES in 2a. For an unresolved row, record its
+    product_id and reason in the ledger, make NO QA/dict/filter write for it, and continue with
+    independent rows. Report rows_unresolved and status=partial at the end.
     Do not label an incorrect or invented identity as unconfident just to finish the worklist.
   - If automatic approval review rejects a write, do not retry the same outcome via smaller DML,
     another tool, or another account. Re-examine the underlying per-product decisions; proceed
@@ -532,6 +535,30 @@ STEP 2 -- For each product in the worklist, in order:
   2a. RELEVANT to this category? This judgment is MULTIMODAL -- you must actually LOOK at the
       product image, not just read its URL. The image URL is the worklist's \`image\` column.
       ${image_inspection_instruction}
+      IMAGE vs SKU_NAME CONFLICT: if the image and sku_name disagree (different brand, product
+      line, variant, size, or pack count), TRUST the image and ditch sku_name's conflicting
+      details. Base the relevance, brand, and ${qa_identity_col} decisions on what the image
+      shows, and use sku_name only to fill details the image does not show. Note the conflict in
+      that product's evidence ledger. The image is usually more accurate and up to date than
+      sku_name, even when it shows fewer details; sku_name is often stale or keyword-stuffed.
+      If the image could not actually be viewed, fall back to sku_name.
+      LABELING RULES for in-scope products (each yields a truthful identity -- QA it confident
+      when the rule clearly applies; none of these is grounds for unresolved):
+      - UNBRANDED: neither sku_name nor image shows a real product brand (generic "cream malam",
+        bare/hand-labelled jars, racikan, seller-made sets). Use brand 'No Brand' and reuse the
+        dataset's generic No Brand identity -- the most-used brand = 'No Brand' identity in
+        \`${PROJECT}.${qa_table}\` and \`${PROJECT}.${dict_table}\` (e.g. 'No Brand Mosturizer' /
+        'No Brand Sunscreen'). If the dict lacks that catch-all row but the QA table uses it,
+        create it in the dict via 2c's NO path. A shop/seller name is not a brand.
+      - MULTI VARIANT: the listing lets the buyer choose among several variants, shades, sizes,
+        or series items (e.g. "All Series", "Series", "A / B / C", "Multi Variant", "pilih
+        varian"). Label it brand + product line + "Multi Variant" (add the size only when every
+        variant shares it), e.g. 'Emina Moisturizer All Series Multi Variant'. Reuse an existing
+        dict row of that form first. This is a choice of ONE item, not a bundle sold together.
+      - MULTI-PACK / PROMO PACK: label only the PAID product(s) and their paid count (existing
+        "x N pcs" format, e.g. '... 10 gr x 3 pcs'). Ignore any free/gift/bonus item ("FREE",
+        "GRATIS", "BONUS", "HADIAH", "GIFT", "Buy N Get M" extras) -- it is not part of the
+        identity and does not add to the pack count.
       Then, with the image + sku_name + item_description + product_attributes_attrs together (the
       worklist's own columns; product_attributes_attrs is a compact "name=value; name=value" string
       of the product's real Shopee attributes, e.g. brand/size -- not raw JSON;
