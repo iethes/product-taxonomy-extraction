@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import re
 from typing import Optional
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -152,6 +153,7 @@ def prepare(worklist: Path, output_dir: Path) -> dict:
     sheets: list[str] = []
     readable = 0
     failed = 0
+    gone = 0
     with manifest_path.open("w") as manifest, ThreadPoolExecutor(max_workers=8) as pool:
         for start in range(0, len(rows), SHEET_SIZE):
             chunk = rows[start : start + SHEET_SIZE]
@@ -183,6 +185,8 @@ def prepare(worklist: Path, output_dir: Path) -> dict:
                     entry["image_status"] = "failed"
                     entry["error"] = str(exc)[:180]
                     failed += 1
+                    if isinstance(exc, urllib.error.HTTPError) and exc.code in {404, 410}:
+                        gone += 1
                 prepared_rows.append(entry)
                 images.append(image)
                 manifest.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -192,7 +196,9 @@ def prepare(worklist: Path, output_dir: Path) -> dict:
                 if image is not None:
                     image.close()
 
-    if readable == 0:
+    # 404/410 means the listing or image was deleted: a per-product fact the agent
+    # handles via the text-only path. Only abort when every failure could be systemic.
+    if readable == 0 and failed > gone:
         raise RuntimeError(f"all {failed} worklist images failed to download or decode")
     return {"manifest": str(manifest_path), "sheets": sheets, "readable": readable, "failed": failed}
 
